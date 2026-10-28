@@ -1,0 +1,10 @@
+{
+  "name": "vyomara",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vyomara — a local-first personal AI assistant",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22.22.1"
+  }
+}
