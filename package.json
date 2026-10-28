@@ -4,7 +4,18 @@
   "private": true,
   "description": "Vyomara — a local-first personal AI assistant",
   "packageManager": "pnpm@12.16.1",
+  "type": "module",
+  "scripts": {
+    "dev": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
+    "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
+    "typecheck": "tsc --noEmit"
+  },
   "engines": {
     "node": ">=22.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
   }
 }
