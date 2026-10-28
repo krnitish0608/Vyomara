@@ -5,8 +5,8 @@ name is **Vyom**.
 
 ## Development status
 
-Initial development setup. The project is at its clean start; implementation
-has not begun.
+Initial implementation is in progress. The current CLI can use the local
+Ollama provider or an explicit deterministic placeholder.
 
 ## Prerequisites
 
@@ -24,3 +24,5 @@ Use pnpm only. Do not mix npm and pnpm lockfiles in this project.
 - Require approval before sensitive or destructive actions.
 - Never commit secrets.
 - Test changes before marking work complete.
+
+See [the Ollama setup and troubleshooting guide](./docs/ollama.md).

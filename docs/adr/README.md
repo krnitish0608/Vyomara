@@ -21,26 +21,26 @@ Proposed decisions must not be presented as approved implementation choices.
 | [0010](./0010-testing-and-evaluation.md) | Testing and repeatable agent evaluation | Accepted |
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
 
-## Open decisions before Phase 4
+## Open decisions
 
 User confirmation is needed for:
 
-1. **Model compatibility:** Ollama API/version, initial model, context budget,
-   endpoint/configuration, and local-service availability behavior.
-2. **Persistence:** format/engine, encryption, retention, backup/export, and
+1. **Persistence:** format/engine, encryption, retention, backup/export, and
    deletion guarantees for history and explicit memory.
-3. **Approval UX:** how future side-effect requests are displayed and scoped.
-4. **Configuration:** secret injection for any future credential-bearing
+2. **Approval UX:** how future side-effect requests are displayed and scoped.
+3. **Configuration:** secret injection for any future credential-bearing
    provider.
-5. **Diagnostics:** retention/rotation policy and any future opt-in content
+4. **Diagnostics:** retention/rotation policy and any future opt-in content
    logging.
-6. **Testing:** evaluation set, model-evaluation acceptance criteria, and
+5. **Testing:** evaluation set, model-evaluation acceptance criteria, and
    benchmark environment.
-7. **Compatibility:** minimum macOS release, packaging/distribution, and
+6. **Compatibility:** minimum macOS release, packaging/distribution, and
    confirmation that Node.js `>=22.22.1` is the release baseline.
-8. **Initial operations:** exact read-only tools, allowed-root setup and
+7. **Initial operations:** exact read-only tools, allowed-root setup and
    persistence, and per-tool timeout/output limits.
 
 See [the architecture overview](../architecture.md) and each Proposed ADR for
-the rationale and consequences. No Proposed ADR should be treated as user
-approval.
+the rationale and consequences. The model endpoint and initial model are
+resolved defaults in [ADR-0003](./0003-model-provider.md); live Ollama
+compatibility succeeded in one local request, but the installed server version
+was not recorded. No Proposed ADR should be treated as user approval.

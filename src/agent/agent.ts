@@ -71,7 +71,7 @@ export async function runAgent(
       }
       throw error;
     }
-    const response = parseProviderResponse(rawResponse, options.config.maxToolOutputChars);
+    const response = parseProviderResponse(rawResponse, options.config.maxResponseChars);
     if (response.kind === 'final') {
       options.session.add({ role: 'assistant', content: response.text });
       options.logger.emit({

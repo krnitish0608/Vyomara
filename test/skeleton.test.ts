@@ -67,7 +67,10 @@ function agentOptions(
 }
 
 test('configuration uses safe defaults and rejects invalid values without echoing them', () => {
-  assert.equal(loadConfig({}).provider, 'placeholder');
+  assert.equal(loadConfig({}).provider, 'ollama');
+  assert.equal(loadConfig({}).ollamaBaseUrl, 'http://127.0.0.1:11434');
+  assert.equal(loadConfig({}).ollamaModel, 'llama3.2');
+  assert.equal(loadConfig({ VYOM_PROVIDER: 'placeholder' }).provider, 'placeholder');
   assert.equal(loadConfig({}).maxAgentIterations, 3);
   assert.throws(
     () => loadConfig({ VYOM_PROVIDER: 'secret-provider-token' }),
@@ -76,6 +79,11 @@ test('configuration uses safe defaults and rejects invalid values without echoin
       !error.message.includes('secret-provider-token'),
   );
   assert.throws(() => loadConfig({ VYOM_MAX_TOOL_CALLS: '999999' }), /VYOM_MAX_TOOL_CALLS/);
+  assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: 'not a URL' }), /VYOM_OLLAMA_BASE_URL/);
+  assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: 'https://example.com' }), /loopback address/);
+  assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: '' }), /valid local HTTP URL/);
+  assert.throws(() => loadConfig({ VYOM_OLLAMA_MODEL: '   ' }), /VYOM_OLLAMA_MODEL/);
+  assert.throws(() => loadConfig({ VYOM_REQUEST_TIMEOUT_MS: '999' }), /VYOM_REQUEST_TIMEOUT_MS/);
 });
 
 test('placeholder provider is deterministic and clearly not an LLM', async () => {

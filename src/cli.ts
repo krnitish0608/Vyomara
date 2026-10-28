@@ -1,6 +1,9 @@
 import { runRequest } from './app/application.ts';
+import { AgentError } from './agent/agent.ts';
 import { loadConfig } from './config/config.ts';
 import { createLogger } from './diagnostics/logger.ts';
+import { ProviderError } from './providers/provider.ts';
+import { ToolExecutionError } from './tools/executor.ts';
 
 async function main(): Promise<void> {
   let config;
@@ -27,9 +30,17 @@ async function main(): Promise<void> {
   try {
     const response = await runRequest(prompt, controller.signal, config, createLogger());
     console.log(response);
-  } catch {
+  } catch (error) {
     createLogger().failure();
-    console.error('Request failed or was cancelled. No success is implied; review configuration and retry.');
+    if (
+      error instanceof ProviderError ||
+      error instanceof AgentError ||
+      error instanceof ToolExecutionError
+    ) {
+      console.error(error.message);
+    } else {
+      console.error('Request failed or was cancelled. No success is implied; review configuration and retry.');
+    }
     process.exitCode = 1;
   } finally {
     process.removeListener('SIGINT', onInterrupt);
