@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, opendir, realpath, stat } from 'node:fs/promises';
-import type { Stats } from 'node:fs';
+import type { Dir, Dirent, Stats } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Tool } from './contracts.ts';
@@ -94,6 +95,22 @@ function isWithin(root: string, target: string): boolean {
 
 function checkCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new FilesystemToolError('Filesystem operation was cancelled.');
+}
+
+function closeDirectoryOnAbort(directory: Dir, signal: AbortSignal): () => void {
+  const close = () => {
+    void directory.close().catch(() => undefined);
+  };
+  signal.addEventListener('abort', close, { once: true });
+  return () => signal.removeEventListener('abort', close);
+}
+
+function closeFileOnAbort(file: FileHandle, signal: AbortSignal): () => void {
+  const close = () => {
+    void file.close().catch(() => undefined);
+  };
+  signal.addEventListener('abort', close, { once: true });
+  return () => signal.removeEventListener('abort', close);
 }
 
 function publicFilesystemError(error: unknown): FilesystemToolError {
@@ -228,6 +245,32 @@ function outputFits(value: unknown, maximum: number): boolean {
   return JSON.stringify(value).length <= maximum;
 }
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function hasDirectoryEntries(path: string, signal: AbortSignal): Promise<boolean> {
+  let directory;
+  let removeAbortListener: (() => void) | undefined;
+  try {
+    directory = await opendir(path);
+    removeAbortListener = closeDirectoryOnAbort(directory, signal);
+    checkCancelled(signal);
+    return (await directory.read()) !== null;
+  } catch (error) {
+    throw publicFilesystemError(error);
+  } finally {
+    removeAbortListener?.();
+    if (directory) {
+      try {
+        await directory.close();
+      } catch {
+        // The iterator may already have closed the directory handle.
+      }
+    }
+  }
+}
+
 async function listDirectory(
   input: ListInput,
   config: AppConfig,
@@ -239,26 +282,32 @@ async function listDirectory(
   const entries: ListedEntry[] = [];
   let truncated = false;
   let directory;
+  let removeAbortListener: (() => void) | undefined;
   try {
     directory = await opendir(target.target);
+    removeAbortListener = closeDirectoryOnAbort(directory, signal);
     while (true) {
       checkCancelled(signal);
       const entry = await directory.read();
       if (!entry) break;
-      if (entries.length >= limit) {
-        truncated = true;
-        break;
-      }
       const candidate = { name: entry.name, type: entryType(entry) } satisfies ListedEntry;
-      if (!outputFits({ entries: [...entries, candidate], truncated: true }, config.maxToolOutputChars)) {
+      const position = entries.findIndex(item => compareText(item.name, candidate.name) > 0);
+      const candidateEntries = [...entries];
+      candidateEntries.splice(position < 0 ? candidateEntries.length : position, 0, candidate);
+      if (candidateEntries.length > limit) {
         truncated = true;
-        break;
+        candidateEntries.pop();
       }
-      entries.push(candidate);
+      if (candidateEntries.length === entries.length && candidateEntries.every((item, index) => item === entries[index])) {
+        truncated = true;
+      } else {
+        entries.splice(0, entries.length, ...candidateEntries);
+      }
     }
   } catch (error) {
     throw publicFilesystemError(error);
   } finally {
+    removeAbortListener?.();
     if (directory) {
       try {
         await directory.close();
@@ -267,7 +316,10 @@ async function listDirectory(
       }
     }
   }
-  entries.sort((left, right) => left.name.localeCompare(right.name));
+  while (entries.length > 0 && !outputFits({ entries, truncated: true }, config.maxToolOutputChars)) {
+    entries.pop();
+    truncated = true;
+  }
   return { entries, truncated };
 }
 
@@ -283,8 +335,10 @@ async function readFile(
   }
 
   let file;
+  let removeAbortListener: (() => void) | undefined;
   try {
     file = await open(target.target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    removeAbortListener = closeFileOnAbort(file, signal);
     const openedStats = await file.stat();
     if (!openedStats.isFile() || openedStats.dev !== target.stats.dev || openedStats.ino !== target.stats.ino) {
       throw new FilesystemToolError('File changed while it was being opened; retry the request.');
@@ -311,7 +365,7 @@ async function readFile(
     } catch {
       throw new FilesystemToolError('File is not valid UTF-8 text.');
     }
-    if (content.includes('\0')) {
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(content)) {
       throw new FilesystemToolError('Binary files cannot be read as text.');
     }
     const result = { content, bytes };
@@ -322,6 +376,7 @@ async function readFile(
   } catch (error) {
     throw publicFilesystemError(error);
   } finally {
+    removeAbortListener?.();
     if (file) {
       try {
         await file.close();
@@ -349,57 +404,32 @@ async function directoryTree(
     if (depth > maxDepth || stopTraversal) return;
     checkCancelled(signal);
     let directory;
+    const children: Dirent[] = [];
+    let omittedChildren = false;
+    let removeAbortListener: (() => void) | undefined;
     try {
       directory = await opendir(directoryPath);
+      removeAbortListener = closeDirectoryOnAbort(directory, signal);
       while (true) {
         checkCancelled(signal);
         const entry = await directory.read();
         if (!entry) break;
-        if (entries.length >= maxEntries) {
-          truncated = true;
-          stopTraversal = true;
+        const remaining = maxEntries - entries.length;
+        if (remaining <= 0) {
+          omittedChildren = true;
           break;
         }
-        const entryPath = relativeParent ? `${relativeParent}/${entry.name}` : entry.name;
-        const type = entryType(entry);
-        const candidate: TreeEntry = { name: entry.name, path: entryPath, type, depth };
-        if (!outputFits({ entries: [...entries, candidate], truncated: true }, config.maxToolOutputChars)) {
-          truncated = true;
-          stopTraversal = true;
-          break;
+        const position = children.findIndex(child => compareText(child.name, entry.name) > 0);
+        children.splice(position < 0 ? children.length : position, 0, entry);
+        if (children.length > remaining) {
+          children.pop();
+          omittedChildren = true;
         }
-        entries.push(candidate);
-        if (type === 'directory' && depth < maxDepth) {
-          let safeChild: ResolvedPath | undefined;
-          try {
-            safeChild = await resolveAllowedPath(
-              resolve(directoryPath, entry.name),
-              roots,
-              'directory',
-              signal,
-            );
-          } catch (error) {
-            if (
-              error instanceof FilesystemToolError &&
-              error.message === 'Symbolic links are not allowed in requested paths.'
-            ) {
-              const index = entries.findIndex(item => item.path === entryPath);
-              if (index >= 0) entries[index] = { ...candidate, type: 'symlink' };
-            } else {
-              throw error;
-            }
-          }
-          if (safeChild && !stopTraversal) {
-            await visit(safeChild.target, entryPath, depth + 1);
-          }
-        } else if (type === 'directory') {
-          truncated = true;
-        }
-        if (stopTraversal) break;
       }
     } catch (error) {
       throw publicFilesystemError(error);
     } finally {
+      removeAbortListener?.();
       if (directory) {
         try {
           await directory.close();
@@ -408,6 +438,56 @@ async function directoryTree(
         }
       }
     }
+
+    for (const child of children) {
+      if (stopTraversal) break;
+      if (entries.length >= maxEntries) {
+        truncated = true;
+        stopTraversal = true;
+        break;
+      }
+      const entryPath = relativeParent ? `${relativeParent}/${child.name}` : child.name;
+      const type = entryType(child);
+      const candidate: TreeEntry = { name: child.name, path: entryPath, type, depth };
+      if (!outputFits({ entries: [...entries, candidate], truncated: true }, config.maxToolOutputChars)) {
+        truncated = true;
+        stopTraversal = true;
+        break;
+      }
+      entries.push(candidate);
+      if (type !== 'directory') continue;
+
+      let safeChild: ResolvedPath | undefined;
+      try {
+        safeChild = await resolveAllowedPath(
+          resolve(directoryPath, child.name),
+          roots,
+          'directory',
+          signal,
+        );
+      } catch (error) {
+        if (
+          error instanceof FilesystemToolError &&
+          error.message === 'Symbolic links are not allowed in requested paths.'
+        ) {
+          const index = entries.findIndex(item => item.path === entryPath);
+          if (index >= 0) entries[index] = { ...candidate, type: 'symlink' };
+        } else {
+          throw error;
+        }
+      }
+      if (!safeChild) continue;
+      if (depth < maxDepth) {
+        await visit(safeChild.target, entryPath, depth + 1);
+      } else if (await hasDirectoryEntries(safeChild.target, signal)) {
+        truncated = true;
+      }
+    }
+
+    if (omittedChildren) {
+      truncated = true;
+      stopTraversal = true;
+    }
   };
 
   try {
@@ -415,7 +495,7 @@ async function directoryTree(
   } catch (error) {
     throw publicFilesystemError(error);
   }
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareText(left.path, right.path));
   return { entries, truncated };
 }
 

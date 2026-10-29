@@ -36,8 +36,9 @@ User confirmation is needed for:
    benchmark environment.
 6. **Compatibility:** minimum macOS release, packaging/distribution, and
    confirmation that Node.js `>=22.22.1` is the release baseline.
-7. **Initial operations:** exact read-only tools, allowed-root setup and
-   persistence, and per-tool timeout/output limits.
+7. **Filesystem access UX:** selection, display, and revocation of allowed
+   roots. The read-only tools and default resource limits are implemented;
+   root configuration is currently environment-only and defaults to no access.
 
 See [the architecture overview](../architecture.md) and each Proposed ADR for
 the rationale and consequences. The model endpoint and initial model are

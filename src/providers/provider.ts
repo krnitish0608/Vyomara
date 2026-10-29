@@ -63,7 +63,7 @@ async function readBoundedBody(
 ): Promise<string> {
   if (!response.body) return '';
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   let totalBytes = 0;
   let text = '';
   const cancelReader = () => {
@@ -98,10 +98,22 @@ export class OllamaProvider implements ModelProvider {
   private readonly endpoint: URL;
 
   constructor(options: OllamaProviderOptions) {
+    const baseUrl = new URL(options.baseUrl);
+    const hostname = baseUrl.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (
+      baseUrl.protocol !== 'http:' ||
+      !['localhost', '127.0.0.1', '::1'].includes(hostname) ||
+      baseUrl.username !== '' ||
+      baseUrl.password !== '' ||
+      baseUrl.search !== '' ||
+      baseUrl.hash !== ''
+    ) {
+      throw new Error('Ollama provider requires a local HTTP loopback URL.');
+    }
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.maxResponseBytes = options.maxResponseBytes ?? 1_000_000;
     this.maxResponseChars = options.maxResponseChars ?? 16_000;
-    this.endpoint = new URL(`${options.baseUrl.replace(/\/+$/, '')}/api/chat`);
+    this.endpoint = new URL(`${baseUrl.origin}${baseUrl.pathname.replace(/\/+$/, '')}/api/chat`);
     this.model = options.model;
   }
 
@@ -118,6 +130,7 @@ export class OllamaProvider implements ModelProvider {
       response = await this.fetchImplementation(this.endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        redirect: 'error',
         signal,
         body: JSON.stringify({
           model: this.model,

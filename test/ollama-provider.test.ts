@@ -34,11 +34,27 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
+test('Ollama provider rejects non-loopback, credentialed, and query-bearing endpoints', () => {
+  for (const baseUrl of [
+    'https://example.invalid',
+    'http://example.invalid',
+    'http://user:password@127.0.0.1:11434',
+    'http://127.0.0.1:11434?redirect=remote',
+  ]) {
+    assert.throws(
+      () => new OllamaProvider({ baseUrl, model: 'llama3.2' }),
+      /local HTTP loopback URL/,
+    );
+  }
+});
+
 test('Ollama chat sends a system prompt, configured model, and conversation; returns assistant text', async () => {
   let requestUrl = '';
+  let redirectMode: RequestInit['redirect'];
   let requestBody: Record<string, unknown> | undefined;
   const fetchImplementation: FetchImplementation = async (input, init) => {
     requestUrl = String(input);
+    redirectMode = init?.redirect;
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     return jsonResponse({ message: { role: 'assistant', content: 'Hello from local Ollama.' } });
   };
@@ -48,6 +64,7 @@ test('Ollama chat sends a system prompt, configured model, and conversation; ret
   ], new AbortController().signal);
 
   assert.equal(requestUrl, 'http://127.0.0.1:11434/api/chat');
+  assert.equal(redirectMode, 'error');
   assert.deepEqual(result, { kind: 'final', text: 'Hello from local Ollama.' });
   assert.equal(requestBody?.model, 'llama3.2');
   assert.equal(requestBody?.stream, false);
@@ -97,6 +114,11 @@ test('Ollama provider rejects malformed JSON and malformed response shapes', asy
       .complete([], new AbortController().signal),
     (error: unknown) => error instanceof ProviderError && error.code === 'malformed-response',
   );
+  await assert.rejects(
+    provider(async () => new Response(Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d])))
+      .complete([], new AbortController().signal),
+    (error: unknown) => error instanceof ProviderError && error.code === 'malformed-response',
+  );
 });
 
 test('Ollama provider rejects model tool calls instead of executing them', async () => {
@@ -142,6 +164,20 @@ test('Ollama provider cancellation is propagated safely', async () => {
     }),
   ).complete([], controller.signal);
   controller.abort();
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof ProviderError && error.code === 'cancelled',
+  );
+});
+
+test('Ollama provider cancels a response body that is still streaming', async () => {
+  const controller = new AbortController();
+  const pending = provider(async () =>
+    new Response(new ReadableStream<Uint8Array>({ start() {} })),
+  ).complete([], controller.signal);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  controller.abort();
+
   await assert.rejects(
     pending,
     (error: unknown) => error instanceof ProviderError && error.code === 'cancelled',

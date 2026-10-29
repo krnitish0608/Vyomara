@@ -42,15 +42,32 @@ function execute(
 
 test('filesystem listing returns bounded structured entries for an allowed directory', async t => {
   const { root, executor } = await fixture(t);
-  await writeFile(join(root, 'hello.txt'), 'hello');
-  await mkdir(join(root, 'subfolder'));
+  await writeFile(join(root, 'zeta.txt'), 'zeta');
+  await mkdir(join(root, 'Alpha'));
+  await writeFile(join(root, 'alpha.txt'), 'alpha');
 
   assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: root }), {
     entries: [
-      { name: 'hello.txt', type: 'file' },
-      { name: 'subfolder', type: 'directory' },
+      { name: 'Alpha', type: 'directory' },
+      { name: 'alpha.txt', type: 'file' },
+      { name: 'zeta.txt', type: 'file' },
     ],
     truncated: false,
+  });
+});
+
+test('filesystem listing chooses a deterministic sorted subset when entry-limited', async t => {
+  const { root, executor } = await fixture(t, { VYOM_MAX_DIRECTORY_ENTRIES: '2' });
+  await writeFile(join(root, 'z.txt'), 'z');
+  await writeFile(join(root, 'a.txt'), 'a');
+  await writeFile(join(root, 'm.txt'), 'm');
+
+  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: root }), {
+    entries: [
+      { name: 'a.txt', type: 'file' },
+      { name: 'm.txt', type: 'file' },
+    ],
+    truncated: true,
   });
 });
 
@@ -182,11 +199,14 @@ test('filesystem read stays within the configured serialized output limit', asyn
 test('filesystem read rejects binary and invalid UTF-8 content', async t => {
   const { root, executor } = await fixture(t);
   const binary = join(root, 'binary.dat');
+  const control = join(root, 'control.txt');
   const invalid = join(root, 'invalid.txt');
   await writeFile(binary, Buffer.from([0x61, 0x00, 0x62]));
+  await writeFile(control, Buffer.from([0x61, 0x07, 0x62]));
   await writeFile(invalid, Buffer.from([0xc3, 0x28]));
 
   await assert.rejects(execute(executor, 'filesystem.read-file', { path: binary }), /Binary files/);
+  await assert.rejects(execute(executor, 'filesystem.read-file', { path: control }), /Binary files/);
   await assert.rejects(execute(executor, 'filesystem.read-file', { path: invalid }), /valid UTF-8/);
 });
 
@@ -220,6 +240,23 @@ test('directory tree honors configured depth, entry, and output bounds', async t
   assert.ok(JSON.stringify(list).length <= 200);
 });
 
+test('directory tree selects a deterministic sorted subset when entry-limited', async t => {
+  const { root, executor } = await fixture(t, {
+    VYOM_MAX_DIRECTORY_ENTRIES: '2',
+    VYOM_MAX_TREE_DEPTH: '1',
+  });
+  await mkdir(join(root, 'z'));
+  await mkdir(join(root, 'a'));
+  await mkdir(join(root, 'm'));
+
+  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+    entries: Array<{ path: string }>;
+    truncated: boolean;
+  };
+  assert.deepEqual(tree.entries.map(entry => entry.path), ['a', 'm']);
+  assert.equal(tree.truncated, true);
+});
+
 test('directory tree marks omitted descendants when the depth limit is reached', async t => {
   const { root, executor } = await fixture(t, {
     VYOM_MAX_TREE_DEPTH: '1',
@@ -234,6 +271,18 @@ test('directory tree marks omitted descendants when the depth limit is reached',
   };
   assert.deepEqual(tree.entries, [{ name: 'folder', path: 'folder', type: 'directory', depth: 1 }]);
   assert.equal(tree.truncated, true);
+});
+
+test('directory tree does not report truncation for empty directories at the depth limit', async t => {
+  const { root, executor } = await fixture(t, { VYOM_MAX_TREE_DEPTH: '1' });
+  await mkdir(join(root, 'empty'));
+
+  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+    entries: Array<{ path: string }>;
+    truncated: boolean;
+  };
+  assert.deepEqual(tree.entries.map(entry => entry.path), ['empty']);
+  assert.equal(tree.truncated, false);
 });
 
 test('filesystem tool inputs reject malformed objects, unknown fields, and unreasonable limits', async t => {

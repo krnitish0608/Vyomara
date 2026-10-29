@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { AgentError, runAgent } from '../src/agent/agent.ts';
 import { loadConfig } from '../src/config/config.ts';
@@ -6,6 +7,7 @@ import { createLogger } from '../src/diagnostics/logger.ts';
 import type { ModelProvider, ProviderResponse } from '../src/providers/provider.ts';
 import { PlaceholderProvider } from '../src/providers/provider.ts';
 import { Session } from '../src/session/session.ts';
+import { OperationStoppedError, runBounded } from '../src/shared/bounded.ts';
 import type { Tool } from '../src/tools/contracts.ts';
 import { ToolRegistry } from '../src/tools/contracts.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
@@ -75,6 +77,14 @@ test('configuration uses safe defaults and rejects invalid values without echoin
   assert.equal(loadConfig({}).maxDirectoryEntries, 100);
   assert.equal(loadConfig({}).maxTreeDepth, 3);
   assert.equal(loadConfig({ VYOM_PROVIDER: 'placeholder' }).provider, 'placeholder');
+  assert.equal(
+    loadConfig({
+      VYOM_PROVIDER: 'placeholder',
+      VYOM_OLLAMA_BASE_URL: 'https://unused.invalid',
+      VYOM_OLLAMA_MODEL: '   ',
+    }).ollamaModel,
+    'llama3.2',
+  );
   assert.equal(loadConfig({}).maxAgentIterations, 3);
   assert.throws(
     () => loadConfig({ VYOM_PROVIDER: 'secret-provider-token' }),
@@ -87,11 +97,44 @@ test('configuration uses safe defaults and rejects invalid values without echoin
   assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: 'https://example.com' }), /loopback address/);
   assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: '' }), /valid local HTTP URL/);
   assert.throws(() => loadConfig({ VYOM_OLLAMA_MODEL: '   ' }), /VYOM_OLLAMA_MODEL/);
+  assert.throws(
+    () => loadConfig({ VYOM_PROVIDER: 'ollama', VYOM_OLLAMA_BASE_URL: 'https://unused.invalid' }),
+    /loopback address/,
+  );
   assert.throws(() => loadConfig({ VYOM_REQUEST_TIMEOUT_MS: '999' }), /VYOM_REQUEST_TIMEOUT_MS/);
   assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: 'not json' }), /VYOM_ALLOWED_ROOTS/);
+  assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: '{}' }), /VYOM_ALLOWED_ROOTS/);
   assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: '["relative/path"]' }), /absolute directory paths/);
+  assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: '["/tmp/\\u0000bad"]' }), /absolute directory paths/);
+  assert.throws(
+    () => loadConfig({ VYOM_ALLOWED_ROOTS: JSON.stringify(Array.from({ length: 33 }, (_, index) => `/tmp/${index}`)) }),
+    /at most 32/,
+  );
   assert.throws(() => loadConfig({ VYOM_MAX_FILE_BYTES: '0' }), /VYOM_MAX_FILE_BYTES/);
   assert.throws(() => loadConfig({ VYOM_MAX_TREE_DEPTH: '11' }), /VYOM_MAX_TREE_DEPTH/);
+});
+
+test('CLI discloses the configured provider before processing a request', () => {
+  const result = spawnSync(process.execPath, [
+    '--disable-warning=ExperimentalWarning',
+    '--experimental-strip-types',
+    'src/cli.ts',
+    '--',
+    'Say hello',
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      VYOM_PROVIDER: 'placeholder',
+      VYOM_ALLOWED_ROOTS: '[]',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Provider: deterministic placeholder; no model service is contacted\./);
+  assert.ok(result.stdout.indexOf('Provider:') < result.stdout.indexOf('[Placeholder provider]'));
 });
 
 test('placeholder provider is deterministic and clearly not an LLM', async () => {
@@ -120,6 +163,11 @@ test('tool registry rejects duplicate IDs', () => {
   const registry = new ToolRegistry();
   registry.register(simpleTool());
   assert.throws(() => registry.register(simpleTool()), /already registered/);
+});
+
+test('tool registry rejects malformed IDs', () => {
+  const registry = new ToolRegistry();
+  assert.throws(() => registry.register(simpleTool({ id: 'Invalid ID' })), /Tool ID/);
 });
 
 test('tool inputs are validated before execution', async () => {
@@ -250,6 +298,20 @@ test('provider timeout is enforced even if a provider ignores its signal', async
     )),
     (error: unknown) => error instanceof AgentError && error.code === 'timeout',
   );
+});
+
+test('a late operation completion cannot turn a timed-out result into success', async () => {
+  let completedLate = false;
+  await assert.rejects(
+    runBounded(async () => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      completedLate = true;
+      return 'late success';
+    }, 5, new AbortController().signal),
+    (error: unknown) => error instanceof OperationStoppedError && error.reason === 'timeout',
+  );
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(completedLate, true);
 });
 
 test('tool timeout is enforced even if a tool ignores its signal', async () => {

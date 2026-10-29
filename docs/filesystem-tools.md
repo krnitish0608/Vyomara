@@ -30,8 +30,12 @@ requested absolute paths.
   symlinks as `symlink` without following them.
 - `filesystem.directory-tree` returns relative entry paths and depth. Its
   default depth is 3 and the configured maximum is 10.
+  Depth 1 lists direct children of the requested directory; deeper values
+  include descendants. If a directory at the depth boundary is non-empty,
+  `truncated` is true because its children were omitted.
 - `filesystem.read-file` accepts UTF-8 text files only. It rejects invalid
-  UTF-8 and binary-looking content.
+  UTF-8, NUL bytes, and disallowed control characters as binary-looking
+  content.
 - A file is limited to 65,536 bytes by default, configurable from 1 byte to
   1 MiB with `VYOM_MAX_FILE_BYTES`.
 - Listings and trees return at most 100 entries by default, configurable up
@@ -42,7 +46,9 @@ requested absolute paths.
   (default 2 seconds) and cancellation boundary.
 
 Pass `maxEntries` to a listing or tree request, and `maxDepth` to a tree
-request, only to lower the configured maximum. Unknown input fields, relative
+request, only to lower the configured maximum. Entries are selected and
+returned in deterministic name/path order. `truncated` indicates omitted
+entries due to count, depth, or output limits. Unknown input fields, relative
 paths, negative limits, and values above configured maxima are rejected.
 
 File contents are sensitive user data. The filesystem tools do not log them,

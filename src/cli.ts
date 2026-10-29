@@ -28,6 +28,9 @@ async function main(): Promise<void> {
   const onInterrupt = () => controller.abort();
   process.once('SIGINT', onInterrupt);
   try {
+    console.log(config.provider === 'ollama'
+      ? 'Provider: local Ollama; your request is sent to the configured local Ollama service.'
+      : 'Provider: deterministic placeholder; no model service is contacted.');
     const response = await runRequest(prompt, controller.signal, config, createLogger());
     console.log(response);
   } catch (error) {
