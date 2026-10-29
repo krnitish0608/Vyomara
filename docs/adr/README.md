@@ -20,6 +20,7 @@ Proposed decisions must not be presented as approved implementation choices.
 | [0009](./0009-diagnostics-and-audit.md) | Logging, diagnostics, and audit events | Accepted |
 | [0010](./0010-testing-and-evaluation.md) | Testing and repeatable agent evaluation | Accepted |
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
+| [0012](./0012-desktop-interface.md) | macOS desktop interaction shell | Accepted |
 
 ## Open decisions
 

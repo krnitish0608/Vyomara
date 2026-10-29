@@ -5,9 +5,9 @@
 This architecture blueprint was created in Phase 3 and is updated selectively
 to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
 adapter, tool registry/executor/policy gateway, and read-only filesystem
-tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 is
-integrating local session history and explicitly managed memory through
-SQLite. The diagram and component
+tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
+local session history and separately managed explicit memory through SQLite.
+Phase 10 is adding the first Electron/React desktop chat shell. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -24,7 +24,9 @@ side-effect capability in the MVP.
 ```mermaid
 flowchart TD
     User[User]
-    UI[Text interaction adapter]
+    UI[CLI and React renderer]
+    Preload[Restricted Electron preload bridge]
+    Main[Electron main process]
     Session[Session and request coordinator]
     Agent[Primary agent]
     ProviderPort[Model provider interface]
@@ -38,7 +40,8 @@ flowchart TD
     Memory[Explicit memory]
     Audit[Diagnostic and audit sink]
 
-    User --> UI --> Session --> Agent
+    User --> UI --> Preload --> Main --> Session --> Agent
+    Main --> Preload --> UI
     Policy --> UI
     UI --> Policy
     Agent --> ProviderPort --> Ollama
@@ -55,9 +58,12 @@ flowchart TD
 ```
 
 The CLI stores local session history, supports review, continuation, and
-deletion, and offers separate explicitly confirmed memory operations. Memory
-is not currently injected into model context. There is no interactive approval
-UI; filesystem roots are configured through environment variables. The current Ollama
+deletion, and offers separate explicitly confirmed memory operations. The
+desktop shell uses the same application service and exposes chat, cancellation,
+provider configuration status, and request-scoped activity through a restricted
+preload bridge. Provider status is not a connection check. Memory is not
+currently injected into model context. There is no interactive approval UI;
+filesystem roots are configured through environment variables. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor
 validation and the policy gateway. Invalid arguments receive at most one
@@ -73,6 +79,8 @@ not permission to add them now.
 | Component | Responsibility | Must not do |
 |---|---|---|
 | Text interaction adapter | Accept user input; display state, response, errors, and approval requests. | Call a model or tool directly. |
+| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
+| Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
 | Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |
 | Provider interface | Define normalized request, response, cancellation, and error contracts. | Expose provider-specific objects to agent or tools. |
@@ -84,6 +92,10 @@ not permission to add them now.
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 
 These are logical boundaries within one process, not separate services.
+
+The desktop renderer runs with context isolation, sandboxing, disabled Node
+integration, and web security. It renders assistant output as text. No remote
+font or renderer-side provider request is used.
 
 ## Request and tool flows
 
@@ -216,12 +228,12 @@ provider-specific behavior inside adapters.
 ## MVP implementation sequence
 
 This is the original planning sequence, not a checklist of pending work.
-Phases 1–8 implemented the core contracts and validation, policy and executor,
-Ollama adapter, bounded agent/task lifecycle, and read-only tools. Phase 9
-persistence integration provides local SQLite history and separately managed
-explicit memory through CLI commands. User-facing allowed-root management,
-memory context injection, graphical interaction, and broader end-to-end
-evaluation remain future work.
+Phases 1–9 implemented the core contracts and validation, policy and executor,
+Ollama adapter, bounded agent/task lifecycle, read-only tools, and local SQLite
+history with separately managed explicit memory. Phase 10 starts the desktop
+interaction layer. User-facing allowed-root management, memory context
+injection, app packaging, project/session browsing, voice, and broader
+end-to-end evaluation remain future work.
 
 1. **Resolve Proposed choices** affecting public interfaces: runtime/language,
    text interface, Ollama compatibility target, persistence/privacy policy,

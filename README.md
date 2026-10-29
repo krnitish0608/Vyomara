@@ -5,8 +5,11 @@ name is **Vyom**.
 
 ## Development status
 
-Initial implementation is in progress. The CLI can use the local Ollama
-provider or an explicit deterministic placeholder. Requests have correlated
+Initial implementation is in progress. The CLI and early Electron desktop
+shell can use the local Ollama provider or an explicit deterministic
+placeholder. The desktop shell has text chat, request cancellation, and a
+task-activity panel; provider/model information is configuration status only,
+not a live connection check. Requests have correlated
 task/run lifecycle events and are stored as local, inspectable sessions. The
 session history includes user prompts, assistant replies, tool calls, and
 returned tool data, which may contain private file contents. Ollama can request
@@ -45,6 +48,27 @@ Use pnpm only. Do not mix npm and pnpm lockfiles in this project.
 See [the Ollama setup and troubleshooting guide](./docs/ollama.md).
 See [the read-only filesystem tool guide](./docs/filesystem-tools.md).
 
+## Desktop application
+
+Run the Electron development app with:
+
+```sh
+pnpm desktop
+```
+
+Create a local production build or preview it with:
+
+```sh
+pnpm build:desktop
+pnpm preview:desktop
+```
+
+The app uses the current process environment. Vyomara does not automatically
+load `.env` files. Filesystem tools remain unavailable unless
+`VYOM_ALLOWED_ROOTS` is configured before launching; the desktop UI does not
+yet manage workspace permissions. App signing, `.app`/`.dmg` distribution,
+session browsing, settings, and voice are not implemented.
+
 ## Local history and memory
 
 The database defaults to `~/Library/Application Support/Vyomara`; override it
@@ -66,5 +90,5 @@ pnpm dev -- --memory show <memory-id>
 pnpm dev -- --memory delete <memory-id> --confirm
 ```
 
-Memory is not currently injected into model context. No UI, interactive
-approval flow, or automated backup/export is provided.
+Memory is not currently injected into model context. No interactive approval
+flow or automated backup/export is provided.
