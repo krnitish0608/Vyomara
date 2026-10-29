@@ -1,0 +1,428 @@
+import { closeSync, chmodSync, lstatSync, mkdirSync, openSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
+import { homedir } from 'node:os';
+import { join, resolve, isAbsolute } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import type { DiagnosticEvent } from '../diagnostics/logger.ts';
+import type { SessionMessage } from '../session/session.ts';
+import { Session } from '../session/session.ts';
+
+const maximumMemoryChars = 32_000;
+const maximumAuditEvents = 10_000;
+const maximumSessionMessages = 1_000;
+const maximumSessionBytes = 8 * 1024 * 1024;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export class PersistenceError extends Error {
+  readonly code: 'invalid-path' | 'database-error' | 'not-found' | 'invalid-data';
+
+  constructor(
+    message: string,
+    code: PersistenceError['code'],
+  ) {
+    super(message);
+    this.name = 'PersistenceError';
+    this.code = code;
+  }
+}
+
+export interface StoredSessionSummary {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly messageCount: number;
+}
+
+export interface StoredMemorySummary {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length &&
+    Object.keys(value).every(key => keys.includes(key));
+}
+
+function validToolCalls(value: unknown): value is SessionMessage & {
+  readonly role: 'assistant';
+  readonly kind: 'tool-call';
+} {
+  return isRecord(value) &&
+    value.role === 'assistant' &&
+    value.kind === 'tool-call' &&
+    exactKeys(value, ['role', 'kind', 'content', 'toolCalls']) &&
+    typeof value.content === 'string' &&
+    Array.isArray(value.toolCalls) &&
+    value.toolCalls.every(call =>
+      isRecord(call) &&
+      exactKeys(call, ['toolId', 'arguments']) &&
+      typeof call.toolId === 'string' &&
+      /^[a-z][a-z0-9.-]{0,63}$/.test(call.toolId) &&
+      isRecord(call.arguments));
+}
+
+function validSessionMessage(value: unknown): value is SessionMessage {
+  if (!isRecord(value)) return false;
+  if (value.role === 'user') {
+    return exactKeys(value, ['role', 'content']) && typeof value.content === 'string';
+  }
+  if (value.role === 'assistant' && value.kind === undefined) {
+    return exactKeys(value, ['role', 'content']) && typeof value.content === 'string';
+  }
+  if (value.role === 'tool') {
+    return exactKeys(value, ['role', 'toolId', 'content']) &&
+      typeof value.toolId === 'string' &&
+      /^[a-z][a-z0-9.-]{0,63}$/.test(value.toolId) &&
+      typeof value.content === 'string';
+  }
+  if (value.role === 'assistant' && value.kind === 'tool-call') {
+    return validToolCalls(value);
+  }
+  return false;
+}
+
+function assertUuid(value: string): void {
+  if (!uuidPattern.test(value)) {
+    throw new PersistenceError('The requested record ID is invalid.', 'invalid-data');
+  }
+}
+
+function safeDirectory(dataDirectory: string): string {
+  if (!isAbsolute(dataDirectory) || dataDirectory.trim() !== dataDirectory || dataDirectory.includes('\0')) {
+    throw new PersistenceError('The local data directory must be an absolute path.', 'invalid-path');
+  }
+  const directory = resolve(dataDirectory);
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const stats = lstatSync(directory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new PersistenceError('The local data directory is not a safe directory.', 'invalid-path');
+    }
+    if ((stats.mode & 0o077) !== 0) {
+      throw new PersistenceError(
+        'The local data directory must be accessible only to the current user.',
+        'invalid-path',
+      );
+    }
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    throw new PersistenceError('The local data directory could not be created safely.', 'database-error');
+  }
+  return directory;
+}
+
+function prepareDatabaseFile(path: string): void {
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new PersistenceError('The local database file is not a safe regular file.', 'invalid-path');
+    }
+    chmodSync(path, 0o600);
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    if (isRecord(error) && error.code === 'ENOENT') {
+      try {
+        const descriptor = openSync(path, 'wx', 0o600);
+        closeSync(descriptor);
+      } catch {
+        throw new PersistenceError('The local database file could not be created safely.', 'database-error');
+      }
+      return;
+    }
+    throw new PersistenceError('The local database file could not be checked safely.', 'database-error');
+  }
+}
+
+function migrate(database: DatabaseSync): void {
+  const versionRow = database.prepare('PRAGMA user_version').get();
+  const version = isRecord(versionRow) ? versionRow.user_version : undefined;
+  if (typeof version !== 'number' || version > 1) {
+    throw new PersistenceError('The local database version is not supported.', 'database-error');
+  }
+  if (version === 1) return;
+
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE session_messages (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        message_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, ordinal)
+      ) STRICT;
+
+      CREATE TABLE memories (
+        id TEXT PRIMARY KEY NOT NULL,
+        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND ${maximumMemoryChars}),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE audit_events (
+        sequence INTEGER PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        event_name TEXT NOT NULL,
+        task_id TEXT,
+        run_id TEXT,
+        details_json TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX sessions_updated_at ON sessions(updated_at DESC);
+      CREATE INDEX audit_events_occurred_at ON audit_events(occurred_at DESC);
+      PRAGMA user_version = 1;
+    `);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    if (error instanceof PersistenceError) throw error;
+    throw new PersistenceError('The local database migration failed safely.', 'database-error');
+  }
+}
+
+export function defaultDataDirectory(): string {
+  return join(homedir(), 'Library', 'Application Support', 'Vyomara');
+}
+
+export class SqliteStore {
+  readonly directory: string;
+  readonly databasePath: string;
+  readonly #database: DatabaseSync;
+  #closed = false;
+
+  constructor(dataDirectory = defaultDataDirectory()) {
+    this.directory = safeDirectory(dataDirectory);
+    this.databasePath = join(this.directory, 'vyomara.sqlite');
+    prepareDatabaseFile(this.databasePath);
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(this.databasePath, {
+        enableForeignKeyConstraints: true,
+        enableDoubleQuotedStringLiterals: false,
+      });
+      chmodSync(this.databasePath, 0o600);
+      database.exec('PRAGMA foreign_keys = ON; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;');
+      migrate(database);
+    } catch (error) {
+      database?.close();
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError(
+        'The local database could not be opened or migrated safely. Existing data was not replaced.',
+        'database-error',
+      );
+    }
+    if (!database) {
+      throw new PersistenceError('The local database could not be opened safely.', 'database-error');
+    }
+    this.#database = database;
+  }
+
+  createSession(): Session {
+    this.assertOpen();
+    return new Session();
+  }
+
+  getSession(id: string): Session {
+    this.assertOpen();
+    assertUuid(id);
+    const exists = this.#database.prepare('SELECT id FROM sessions WHERE id = ?').get(id);
+    if (!exists) throw new PersistenceError('The requested session was not found.', 'not-found');
+    const size = this.#database.prepare(`
+      SELECT COUNT(*) AS message_count,
+             COALESCE(SUM(length(CAST(message_json AS BLOB))), 0) AS total_bytes
+      FROM session_messages
+      WHERE session_id = ?
+    `).get(id);
+    if (!isRecord(size) ||
+      typeof size.message_count !== 'number' ||
+      typeof size.total_bytes !== 'number' ||
+      size.message_count > maximumSessionMessages ||
+      size.total_bytes > maximumSessionBytes) {
+      throw new PersistenceError(
+        'Stored session history exceeds the supported size limit and was not loaded.',
+        'invalid-data',
+      );
+    }
+    const rows = this.#database.prepare(
+      'SELECT message_json FROM session_messages WHERE session_id = ? ORDER BY ordinal',
+    ).all(id);
+    const messages = rows.map(row => {
+      if (!isRecord(row) || typeof row.message_json !== 'string') {
+        throw new PersistenceError('Stored session data is invalid and was not changed.', 'invalid-data');
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.message_json);
+      } catch {
+        throw new PersistenceError('Stored session data is invalid and was not changed.', 'invalid-data');
+      }
+      if (!validSessionMessage(parsed)) {
+        throw new PersistenceError('Stored session data is invalid and was not changed.', 'invalid-data');
+      }
+      return parsed;
+    });
+    return new Session(id, messages);
+  }
+
+  saveSession(session: Session): void {
+    this.assertOpen();
+    assertUuid(session.id);
+    const now = new Date().toISOString();
+    const messages = session.messages();
+    let serializedMessages: string[];
+    try {
+      serializedMessages = messages.map(message => JSON.stringify(message));
+    } catch {
+      throw new PersistenceError('Session history contains data that cannot be stored safely.', 'invalid-data');
+    }
+    if (
+      serializedMessages.length > maximumSessionMessages ||
+      serializedMessages.reduce((total, message) => total + Buffer.byteLength(message), 0) > maximumSessionBytes
+    ) {
+      throw new PersistenceError(
+        `Session history exceeded the limit of ${maximumSessionMessages} messages or ${maximumSessionBytes} bytes. Start a new session.`,
+        'invalid-data',
+      );
+    }
+    this.#database.exec('BEGIN IMMEDIATE');
+    try {
+      this.#database.prepare(
+        `INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+      ).run(session.id, now, now);
+      this.#database.prepare('DELETE FROM session_messages WHERE session_id = ?').run(session.id);
+      const insert = this.#database.prepare(
+        'INSERT INTO session_messages (session_id, ordinal, message_json) VALUES (?, ?, ?)',
+      );
+      serializedMessages.forEach((message, ordinal) => {
+        insert.run(session.id, ordinal, message);
+      });
+      this.#database.exec('COMMIT');
+    } catch {
+      this.#database.exec('ROLLBACK');
+      throw new PersistenceError('Session history could not be saved safely.', 'database-error');
+    }
+  }
+
+  listSessions(): readonly StoredSessionSummary[] {
+    this.assertOpen();
+    return this.#database.prepare(`
+      SELECT s.id, s.created_at, s.updated_at, COUNT(m.ordinal) AS message_count
+      FROM sessions AS s
+      LEFT JOIN session_messages AS m ON m.session_id = s.id
+      GROUP BY s.id
+      ORDER BY s.updated_at DESC, s.id
+    `).all().map(row => {
+      if (!isRecord(row) ||
+        typeof row.id !== 'string' ||
+        typeof row.created_at !== 'string' ||
+        typeof row.updated_at !== 'string' ||
+        typeof row.message_count !== 'number') {
+        throw new PersistenceError('Stored session index is invalid.', 'invalid-data');
+      }
+      return {
+        id: row.id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        messageCount: row.message_count,
+      };
+    });
+  }
+
+  deleteSession(id: string): boolean {
+    this.assertOpen();
+    assertUuid(id);
+    return this.#database.prepare('DELETE FROM sessions WHERE id = ?').run(id).changes > 0;
+  }
+
+  saveMemory(content: string): string {
+    this.assertOpen();
+    if (content.trim() === '' || content.length > maximumMemoryChars) {
+      throw new PersistenceError(
+        `Memory must contain between 1 and ${maximumMemoryChars} characters.`,
+        'invalid-data',
+      );
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.#database.prepare(
+      'INSERT INTO memories (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    ).run(id, content, now, now);
+    return id;
+  }
+
+  listMemories(): readonly StoredMemorySummary[] {
+    this.assertOpen();
+    return this.#database.prepare(
+      'SELECT id, created_at, updated_at FROM memories ORDER BY created_at DESC, id',
+    ).all().map(row => {
+      if (!isRecord(row) ||
+        typeof row.id !== 'string' ||
+        typeof row.created_at !== 'string' ||
+        typeof row.updated_at !== 'string') {
+        throw new PersistenceError('Stored memory index is invalid.', 'invalid-data');
+      }
+      return { id: row.id, createdAt: row.created_at, updatedAt: row.updated_at };
+    });
+  }
+
+  getMemory(id: string): string {
+    this.assertOpen();
+    assertUuid(id);
+    const row = this.#database.prepare('SELECT content FROM memories WHERE id = ?').get(id);
+    if (!isRecord(row) || typeof row.content !== 'string') {
+      throw new PersistenceError('The requested memory was not found.', 'not-found');
+    }
+    return row.content;
+  }
+
+  deleteMemory(id: string): boolean {
+    this.assertOpen();
+    assertUuid(id);
+    return this.#database.prepare('DELETE FROM memories WHERE id = ?').run(id).changes > 0;
+  }
+
+  appendAuditEvent(event: DiagnosticEvent): void {
+    this.assertOpen();
+    const record = event as DiagnosticEvent & { readonly taskId?: string; readonly runId?: string };
+    const now = new Date().toISOString();
+    this.#database.prepare(`
+      INSERT INTO audit_events (occurred_at, event_name, task_id, run_id, details_json)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      now,
+      event.event,
+      record.taskId ?? null,
+      record.runId ?? null,
+      JSON.stringify(event),
+    );
+    this.#database.prepare(`
+      DELETE FROM audit_events
+      WHERE sequence <= COALESCE(
+        (SELECT sequence FROM audit_events ORDER BY sequence DESC LIMIT 1 OFFSET ?),
+        0
+      )
+    `).run(maximumAuditEvents);
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#database.close();
+    this.#closed = true;
+  }
+
+  private assertOpen(): void {
+    if (this.#closed) throw new PersistenceError('The local database is closed.', 'database-error');
+  }
+}

@@ -1,0 +1,196 @@
+import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { loadConfig } from '../src/config/config.ts';
+import { PersistenceError, SqliteStore } from '../src/storage/sqlite-store.ts';
+
+function temporaryDirectory(): string {
+  return mkdtempSync(join(tmpdir(), 'vyomara-storage-'));
+}
+
+test('SQLite storage applies owner-only permissions and idempotent migrations', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'private-data');
+  const store = new SqliteStore(dataDirectory);
+  assert.equal(statSync(dataDirectory).mode & 0o777, 0o700);
+  assert.equal(statSync(store.databasePath).mode & 0o777, 0o600);
+  store.close();
+
+  const reopened = new SqliteStore(dataDirectory);
+  assert.equal(statSync(reopened.databasePath).mode & 0o777, 0o600);
+  reopened.close();
+});
+
+test('existing shared data directories are rejected without changing their permissions', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const sharedDirectory = join(root, 'shared');
+  mkdirSync(sharedDirectory, { mode: 0o755 });
+  chmodSync(sharedDirectory, 0o755);
+
+  assert.throws(() => new SqliteStore(sharedDirectory), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-path');
+  assert.equal(statSync(sharedDirectory).mode & 0o777, 0o755);
+});
+
+test('session history survives reopening, stays isolated, and cascades on deletion', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const first = store.createSession();
+  first.add({ role: 'user', content: 'first session prompt' });
+  first.add({
+    role: 'assistant',
+    kind: 'tool-call',
+    content: '',
+    toolCalls: [{ toolId: 'filesystem.read-file', arguments: { path: '/private/file.txt' } }],
+  });
+  first.add({ role: 'tool', toolId: 'filesystem.read-file', content: '{"content":"private fixture"}' });
+  first.add({ role: 'assistant', content: 'private fixture' });
+  const second = store.createSession();
+  second.add({ role: 'user', content: 'second session prompt' });
+  store.saveSession(first);
+  store.saveSession(second);
+
+  const summaries = store.listSessions();
+  assert.equal(summaries.length, 2);
+  assert.ok(summaries.every(summary => summary.messageCount > 0));
+  assert.deepEqual(store.getSession(first.id).messages(), first.messages());
+  assert.deepEqual(store.getSession(second.id).messages(), second.messages());
+  assert.equal(store.deleteSession(first.id), true);
+  assert.equal(store.deleteSession(first.id), false);
+  assert.deepEqual(store.listSessions().map(summary => summary.id), [second.id]);
+  store.close();
+
+  const reopened = new SqliteStore(root);
+  assert.throws(() => reopened.getSession(first.id), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'not-found');
+  assert.deepEqual(reopened.getSession(second.id).messages(), second.messages());
+  reopened.close();
+});
+
+test('session history enforces a bounded message count without replacing saved data', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'first saved turn' });
+  store.saveSession(session);
+  for (let index = 0; index < 1_000; index++) {
+    session.add({ role: 'assistant', content: 'bounded fixture' });
+  }
+  assert.throws(() => store.saveSession(session), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  assert.deepEqual(store.getSession(session.id).messages(), [
+    { role: 'user', content: 'first saved turn' },
+  ]);
+  store.close();
+});
+
+test('explicit memory is separate, inspectable, and deletable', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'Remember this only when explicitly saved.' });
+  store.saveSession(session);
+  assert.deepEqual(store.listMemories(), []);
+
+  const content = 'User-approved memory content';
+  const id = store.saveMemory(content);
+  assert.equal(store.listMemories().length, 1);
+  assert.equal(store.getMemory(id), content);
+  assert.equal(store.deleteMemory(id), true);
+  assert.equal(store.deleteMemory(id), false);
+  assert.deepEqual(store.listMemories(), []);
+  store.close();
+});
+
+test('stored messages are structurally validated and corruption is not discarded', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'keep this record' });
+  store.saveSession(session);
+  store.close();
+
+  const database = new DatabaseSync(join(root, 'vyomara.sqlite'));
+  database.prepare(
+    'UPDATE session_messages SET message_json = ? WHERE session_id = ?',
+  ).run('{"role":"user","content":"tampered","unexpected":true}', session.id);
+  database.close();
+
+  const reopened = new SqliteStore(root);
+  assert.throws(() => reopened.getSession(session.id), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  assert.equal(reopened.listSessions().length, 1);
+  reopened.close();
+});
+
+test('corrupt database fails visibly and is not overwritten', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'vyomara.sqlite');
+  writeFileSync(path, 'not a sqlite database');
+  chmodSync(path, 0o600);
+
+  assert.throws(() => new SqliteStore(root), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'database-error');
+  assert.equal(readFileSync(path, 'utf8'), 'not a sqlite database');
+});
+
+test('memory and session identifiers and memory size are validated', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  assert.throws(() => store.getSession('../invalid'), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  assert.throws(() => store.getMemory('not-an-id'), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  assert.throws(() => store.saveMemory('   '), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  assert.throws(() => store.saveMemory('x'.repeat(32_001)), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'invalid-data');
+  store.close();
+});
+
+test('audit events are persisted as metadata without conversation payloads', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  store.appendAuditEvent({
+    event: 'tool.completed',
+    taskId: 'task-id-fixture',
+    runId: 'run-id-fixture',
+    toolCallId: 'call-id-fixture',
+    attempt: 1,
+    toolId: 'filesystem.read-file',
+    durationMs: 12,
+    outputChars: 45,
+  });
+  store.close();
+
+  const database = new DatabaseSync(join(root, 'vyomara.sqlite'));
+  const row = database.prepare('SELECT * FROM audit_events').get();
+  database.close();
+  assert.ok(row);
+  assert.equal(JSON.stringify(row).includes('private file content'), false);
+  assert.equal(JSON.stringify(row).includes('file path fixture'), false);
+});
+
+test('VYOM_DATA_DIR is absolute and defaults under macOS Application Support', () => {
+  assert.match(loadConfig({ VYOM_PROVIDER: 'placeholder' }).dataDirectory, /Library\/Application Support\/Vyomara$/);
+  assert.equal(
+    loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_DATA_DIR: '/tmp/vyom-test-data' }).dataDirectory,
+    '/tmp/vyom-test-data',
+  );
+  assert.throws(
+    () => loadConfig({ VYOM_DATA_DIR: 'relative/path' }),
+    /VYOM_DATA_DIR must be an absolute local directory path/,
+  );
+});

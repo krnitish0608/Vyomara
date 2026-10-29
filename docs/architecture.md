@@ -3,9 +3,11 @@
 ## Status
 
 This architecture blueprint was created in Phase 3 and is updated selectively
-to reflect implementation status. As of Phases 1–7.1, the CLI, Ollama adapter,
-request-scoped in-memory session, tool registry/executor/policy gateway, and
-read-only filesystem tools are implemented. The diagram and component
+to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
+adapter, tool registry/executor/policy gateway, and read-only filesystem
+tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 is
+integrating local session history and explicitly managed memory through
+SQLite. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -52,9 +54,10 @@ flowchart TD
     Tools --> Audit
 ```
 
-The persistence interface, durable history/memory, and approval interaction
-shown in the diagram are not implemented. Filesystem roots are configured
-through environment variables, not through an approval UI. The current Ollama
+The CLI stores local session history, supports review, continuation, and
+deletion, and offers separate explicitly confirmed memory operations. Memory
+is not currently injected into model context. There is no interactive approval
+UI; filesystem roots are configured through environment variables. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor
 validation and the policy gateway. Invalid arguments receive at most one
@@ -98,6 +101,12 @@ These are logical boundaries within one process, not separate services.
 5. Session outcome and safe diagnostic metadata are recorded. Provider
    failures, timeouts, invalid output, and cancellation produce explicit
    states, never success-shaped fallbacks.
+6. Each request has a task ID and run ID. Structured events distinguish task
+   creation/state transitions, model-requested tools, executor invocation,
+   execution start after validation and policy authorization, validated
+   completion, failure, and bounded correction. Correlation metadata and
+   output size are recorded; prompts, argument values, and tool results are
+   not included in ordinary activity logs.
 
 ### Tool execution
 
@@ -135,20 +144,20 @@ added.
 
 ## History and explicit memory data flow
 
-Session messages and saved memories are distinct data classes, even if a
-future implementation stores them in one local persistence engine. The
-current composition creates a temporary in-memory session for each request
-and discards it when the request finishes or fails; session history is not
-persisted. A future session-history implementation should support review and
-deletion under an explicit retention policy. Memory is created only after an
-explicit user request and confirmation of the content; it must support
-inspect, review, and delete. The agent may receive selected relevant memory
-as context, but ordinary conversation context is temporary and is not itself
-durable memory.
+Session messages and saved memories are distinct data classes in one local
+SQLite database. The CLI creates a new session or resumes one by ID. User
+prompts, assistant replies, tool calls, and returned tool data are persisted
+after a run, including failed runs where possible. History may contain private
+filesystem data and is retained until explicit deletion. Memory is stored
+separately and only after explicit confirmation; ordinary conversation is
+never converted automatically. Saved memory is currently inspectable and
+deletable but is not injected into model context.
 
-Persistence technology, encryption, backup/export, retention defaults, and
-deletion guarantees are unresolved. Do not begin durable storage until these
-decisions are made. See [ADR-0005](./adr/0005-persistence.md).
+The accepted [ADR-0005](./adr/0005-persistence.md) selects the built-in Node
+SQLite API, local user-only permissions, retention until explicit deletion,
+and explicit-only memory. The database is not application-encrypted, and
+automatic backup/export is not provided. macOS FileVault is recommended;
+operating-system backups may include the database.
 
 ## Trust boundaries and failure handling
 
@@ -207,10 +216,11 @@ provider-specific behavior inside adapters.
 ## MVP implementation sequence
 
 This is the original planning sequence, not a checklist of pending work.
-Phases 1–7 have implemented the core contracts and validation, policy and
-executor, Ollama adapter, request-scoped agent/session flow, CLI composition,
-and bounded Ollama tool calling for registered read-only tools. Durable
-persistence/memory, user-facing allowed-root management, and end-to-end
+Phases 1–8 implemented the core contracts and validation, policy and executor,
+Ollama adapter, bounded agent/task lifecycle, and read-only tools. Phase 9
+persistence integration provides local SQLite history and separately managed
+explicit memory through CLI commands. User-facing allowed-root management,
+memory context injection, graphical interaction, and broader end-to-end
 evaluation remain future work.
 
 1. **Resolve Proposed choices** affecting public interfaces: runtime/language,
@@ -243,8 +253,6 @@ evaluation follows composition.
 
 The following remain unresolved and are not silently treated as approved:
 
-- Select persistence format, encryption, retention, backup/export, and
-  deletion guarantees (Proposed ADR-0005).
 - Define approval presentation and action scoping before any side-effect
   capability exists (Accepted ADR-0007 records the boundary, not the UX).
 - Decide secret injection if a credential-bearing provider is proposed

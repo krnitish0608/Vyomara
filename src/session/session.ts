@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 export interface SessionToolCall {
   readonly toolId: string;
   readonly arguments: Readonly<Record<string, unknown>>;
@@ -31,6 +33,12 @@ function copyMessage(message: SessionMessage): SessionMessage {
 
 export class Session {
   readonly #messages: SessionMessage[] = [];
+  readonly id: string;
+
+  constructor(id: string = randomUUID(), initialMessages: readonly SessionMessage[] = []) {
+    this.id = id;
+    for (const message of initialMessages) this.add(message);
+  }
 
   add(message: SessionMessage): void {
     this.#messages.push(copyMessage(message));
