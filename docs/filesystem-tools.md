@@ -33,6 +33,14 @@ requested absolute paths.
   Depth 1 lists direct children of the requested directory; deeper values
   include descendants. If a directory at the depth boundary is non-empty,
   `truncated` is true because its children were omitted.
+  Selection uses depth-first traversal with sibling names in lexical order;
+  `maxEntries` is shared across the full tree. Returned entries are sorted by
+  relative path. When there is remaining entry capacity, each directory is
+  scanned to retain its lexically earliest candidates, independent of the
+  filesystem's enumeration order. The scan retains at most the remaining
+  entry budget in memory, and the executor timeout bounds its duration; a
+  very large directory can therefore time out rather than return a partial
+  selection.
 - `filesystem.read-file` accepts UTF-8 text files only. It rejects invalid
   UTF-8, NUL bytes, and disallowed control characters as binary-looking
   content.
@@ -47,7 +55,8 @@ requested absolute paths.
 
 Pass `maxEntries` to a listing or tree request, and `maxDepth` to a tree
 request, only to lower the configured maximum. Entries are selected and
-returned in deterministic name/path order. `truncated` indicates omitted
+returned deterministically: listings use lexical name order, and trees use
+the traversal and final path order described above. `truncated` indicates omitted
 entries due to count, depth, or output limits. Unknown input fields, relative
 paths, negative limits, and values above configured maxima are rejected.
 

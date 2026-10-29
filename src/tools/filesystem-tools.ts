@@ -58,6 +58,22 @@ interface CanonicalRoot {
   readonly canonical: string;
 }
 
+interface DirectoryHandle {
+  read(): Promise<Dirent | null>;
+  close(): Promise<void>;
+}
+
+interface ReadFileHandle {
+  stat(): Promise<Stats>;
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number; buffer: Buffer }>;
+  close(): Promise<void>;
+}
+
+export interface FilesystemToolOperations {
+  readonly openDirectory?: (path: string) => Promise<DirectoryHandle>;
+  readonly openFile?: (path: string, flags: number) => Promise<ReadFileHandle>;
+}
+
 class FilesystemToolError extends Error {
   constructor(message: string) {
     super(message);
@@ -97,7 +113,7 @@ function checkCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new FilesystemToolError('Filesystem operation was cancelled.');
 }
 
-function closeDirectoryOnAbort(directory: Dir, signal: AbortSignal): () => void {
+function closeDirectoryOnAbort(directory: Pick<Dir, 'close'>, signal: AbortSignal): () => void {
   const close = () => {
     void directory.close().catch(() => undefined);
   };
@@ -105,7 +121,7 @@ function closeDirectoryOnAbort(directory: Dir, signal: AbortSignal): () => void 
   return () => signal.removeEventListener('abort', close);
 }
 
-function closeFileOnAbort(file: FileHandle, signal: AbortSignal): () => void {
+function closeFileOnAbort(file: Pick<FileHandle, 'close'>, signal: AbortSignal): () => void {
   const close = () => {
     void file.close().catch(() => undefined);
   };
@@ -249,11 +265,30 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-async function hasDirectoryEntries(path: string, signal: AbortSignal): Promise<boolean> {
+function retainLexicallyFirst<T extends { readonly name: string }>(
+  entries: T[],
+  candidate: T,
+  maximum: number,
+): boolean {
+  if (maximum < 1) return false;
+  const position = entries.findIndex(entry => compareText(entry.name, candidate.name) > 0);
+  entries.splice(position < 0 ? entries.length : position, 0, candidate);
+  if (entries.length > maximum) {
+    entries.pop();
+    return false;
+  }
+  return true;
+}
+
+async function hasDirectoryEntries(
+  path: string,
+  signal: AbortSignal,
+  openDirectory: (path: string) => Promise<DirectoryHandle>,
+): Promise<boolean> {
   let directory;
   let removeAbortListener: (() => void) | undefined;
   try {
-    directory = await opendir(path);
+    directory = await openDirectory(path);
     removeAbortListener = closeDirectoryOnAbort(directory, signal);
     checkCancelled(signal);
     return (await directory.read()) !== null;
@@ -275,6 +310,7 @@ async function listDirectory(
   input: ListInput,
   config: AppConfig,
   signal: AbortSignal,
+  openDirectory: (path: string) => Promise<DirectoryHandle>,
 ): Promise<ListOutput> {
   const roots = await canonicalRoots(config.filesystemAllowedRoots, signal);
   const target = await resolveAllowedPath(input.path, roots, 'directory', signal);
@@ -284,24 +320,15 @@ async function listDirectory(
   let directory;
   let removeAbortListener: (() => void) | undefined;
   try {
-    directory = await opendir(target.target);
+    directory = await openDirectory(target.target);
     removeAbortListener = closeDirectoryOnAbort(directory, signal);
     while (true) {
       checkCancelled(signal);
       const entry = await directory.read();
       if (!entry) break;
       const candidate = { name: entry.name, type: entryType(entry) } satisfies ListedEntry;
-      const position = entries.findIndex(item => compareText(item.name, candidate.name) > 0);
-      const candidateEntries = [...entries];
-      candidateEntries.splice(position < 0 ? candidateEntries.length : position, 0, candidate);
-      if (candidateEntries.length > limit) {
+      if (!retainLexicallyFirst(entries, candidate, limit)) {
         truncated = true;
-        candidateEntries.pop();
-      }
-      if (candidateEntries.length === entries.length && candidateEntries.every((item, index) => item === entries[index])) {
-        truncated = true;
-      } else {
-        entries.splice(0, entries.length, ...candidateEntries);
       }
     }
   } catch (error) {
@@ -327,6 +354,7 @@ async function readFile(
   input: PathInput,
   config: AppConfig,
   signal: AbortSignal,
+  openFile: (path: string, flags: number) => Promise<ReadFileHandle>,
 ): Promise<ReadOutput> {
   const roots = await canonicalRoots(config.filesystemAllowedRoots, signal);
   const target = await resolveAllowedPath(input.path, roots, 'file', signal);
@@ -337,7 +365,7 @@ async function readFile(
   let file;
   let removeAbortListener: (() => void) | undefined;
   try {
-    file = await open(target.target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    file = await openFile(target.target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     removeAbortListener = closeFileOnAbort(file, signal);
     const openedStats = await file.stat();
     if (!openedStats.isFile() || openedStats.dev !== target.stats.dev || openedStats.ino !== target.stats.ino) {
@@ -391,6 +419,7 @@ async function directoryTree(
   input: TreeInput,
   config: AppConfig,
   signal: AbortSignal,
+  openDirectory: (path: string) => Promise<DirectoryHandle>,
 ): Promise<TreeOutput> {
   const roots = await canonicalRoots(config.filesystemAllowedRoots, signal);
   const target = await resolveAllowedPath(input.path, roots, 'directory', signal);
@@ -408,7 +437,7 @@ async function directoryTree(
     let omittedChildren = false;
     let removeAbortListener: (() => void) | undefined;
     try {
-      directory = await opendir(directoryPath);
+      directory = await openDirectory(directoryPath);
       removeAbortListener = closeDirectoryOnAbort(directory, signal);
       while (true) {
         checkCancelled(signal);
@@ -419,12 +448,9 @@ async function directoryTree(
           omittedChildren = true;
           break;
         }
-        const position = children.findIndex(child => compareText(child.name, entry.name) > 0);
-        children.splice(position < 0 ? children.length : position, 0, entry);
-        if (children.length > remaining) {
-          children.pop();
-          omittedChildren = true;
-        }
+        // Scan the whole directory while retaining only the lexically first
+        // candidates that can fit in the remaining global entry budget.
+        if (!retainLexicallyFirst(children, entry, remaining)) omittedChildren = true;
       }
     } catch (error) {
       throw publicFilesystemError(error);
@@ -479,7 +505,7 @@ async function directoryTree(
       if (!safeChild) continue;
       if (depth < maxDepth) {
         await visit(safeChild.target, entryPath, depth + 1);
-      } else if (await hasDirectoryEntries(safeChild.target, signal)) {
+      } else if (await hasDirectoryEntries(safeChild.target, signal, openDirectory)) {
         truncated = true;
       }
     }
@@ -532,7 +558,13 @@ function isReadOutput(value: unknown): value is ReadOutput {
     exactKeys(value, ['content', 'bytes']);
 }
 
-export function registerFilesystemTools(registry: ToolRegistry, config: AppConfig): void {
+export function registerFilesystemTools(
+  registry: ToolRegistry,
+  config: AppConfig,
+  operations: FilesystemToolOperations = {},
+): void {
+  const openDirectory = operations.openDirectory ?? (path => opendir(path));
+  const openFile = operations.openFile ?? ((path, flags) => open(path, flags));
   const listDirectoryTool: Tool<ListInput, ListOutput> = {
     id: 'filesystem.list-directory',
     effect: 'read',
@@ -544,7 +576,7 @@ export function registerFilesystemTools(registry: ToolRegistry, config: AppConfi
     },
     validateOutput: isListOutput,
     run(input, signal) {
-      return listDirectory(input, config, signal);
+      return listDirectory(input, config, signal, openDirectory);
     },
   };
   const readFileTool: Tool<PathInput, ReadOutput> = {
@@ -555,7 +587,7 @@ export function registerFilesystemTools(registry: ToolRegistry, config: AppConfi
     },
     validateOutput: isReadOutput,
     run(input, signal) {
-      return readFile(input, config, signal);
+      return readFile(input, config, signal, openFile);
     },
   };
   const tree: Tool<TreeInput, TreeOutput> = {
@@ -570,7 +602,7 @@ export function registerFilesystemTools(registry: ToolRegistry, config: AppConfi
     },
     validateOutput: isTreeOutput,
     run(input, signal) {
-      return directoryTree(input, config, signal);
+      return directoryTree(input, config, signal, openDirectory);
     },
   };
   registry.register(listDirectoryTool);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, opendir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config/config.ts';
@@ -8,9 +9,14 @@ import { createLogger } from '../src/diagnostics/logger.ts';
 import { ToolRegistry } from '../src/tools/contracts.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
 import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
+import type { FilesystemToolOperations } from '../src/tools/filesystem-tools.ts';
 import { PolicyGateway } from '../src/tools/policy.ts';
 
-async function fixture(t: TestContext, env: Record<string, string> = {}) {
+async function fixture(
+  t: TestContext,
+  env: Record<string, string> = {},
+  operations: FilesystemToolOperations = {},
+) {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-fs-'));
   const root = join(parent, 'allowed');
   t.after(async () => rm(parent, { recursive: true, force: true }));
@@ -21,7 +27,7 @@ async function fixture(t: TestContext, env: Record<string, string> = {}) {
     ...env,
   });
   const registry = new ToolRegistry();
-  registerFilesystemTools(registry, config);
+  registerFilesystemTools(registry, config, operations);
   const logLines: string[] = [];
   const executor = new ToolExecutor({
     registry,
@@ -30,6 +36,21 @@ async function fixture(t: TestContext, env: Record<string, string> = {}) {
     logger: createLogger(line => logLines.push(line)),
   });
   return { parent, root, config, registry, executor, logLines };
+}
+
+function orderedDirectoryOpener(order: 'ascending' | 'descending'): NonNullable<FilesystemToolOperations['openDirectory']> {
+  return async path => {
+    const entries = await readdir(path, { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    if (order === 'descending') entries.reverse();
+    let index = 0;
+    return {
+      async read(): Promise<Dirent | null> {
+        return entries[index++] ?? null;
+      },
+      async close(): Promise<void> {},
+    };
+  };
 }
 
 function execute(
@@ -56,17 +77,22 @@ test('filesystem listing returns bounded structured entries for an allowed direc
   });
 });
 
-test('filesystem listing chooses a deterministic sorted subset when entry-limited', async t => {
-  const { root, executor } = await fixture(t, { VYOM_MAX_DIRECTORY_ENTRIES: '2' });
-  await writeFile(join(root, 'z.txt'), 'z');
-  await writeFile(join(root, 'a.txt'), 'a');
-  await writeFile(join(root, 'm.txt'), 'm');
-
-  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: root }), {
-    entries: [
-      { name: 'a.txt', type: 'file' },
-      { name: 'm.txt', type: 'file' },
-    ],
+test('filesystem listing subset is independent of directory enumeration order', async t => {
+  const outputs = [];
+  for (const order of ['ascending', 'descending'] as const) {
+    const { root, executor } = await fixture(
+      t,
+      { VYOM_MAX_DIRECTORY_ENTRIES: '2' },
+      { openDirectory: orderedDirectoryOpener(order) },
+    );
+    await writeFile(join(root, 'z.txt'), 'z');
+    await writeFile(join(root, 'a.txt'), 'a');
+    await writeFile(join(root, 'm.txt'), 'm');
+    outputs.push(await execute(executor, 'filesystem.list-directory', { path: root }));
+  }
+  assert.deepEqual(outputs[0], outputs[1]);
+  assert.deepEqual(outputs[0], {
+    entries: [{ name: 'a.txt', type: 'file' }, { name: 'm.txt', type: 'file' }],
     truncated: true,
   });
 });
@@ -240,20 +266,54 @@ test('directory tree honors configured depth, entry, and output bounds', async t
   assert.ok(JSON.stringify(list).length <= 200);
 });
 
-test('directory tree selects a deterministic sorted subset when entry-limited', async t => {
-  const { root, executor } = await fixture(t, {
-    VYOM_MAX_DIRECTORY_ENTRIES: '2',
-    VYOM_MAX_TREE_DEPTH: '1',
+test('directory tree subset is independent of enumeration order at a nested entry limit', async t => {
+  const outputs = [];
+  for (const order of ['ascending', 'descending'] as const) {
+    const { root, executor } = await fixture(
+      t,
+      {
+        VYOM_MAX_DIRECTORY_ENTRIES: '4',
+        VYOM_MAX_TREE_DEPTH: '2',
+      },
+      { openDirectory: orderedDirectoryOpener(order) },
+    );
+    await mkdir(join(root, 'a'));
+    await writeFile(join(root, 'a', 'z-child.txt'), 'z');
+    await writeFile(join(root, 'a', 'm-child.txt'), 'm');
+    await writeFile(join(root, 'a', 'b-child.txt'), 'b');
+    await writeFile(join(root, 'a', 'a-child.txt'), 'a');
+    await writeFile(join(root, 'b.txt'), 'b');
+    await writeFile(join(root, 'c.txt'), 'c');
+    outputs.push(await execute(executor, 'filesystem.directory-tree', { path: root }));
+  }
+  assert.deepEqual(outputs[0], outputs[1]);
+  assert.deepEqual(outputs[0], {
+    entries: [
+      { name: 'a', path: 'a', type: 'directory', depth: 1 },
+      { name: 'a-child.txt', path: 'a/a-child.txt', type: 'file', depth: 2 },
+      { name: 'b-child.txt', path: 'a/b-child.txt', type: 'file', depth: 2 },
+      { name: 'm-child.txt', path: 'a/m-child.txt', type: 'file', depth: 2 },
+    ],
+    truncated: true,
   });
-  await mkdir(join(root, 'z'));
+});
+
+test('directory tree enforces maxEntries across nested directories', async t => {
+  const { root, executor } = await fixture(t, {
+    VYOM_MAX_DIRECTORY_ENTRIES: '3',
+    VYOM_MAX_TREE_DEPTH: '3',
+  });
   await mkdir(join(root, 'a'));
-  await mkdir(join(root, 'm'));
+  await writeFile(join(root, 'a', 'first.txt'), 'first');
+  await writeFile(join(root, 'a', 'second.txt'), 'second');
+  await writeFile(join(root, 'b.txt'), 'b');
 
   const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
     entries: Array<{ path: string }>;
     truncated: boolean;
   };
-  assert.deepEqual(tree.entries.map(entry => entry.path), ['a', 'm']);
+  assert.deepEqual(tree.entries.map(entry => entry.path), ['a', 'a/first.txt', 'a/second.txt']);
+  assert.equal(tree.entries.length, 3);
   assert.equal(tree.truncated, true);
 });
 
@@ -283,6 +343,129 @@ test('directory tree does not report truncation for empty directories at the dep
   };
   assert.deepEqual(tree.entries.map(entry => entry.path), ['empty']);
   assert.equal(tree.truncated, false);
+});
+
+test('directory tree output-size truncation stays valid and within the configured limit', async t => {
+  const { root, executor, config } = await fixture(t, {
+    VYOM_MAX_TOOL_OUTPUT_CHARS: '180',
+    VYOM_MAX_DIRECTORY_ENTRIES: '20',
+    VYOM_MAX_TREE_DEPTH: '1',
+  });
+  for (let index = 0; index < 8; index += 1) {
+    await writeFile(join(root, `long-entry-name-${index}.txt`), 'x');
+  }
+
+  const result = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+    entries: Array<{ path: string }>;
+    truncated: boolean;
+  };
+  assert.ok(result.entries.length > 0);
+  assert.equal(result.truncated, true);
+  assert.ok(JSON.stringify(result).length <= config.maxToolOutputChars);
+});
+
+test('filesystem cancellation and read errors close active directory and file handles', async t => {
+  await t.test('directory read error closes its handle', async t => {
+    let closed = false;
+    const { root, executor } = await fixture(t, {}, {
+      openDirectory: async path => {
+        const handle = await opendir(path);
+        return {
+          async read(): Promise<Dirent | null> {
+            throw new Error('injected directory error');
+          },
+          async close(): Promise<void> {
+            closed = true;
+            await handle.close();
+          },
+        };
+      },
+    });
+    await assert.rejects(execute(executor, 'filesystem.directory-tree', { path: root }), /failed safely/);
+    assert.equal(closed, true);
+  });
+
+  await t.test('directory cancellation closes its handle', async t => {
+    let closed = false;
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>(resolve => { markReadStarted = resolve; });
+    const { root, executor } = await fixture(t, {}, {
+      openDirectory: async path => {
+        const handle = await opendir(path);
+        return {
+          read(): Promise<Dirent | null> {
+            markReadStarted();
+            return new Promise<Dirent | null>(() => {});
+          },
+          async close(): Promise<void> {
+            closed = true;
+            await handle.close();
+          },
+        };
+      },
+    });
+    const controller = new AbortController();
+    const pending = executor.execute('filesystem.directory-tree', { path: root }, controller.signal);
+    await readStarted;
+    controller.abort();
+    await assert.rejects(pending, (error: unknown) =>
+      error instanceof ToolExecutionError && error.code === 'cancelled');
+    assert.equal(closed, true);
+  });
+
+  await t.test('file read error closes its handle', async t => {
+    let closed = false;
+    const { root, executor } = await fixture(t, {}, {
+      openFile: async (path, flags) => {
+        const handle = await open(path, flags);
+        return {
+          stat: () => handle.stat(),
+          async read(): Promise<{ bytesRead: number; buffer: Buffer }> {
+            throw new Error('injected file error');
+          },
+          async close(): Promise<void> {
+            closed = true;
+            await handle.close();
+          },
+        };
+      },
+    });
+    const file = join(root, 'read.txt');
+    await writeFile(file, 'contents');
+    await assert.rejects(execute(executor, 'filesystem.read-file', { path: file }), /failed safely/);
+    assert.equal(closed, true);
+  });
+
+  await t.test('file cancellation closes its handle', async t => {
+    let closed = false;
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>(resolve => { markReadStarted = resolve; });
+    const { root, executor } = await fixture(t, {}, {
+      openFile: async (path, flags) => {
+        const handle = await open(path, flags);
+        return {
+          stat: () => handle.stat(),
+          read(): Promise<{ bytesRead: number; buffer: Buffer }> {
+            markReadStarted();
+            return new Promise<{ bytesRead: number; buffer: Buffer }>(() => {});
+          },
+          async close(): Promise<void> {
+            closed = true;
+            await handle.close();
+          },
+        };
+      },
+    });
+    const file = join(root, 'read.txt');
+    await writeFile(file, 'contents');
+    const controller = new AbortController();
+    const pending = executor.execute('filesystem.read-file', { path: file }, controller.signal);
+    await readStarted;
+    controller.abort();
+    await assert.rejects(pending, (error: unknown) =>
+      error instanceof ToolExecutionError && error.code === 'cancelled');
+    assert.equal(closed, true);
+  });
 });
 
 test('filesystem tool inputs reject malformed objects, unknown fields, and unreasonable limits', async t => {
