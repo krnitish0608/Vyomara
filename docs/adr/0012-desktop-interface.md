@@ -22,9 +22,13 @@ remote fonts or send renderer content to a remote service. Ollama requests
 continue through the existing local-only provider configuration.
 
 The first increment provides text chat, configured provider/model status,
-request cancellation, and request-scoped task/tool activity. The status
-explicitly says the provider connection has not been checked until a request
-is made. The CLI remains supported.
+request cancellation, and request-scoped task/tool activity. Provider/model
+configuration is distinct from reachability. A later explicit user action can
+check the configured loopback Ollama `/api/tags` endpoint; it does not run
+automatically or claim that the configured model is installed. The CLI remains
+supported. A native folder picker grants narrowly scoped read-only roots; the
+desktop shows current grants and supports revoking each one. Roots are
+persisted locally.
 
 ## Alternatives considered
 
@@ -39,8 +43,8 @@ is made. The CLI remains supported.
 
 Electron and React add package size and build complexity. They provide a
 replaceable desktop shell while keeping agent, policy, and storage logic in
-the existing Node process. Packaging, project selection, settings, workspace
-permission management, voice, and any side-effect UI remain future work;
+the existing Node process. Packaging, project selection, settings, voice, and
+any side-effect UI remain future work;
 visible planned areas must not be presented as working.
 
 ## Security/privacy implications

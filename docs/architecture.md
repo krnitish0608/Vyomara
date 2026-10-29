@@ -8,7 +8,9 @@ adapter, tool registry/executor/policy gateway, and read-only filesystem
 tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
 local session history and separately managed explicit memory through SQLite.
 Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
-local session-history browser and continuation from the desktop UI. The diagram and component
+local session-history browser and continuation from the desktop UI. Phase 12
+added a local Ollama reachability check and persistent, revocable desktop
+filesystem roots. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -62,9 +64,13 @@ The CLI stores local session history, supports review, continuation, and
 deletion, and offers separate explicitly confirmed memory operations. The
 desktop shell uses the same application service and exposes chat, cancellation,
 provider configuration status, request-scoped activity, and filtered session
-history through a restricted preload bridge. Provider status is not a connection check. Memory is not
-currently injected into model context. There is no interactive approval UI;
-filesystem roots are configured through environment variables. The current Ollama
+history through a restricted preload bridge. Provider configuration status is
+separate from reachability. Memory is not currently injected into model
+context. The desktop can make an explicit, loopback-only Ollama reachability
+check; it does not verify model installation. Allowed filesystem roots are
+selected and revoked through the native folder picker, then persisted in the
+owner-only SQLite database. CLI roots are configured through environment
+variables. There is no interactive approval UI. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor
 validation and the policy gateway. Invalid arguments receive at most one
@@ -80,7 +86,7 @@ not permission to add them now.
 | Component | Responsibility | Must not do |
 |---|---|---|
 | Text interaction adapter | Accept user input; display state, response, errors, and approval requests. | Call a model or tool directly. |
-| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
+| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/filesystem-permission IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
 | Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
 | Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |

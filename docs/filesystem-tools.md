@@ -19,6 +19,12 @@ export VYOM_ALLOWED_ROOTS='["/Users/your-name/Projects"]'
 
 `.env.example` uses `[]`, granting no filesystem access. Vyomara does not
 expand `~`, load `.env` files, or silently grant access to the home directory.
+The Electron app also provides a **Folders** screen for selecting and
+revoking roots through the native directory picker. Those grants are persisted
+in the owner-only local database and take effect on the next request.
+`VYOM_ALLOWED_ROOTS` seeds that list the first time the desktop database is
+initialized; after that, the Folders screen is authoritative for desktop
+permissions. The CLI continues to use `VYOM_ALLOWED_ROOTS` directly.
 At operation time it canonicalizes each root, rejects paths outside those
 roots, requires requested paths to be absolute, and rejects `..` path
 components. Error messages and diagnostics do not include configured roots or

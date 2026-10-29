@@ -47,8 +47,11 @@ and invalid arguments can receive one bounded correction attempt. The original
 validation remains authoritative; each correction is revalidated by the same
 executor and policy gateway. A structured tool error is returned to the model,
 and a failed correction stops the request with a clear error. Filesystem
-tools require explicit `VYOM_ALLOWED_ROOTS`; the default `[]` grants no
-filesystem access. A file read result is sent to the configured local Ollama
+tools require explicitly allowed roots; the default `[]` grants no filesystem
+access. The desktop can select and revoke roots through its Folders panel,
+persisting those choices locally. `VYOM_ALLOWED_ROOTS` seeds desktop
+permissions only when its local permission list is first initialized; the CLI
+continues to read this environment variable directly. A file read result is sent to the configured local Ollama
 service as conversation context, so allow only roots whose contents you are
 willing to provide to that local model.
 

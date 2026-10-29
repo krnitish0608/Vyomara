@@ -1,10 +1,24 @@
 import type { DesktopChatRequest } from './contracts.ts';
+import { isAbsolute } from 'node:path';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function parseDesktopSessionId(value: unknown): string {
   if (typeof value !== 'string' || !uuidPattern.test(value)) {
     throw new Error('Session request is invalid.');
+  }
+  return value;
+}
+
+export function parseDesktopFilesystemRoot(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !isAbsolute(value) ||
+    value.trim() !== value ||
+    value.includes('\0') ||
+    value.length > 4_096
+  ) {
+    throw new Error('Filesystem permission request is invalid.');
   }
   return value;
 }

@@ -1,3 +1,5 @@
+import { realpath, stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { runAgent } from '../agent/agent.ts';
@@ -16,6 +18,52 @@ import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
 export interface RequestResult {
   readonly response: string;
   readonly sessionId: string;
+}
+
+export function initializeDesktopFilesystemRoots(config: AppConfig): AppConfig {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return { ...config, filesystemAllowedRoots: store.initializeFilesystemRoots(config.filesystemAllowedRoots) };
+  } finally {
+    store.close();
+  }
+}
+
+export async function grantDesktopFilesystemRoot(config: AppConfig, selectedPath: string): Promise<AppConfig> {
+  if (
+    !isAbsolute(selectedPath) ||
+    selectedPath.trim() !== selectedPath ||
+    selectedPath.includes('\0') ||
+    selectedPath.length > 4_096
+  ) {
+    throw new Error('The selected folder path is invalid.');
+  }
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(selectedPath);
+    if (!(await stat(canonicalPath)).isDirectory()) {
+      throw new Error('The selected item is not a folder.');
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'The selected item is not a folder.') throw error;
+    throw new Error('The selected folder is unavailable or cannot be accessed.');
+  }
+
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return { ...config, filesystemAllowedRoots: store.addFilesystemRoot(canonicalPath) };
+  } finally {
+    store.close();
+  }
+}
+
+export function revokeDesktopFilesystemRoot(config: AppConfig, root: string): AppConfig {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return { ...config, filesystemAllowedRoots: store.removeFilesystemRoot(root) };
+  } finally {
+    store.close();
+  }
 }
 
 export function readDesktopSessions(config: AppConfig): readonly DesktopSessionSummary[] {

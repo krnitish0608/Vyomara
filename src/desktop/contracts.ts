@@ -16,6 +16,10 @@ export interface DesktopProviderStatus {
   readonly connection: 'not-checked';
 }
 
+export type DesktopProviderConnectionResult =
+  | { readonly status: 'available' }
+  | { readonly status: 'unavailable'; readonly message: string };
+
 export interface DesktopSessionSummary {
   readonly id: string;
   readonly createdAt: string;
@@ -33,11 +37,19 @@ export interface DesktopSessionHistory {
   readonly messages: readonly DesktopConversationMessage[];
 }
 
+export type DesktopFilesystemRootGrant =
+  | { readonly status: 'cancelled'; readonly roots: readonly string[] }
+  | { readonly status: 'granted'; readonly roots: readonly string[] };
+
 export interface VyomaraDesktopApi {
   getProviderStatus(): Promise<DesktopProviderStatus>;
+  checkProviderConnection(): Promise<DesktopProviderConnectionResult>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;
+  listFilesystemRoots(): Promise<readonly string[]>;
+  grantFilesystemRoot(): Promise<DesktopFilesystemRootGrant>;
+  revokeFilesystemRoot(root: string): Promise<readonly string[]>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
 }

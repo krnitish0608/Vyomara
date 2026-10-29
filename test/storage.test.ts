@@ -73,6 +73,82 @@ test('session history survives reopening, stays isolated, and cascades on deleti
   reopened.close();
 });
 
+test('filesystem roots initialize from config once and persist grants and revocations', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const initialRoots = [join(root, 'configured')];
+  assert.deepEqual(store.initializeFilesystemRoots(initialRoots), initialRoots);
+  assert.deepEqual(store.addFilesystemRoot(join(root, 'selected')), [
+    join(root, 'configured'),
+    join(root, 'selected'),
+  ]);
+  assert.deepEqual(store.removeFilesystemRoot(join(root, 'configured')), [join(root, 'selected')]);
+  store.close();
+
+  const reopened = new SqliteStore(root);
+  assert.deepEqual(reopened.initializeFilesystemRoots([join(root, 'new-env-root')]), [
+    join(root, 'selected'),
+  ]);
+  assert.deepEqual(reopened.removeFilesystemRoot(join(root, 'selected')), []);
+  reopened.close();
+
+  const afterRevoke = new SqliteStore(root);
+  assert.deepEqual(afterRevoke.initializeFilesystemRoots(initialRoots), []);
+  afterRevoke.close();
+});
+
+test('version 1 databases migrate filesystem permission tables without losing sessions', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'preserve this history' });
+  store.saveSession(session);
+  store.close();
+
+  const database = new DatabaseSync(join(root, 'vyomara.sqlite'));
+  database.exec(`
+    DROP TABLE filesystem_roots;
+    DROP TABLE app_settings;
+    PRAGMA user_version = 1;
+  `);
+  database.close();
+
+  const migrated = new SqliteStore(root);
+  assert.deepEqual(migrated.getSession(session.id).messages(), [
+    { role: 'user', content: 'preserve this history' },
+  ]);
+  assert.deepEqual(migrated.initializeFilesystemRoots([join(root, 'allowed')]), [
+    join(root, 'allowed'),
+  ]);
+  migrated.close();
+});
+
+test('unsupported negative database versions fail without replacing stored data', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'keep existing history' });
+  store.saveSession(session);
+  store.close();
+
+  const database = new DatabaseSync(join(root, 'vyomara.sqlite'));
+  database.exec('PRAGMA user_version = -1');
+  database.close();
+
+  assert.throws(() => new SqliteStore(root), (error: unknown) =>
+    error instanceof PersistenceError && error.code === 'database-error');
+  const unchanged = new DatabaseSync(join(root, 'vyomara.sqlite'), { readOnly: true });
+  assert.equal(unchanged.prepare('PRAGMA user_version').get()?.user_version, -1);
+  assert.equal(
+    unchanged.prepare('SELECT message_json FROM session_messages WHERE session_id = ?').get(session.id)?.message_json,
+    JSON.stringify({ role: 'user', content: 'keep existing history' }),
+  );
+  unchanged.close();
+});
+
 test('session history enforces a bounded message count without replacing saved data', t => {
   const root = temporaryDirectory();
   t.after(() => rmSync(root, { recursive: true, force: true }));

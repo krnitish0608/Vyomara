@@ -12,6 +12,8 @@ const maximumMemoryChars = 32_000;
 const maximumAuditEvents = 10_000;
 const maximumSessionMessages = 1_000;
 const maximumSessionBytes = 8 * 1024 * 1024;
+const maximumFilesystemRoots = 32;
+const maximumFilesystemRootChars = 4_096;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class PersistenceError extends Error {
@@ -142,52 +144,76 @@ function prepareDatabaseFile(path: string): void {
 function migrate(database: DatabaseSync): void {
   const versionRow = database.prepare('PRAGMA user_version').get();
   const version = isRecord(versionRow) ? versionRow.user_version : undefined;
-  if (typeof version !== 'number' || version > 1) {
+  if (typeof version !== 'number' || version < 0 || version > 2) {
     throw new PersistenceError('The local database version is not supported.', 'database-error');
   }
-  if (version === 1) return;
 
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    database.exec(`
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      ) STRICT;
+  if (version === 0) {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        ) STRICT;
 
-      CREATE TABLE session_messages (
-        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-        message_json TEXT NOT NULL,
-        PRIMARY KEY (session_id, ordinal)
-      ) STRICT;
+        CREATE TABLE session_messages (
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+          message_json TEXT NOT NULL,
+          PRIMARY KEY (session_id, ordinal)
+        ) STRICT;
 
-      CREATE TABLE memories (
-        id TEXT PRIMARY KEY NOT NULL,
-        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND ${maximumMemoryChars}),
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      ) STRICT;
+        CREATE TABLE memories (
+          id TEXT PRIMARY KEY NOT NULL,
+          content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND ${maximumMemoryChars}),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        ) STRICT;
 
-      CREATE TABLE audit_events (
-        sequence INTEGER PRIMARY KEY,
-        occurred_at TEXT NOT NULL,
-        event_name TEXT NOT NULL,
-        task_id TEXT,
-        run_id TEXT,
-        details_json TEXT NOT NULL
-      ) STRICT;
+        CREATE TABLE audit_events (
+          sequence INTEGER PRIMARY KEY,
+          occurred_at TEXT NOT NULL,
+          event_name TEXT NOT NULL,
+          task_id TEXT,
+          run_id TEXT,
+          details_json TEXT NOT NULL
+        ) STRICT;
 
-      CREATE INDEX sessions_updated_at ON sessions(updated_at DESC);
-      CREATE INDEX audit_events_occurred_at ON audit_events(occurred_at DESC);
-      PRAGMA user_version = 1;
-    `);
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    if (error instanceof PersistenceError) throw error;
-    throw new PersistenceError('The local database migration failed safely.', 'database-error');
+        CREATE INDEX sessions_updated_at ON sessions(updated_at DESC);
+        CREATE INDEX audit_events_occurred_at ON audit_events(occurred_at DESC);
+        PRAGMA user_version = 1;
+      `);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('The local database migration failed safely.', 'database-error');
+    }
+  }
+
+  if (version < 2) {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        CREATE TABLE filesystem_roots (
+          path TEXT PRIMARY KEY NOT NULL CHECK (length(path) BETWEEN 1 AND ${maximumFilesystemRootChars})
+        ) STRICT;
+
+        CREATE TABLE app_settings (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
+        ) STRICT;
+
+        PRAGMA user_version = 2;
+      `);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('The local database migration failed safely.', 'database-error');
+    }
   }
 }
 
@@ -340,6 +366,73 @@ export class SqliteStore {
     });
   }
 
+  initializeFilesystemRoots(defaultRoots: readonly string[]): readonly string[] {
+    this.assertOpen();
+    if (defaultRoots.length > maximumFilesystemRoots || defaultRoots.some(root => !this.validFilesystemRoot(root))) {
+      throw new PersistenceError('Configured filesystem roots are invalid.', 'invalid-data');
+    }
+    this.#database.exec('BEGIN IMMEDIATE');
+    try {
+      const initialized = this.#database.prepare(
+        'SELECT value FROM app_settings WHERE key = ?',
+      ).get('filesystem-roots-initialized');
+      if (initialized && (!isRecord(initialized) || initialized.value !== 'true')) {
+        throw new PersistenceError('Stored filesystem permission state is invalid.', 'invalid-data');
+      }
+      if (!initialized) {
+        const insert = this.#database.prepare('INSERT OR IGNORE INTO filesystem_roots (path) VALUES (?)');
+        for (const root of defaultRoots) insert.run(root);
+        this.#database.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)').run(
+          'filesystem-roots-initialized',
+          'true',
+        );
+      }
+      this.#database.exec('COMMIT');
+    } catch (error) {
+      this.#database.exec('ROLLBACK');
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('Filesystem permissions could not be initialized safely.', 'database-error');
+    }
+    return this.listFilesystemRoots();
+  }
+
+  listFilesystemRoots(): readonly string[] {
+    this.assertOpen();
+    return this.#database.prepare('SELECT path FROM filesystem_roots ORDER BY path').all().map(row => {
+      if (!isRecord(row) || typeof row.path !== 'string' || !this.validFilesystemRoot(row.path)) {
+        throw new PersistenceError('Stored filesystem permissions are invalid.', 'invalid-data');
+      }
+      return row.path;
+    });
+  }
+
+  addFilesystemRoot(path: string): readonly string[] {
+    this.assertOpen();
+    if (!this.validFilesystemRoot(path)) {
+      throw new PersistenceError('The selected filesystem root is invalid.', 'invalid-data');
+    }
+    const existing = this.listFilesystemRoots();
+    if (existing.includes(path)) return existing;
+    if (existing.length >= maximumFilesystemRoots) {
+      throw new PersistenceError(`At most ${maximumFilesystemRoots} filesystem roots can be allowed.`, 'invalid-data');
+    }
+    try {
+      this.#database.prepare('INSERT INTO filesystem_roots (path) VALUES (?)').run(path);
+    } catch {
+      throw new PersistenceError('The selected filesystem root could not be saved.', 'database-error');
+    }
+    return this.listFilesystemRoots();
+  }
+
+  removeFilesystemRoot(path: string): readonly string[] {
+    this.assertOpen();
+    if (!this.validFilesystemRoot(path)) {
+      throw new PersistenceError('The requested filesystem root is invalid.', 'invalid-data');
+    }
+    this.#database.prepare('DELETE FROM filesystem_roots WHERE path = ?').run(path);
+    return this.listFilesystemRoots();
+  }
+
   deleteSession(id: string): boolean {
     this.assertOpen();
     assertUuid(id);
@@ -424,5 +517,13 @@ export class SqliteStore {
 
   private assertOpen(): void {
     if (this.#closed) throw new PersistenceError('The local database is closed.', 'database-error');
+  }
+
+  private validFilesystemRoot(path: string): boolean {
+    return path.length > 0 &&
+      path.length <= maximumFilesystemRootChars &&
+      path.trim() === path &&
+      !path.includes('\0') &&
+      isAbsolute(path);
   }
 }

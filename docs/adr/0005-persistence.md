@@ -13,7 +13,9 @@ loss behavior.
 
 Keep session history and explicit memory logically separate. Use Node's
 built-in `node:sqlite` `DatabaseSync` API with a versioned schema and
-migrations; this avoids a native package dependency and is available on the
+migrations. Schema version 2 also stores selected desktop filesystem roots so
+grants and revocations persist across restarts. This avoids a native package
+dependency and is available on the
 declared Node.js `>=22.22.1` baseline. The API is experimental in this Node
 line, so pin the documented runtime baseline and keep storage behind an
 interface that can be replaced if compatibility changes.
@@ -65,7 +67,8 @@ it or discard records.
 ## Implementation implications for Phase 4
 
 The Phase 4 skeleton kept temporary session messages in process memory. Phase
-9 adds local session history and separately managed explicit memory. Test
+9 adds local session history and separately managed explicit memory. Phase 12
+adds persistent desktop filesystem-root permissions. Test
 inspect/review/delete paths, migration, restart persistence, session isolation,
 permissions, and corruption handling. Do not claim application-level
 encryption or automatic backup.

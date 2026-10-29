@@ -6,6 +6,9 @@ const api: VyomaraDesktopApi = {
   getProviderStatus() {
     return ipcRenderer.invoke('vyomara:provider-status');
   },
+  checkProviderConnection() {
+    return ipcRenderer.invoke('vyomara:provider-check');
+  },
   sendMessage(request: DesktopChatRequest) {
     return ipcRenderer.invoke('vyomara:chat-send', request);
   },
@@ -17,6 +20,15 @@ const api: VyomaraDesktopApi = {
   },
   loadSession(sessionId: string) {
     return ipcRenderer.invoke('vyomara:session-load', sessionId);
+  },
+  listFilesystemRoots() {
+    return ipcRenderer.invoke('vyomara:filesystem-roots-list');
+  },
+  grantFilesystemRoot() {
+    return ipcRenderer.invoke('vyomara:filesystem-root-grant');
+  },
+  revokeFilesystemRoot(root: string) {
+    return ipcRenderer.invoke('vyomara:filesystem-root-revoke', root);
   },
   onActivity(listener: (event: DiagnosticEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, activity: DiagnosticEvent): void => {

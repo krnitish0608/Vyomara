@@ -1,18 +1,31 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import type { OpenDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { AgentError } from '../agent/agent.ts';
-import { readDesktopSession, readDesktopSessions, runRequest } from '../app/application.ts';
+import {
+  grantDesktopFilesystemRoot,
+  initializeDesktopFilesystemRoots,
+  readDesktopSession,
+  readDesktopSessions,
+  revokeDesktopFilesystemRoot,
+  runRequest,
+} from '../app/application.ts';
 import { loadConfig } from '../config/config.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
-import { ProviderError } from '../providers/provider.ts';
+import { OllamaProvider, ProviderError } from '../providers/provider.ts';
 import { ToolExecutionError } from '../tools/executor.ts';
 import type { Logger } from '../types.ts';
 import type { AppConfig } from '../config/config.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
-import { parseDesktopChatRequest, parseDesktopSessionId } from '../desktop/validation.ts';
+import {
+  parseDesktopChatRequest,
+  parseDesktopFilesystemRoot,
+  parseDesktopSessionId,
+} from '../desktop/validation.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
+let activePermissionChange = false;
 let config: AppConfig | undefined;
 
 function publicErrorMessage(error: unknown): string {
@@ -93,9 +106,33 @@ ipcMain.handle('vyomara:provider-status', () => {
   };
 });
 
+ipcMain.handle('vyomara:provider-check', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (config.provider !== 'ollama') {
+    throw new Error('A connection check is only available for the Ollama provider.');
+  }
+
+  try {
+    const provider = new OllamaProvider({
+      baseUrl: config.ollamaBaseUrl,
+      model: config.ollamaModel,
+      maxResponseChars: config.maxResponseChars,
+      maxToolCallArgumentsChars: config.maxToolOutputChars,
+    });
+    await provider.checkConnection();
+    return { status: 'available' as const };
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return { status: 'unavailable' as const, message: error.message };
+    }
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
 ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
   const request = parseDesktopChatRequest(input, config.maxInputChars);
+  if (activePermissionChange) throw new Error('Wait for filesystem permissions to finish changing before starting a request.');
   if (activeRequest) throw new Error('A request is already in progress.');
 
   const controller = new AbortController();
@@ -140,9 +177,54 @@ ipcMain.handle('vyomara:session-load', (_event, input: unknown) => {
   }
 });
 
+ipcMain.handle('vyomara:filesystem-roots-list', () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  return config.filesystemAllowedRoots;
+});
+
+ipcMain.handle('vyomara:filesystem-root-grant', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before changing filesystem access.');
+  }
+  activePermissionChange = true;
+  try {
+    const options: OpenDialogOptions = {
+      title: 'Choose a folder for Vyomara read-only access',
+      buttonLabel: 'Allow read-only access',
+      properties: ['openDirectory'],
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return { status: 'cancelled' as const, roots: config.filesystemAllowedRoots };
+    }
+    config = await grantDesktopFilesystemRoot(config, result.filePaths[0]!);
+    return { status: 'granted' as const, roots: config.filesystemAllowedRoots };
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  } finally {
+    activePermissionChange = false;
+  }
+});
+
+ipcMain.handle('vyomara:filesystem-root-revoke', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before changing filesystem access.');
+  }
+  try {
+    config = revokeDesktopFilesystemRoot(config, parseDesktopFilesystemRoot(input));
+    return config.filesystemAllowedRoots;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
 app.whenReady().then(() => {
   try {
-    config = loadConfig(process.env);
+    config = initializeDesktopFilesystemRoots(loadConfig(process.env));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';
     dialog.showErrorBox('Vyomara configuration error', message);

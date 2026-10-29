@@ -204,6 +204,7 @@ export class OllamaProvider implements ModelProvider {
   private readonly maxToolCallArgumentsChars: number;
   private readonly maxRequestBytes: number;
   private readonly endpoint: URL;
+  private readonly tagsEndpoint: URL;
 
   constructor(options: OllamaProviderOptions) {
     const baseUrl = new URL(options.baseUrl);
@@ -224,10 +225,45 @@ export class OllamaProvider implements ModelProvider {
     this.maxToolCallArgumentsChars = options.maxToolCallArgumentsChars ?? 20_000;
     this.maxRequestBytes = options.maxRequestBytes ?? 1_000_000;
     this.endpoint = new URL(`${baseUrl.origin}${baseUrl.pathname.replace(/\/+$/, '')}/api/chat`);
+    this.tagsEndpoint = new URL(`${baseUrl.origin}${baseUrl.pathname.replace(/\/+$/, '')}/api/tags`);
     this.model = options.model;
   }
 
   private readonly model: string;
+
+  async checkConnection(): Promise<void> {
+    const signal = AbortSignal.timeout(3_000);
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(this.tagsEndpoint, {
+        method: 'GET',
+        redirect: 'error',
+        signal,
+      });
+    } catch {
+      throw new ProviderError('unavailable');
+    }
+
+    if (!response.ok) throw new ProviderError('http-error');
+
+    let body: string;
+    try {
+      body = await readBoundedBody(response, this.maxResponseBytes, signal);
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      throw new ProviderError('unavailable');
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      throw new ProviderError('malformed-response');
+    }
+    if (!isRecord(payload) || !Array.isArray(payload.models)) {
+      throw new ProviderError('malformed-response');
+    }
+  }
 
   async complete(
     messages: readonly SessionMessage[],

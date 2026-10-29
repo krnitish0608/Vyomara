@@ -67,6 +67,40 @@ test('Ollama provider rejects non-loopback, credentialed, and query-bearing endp
   }
 });
 
+test('Ollama connection check queries only the configured loopback tags endpoint', async () => {
+  let requestUrl = '';
+  let requestMethod = '';
+  let redirectMode: RequestInit['redirect'];
+  const fetchImplementation: FetchImplementation = async (input, init) => {
+    requestUrl = String(input);
+    requestMethod = init?.method ?? '';
+    redirectMode = init?.redirect;
+    assert.ok(init?.signal);
+    return jsonResponse({ models: [{ name: 'llama3.2:latest' }] });
+  };
+
+  await provider(fetchImplementation).checkConnection();
+  assert.equal(requestUrl, 'http://127.0.0.1:11434/api/tags');
+  assert.equal(requestMethod, 'GET');
+  assert.equal(redirectMode, 'error');
+});
+
+test('Ollama connection check reports service and malformed-response failures', async () => {
+  const httpFailure = provider(async () => jsonResponse({}, 503));
+  await assert.rejects(httpFailure.checkConnection(), (error: unknown) =>
+    error instanceof ProviderError && error.code === 'http-error');
+
+  const malformedResponse = provider(async () => new Response('not json'));
+  await assert.rejects(malformedResponse.checkConnection(), (error: unknown) =>
+    error instanceof ProviderError && error.code === 'malformed-response');
+
+  const unavailable = provider(async () => {
+    throw new Error('connection refused');
+  });
+  await assert.rejects(unavailable.checkConnection(), (error: unknown) =>
+    error instanceof ProviderError && error.code === 'unavailable');
+});
+
 test('Ollama chat sends a system prompt, configured model, and conversation; returns assistant text', async () => {
   let requestUrl = '';
   let redirectMode: RequestInit['redirect'];

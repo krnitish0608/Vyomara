@@ -8,8 +8,10 @@ name is **Vyom**.
 Initial implementation is in progress. The CLI and early Electron desktop
 shell can use the local Ollama provider or an explicit deterministic
 placeholder. The desktop shell has text chat, request cancellation, and a
-task-activity panel; provider/model information is configuration status only,
-not a live connection check. Requests have correlated
+task-activity panel. Provider/model information is configuration status; an
+optional user-triggered check contacts only the configured local Ollama
+`/api/tags` endpoint and does not verify that the selected model is installed.
+Requests have correlated
 task/run lifecycle events and are stored as local, inspectable sessions. The
 session history includes user prompts, assistant replies, tool calls, and
 returned tool data, which may contain private file contents. Ollama can request
@@ -50,11 +52,16 @@ See [the read-only filesystem tool guide](./docs/filesystem-tools.md).
 
 ## Desktop application
 
-Run the Electron development app with:
+Install the pinned dependencies once, then launch the app:
 
 ```sh
+pnpm install
 pnpm desktop
 ```
+
+By default, the app uses local Ollama. Start Ollama separately; use
+**Check Ollama** in the app to test local service reachability. To run the UI
+without a model provider, use `VYOM_PROVIDER=placeholder pnpm desktop`.
 
 Create a local production build or preview it with:
 
@@ -64,9 +71,10 @@ pnpm preview:desktop
 ```
 
 The app uses the current process environment. Vyomara does not automatically
-load `.env` files. Filesystem tools remain unavailable unless
-`VYOM_ALLOWED_ROOTS` is configured before launching; the desktop UI does not
-yet manage workspace permissions. App signing, `.app`/`.dmg` distribution,
+load `.env` files. Use **Folders** to grant and revoke read-only access to
+specific directories; permissions are stored locally. `VYOM_ALLOWED_ROOTS`
+seeds the desktop permissions on first launch. Filesystem tools remain
+unavailable until a folder is allowed. App signing, `.app`/`.dmg` distribution,
 settings, and voice are not implemented. Saved sessions can be reviewed and
 continued from History; the desktop view displays user and final assistant
 messages, not raw tool calls or tool results.

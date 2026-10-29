@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
+  DesktopProviderConnectionResult,
   DesktopProviderStatus,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
@@ -52,6 +53,8 @@ function activityLabel(event: DiagnosticEvent): string | undefined {
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
+  const [connectionCheck, setConnectionCheck] = useState<'not-checked' | 'checking' | 'available' | 'unavailable'>('not-checked');
+  const [connectionMessage, setConnectionMessage] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>();
@@ -59,6 +62,10 @@ export function App() {
   const [sessions, setSessions] = useState<readonly DesktopSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [allowedRoots, setAllowedRoots] = useState<readonly string[]>([]);
+  const [permissionsLoading, setPermissionsLoading] = useState(false);
+  const [permissionsError, setPermissionsError] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
@@ -130,6 +137,19 @@ export function App() {
     await window.vyomara.cancelRequest();
   }
 
+  async function checkProviderConnection(): Promise<void> {
+    setConnectionCheck('checking');
+    setConnectionMessage(undefined);
+    try {
+      const result: DesktopProviderConnectionResult = await window.vyomara.checkProviderConnection();
+      setConnectionCheck(result.status);
+      if (result.status === 'unavailable') setConnectionMessage(result.message);
+    } catch (error) {
+      setConnectionCheck('unavailable');
+      setConnectionMessage(error instanceof Error ? error.message : 'The local provider check failed.');
+    }
+  }
+
   function startNewChat(): void {
     if (requestPending) return;
     setSessionId(undefined);
@@ -145,6 +165,7 @@ export function App() {
       return;
     }
 
+    setPermissionsOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -178,6 +199,50 @@ export function App() {
     }
   }
 
+  async function togglePermissions(): Promise<void> {
+    if (permissionsOpen) {
+      setPermissionsOpen(false);
+      return;
+    }
+
+    setHistoryOpen(false);
+    setPermissionsOpen(true);
+    setPermissionsLoading(true);
+    setPermissionsError(undefined);
+    try {
+      setAllowedRoots(await window.vyomara.listFilesystemRoots());
+    } catch (error) {
+      setPermissionsError(error instanceof Error ? error.message : 'Filesystem permissions could not be loaded.');
+    } finally {
+      setPermissionsLoading(false);
+    }
+  }
+
+  async function grantFolderAccess(): Promise<void> {
+    setPermissionsLoading(true);
+    setPermissionsError(undefined);
+    try {
+      const result = await window.vyomara.grantFilesystemRoot();
+      setAllowedRoots(result.roots);
+    } catch (error) {
+      setPermissionsError(error instanceof Error ? error.message : 'Folder access could not be granted.');
+    } finally {
+      setPermissionsLoading(false);
+    }
+  }
+
+  async function revokeFolderAccess(root: string): Promise<void> {
+    setPermissionsLoading(true);
+    setPermissionsError(undefined);
+    try {
+      setAllowedRoots(await window.vyomara.revokeFilesystemRoot(root));
+    } catch (error) {
+      setPermissionsError(error instanceof Error ? error.message : 'Folder access could not be revoked.');
+    } finally {
+      setPermissionsLoading(false);
+    }
+  }
+
   const providerTitle = provider
     ? provider.provider === 'ollama'
       ? `Local Ollama · ${provider.model}`
@@ -191,11 +256,31 @@ export function App() {
           <span className="brand-mark" aria-hidden="true">V</span>
           <span>Vyomara</span>
         </a>
-        <div className="provider-status" title="Connection is checked when a request is made">
-          <span className={`status-dot ${providerError ? 'status-dot-error' : ''}`} />
+        <div className="provider-status" title="Only a local Ollama endpoint is checked">
+          <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
-          {provider?.provider === 'ollama' && <span className="status-note">connection not checked</span>}
+          {provider?.provider === 'ollama' && (
+            <span className="status-note" role={connectionMessage ? 'alert' : 'status'}>
+              {connectionMessage ?? (connectionCheck === 'available'
+                ? 'local service reachable'
+                : connectionCheck === 'checking'
+                  ? 'checking local service…'
+                  : connectionCheck === 'unavailable'
+                    ? 'local check failed'
+                    : 'connection not checked')}
+            </span>
+          )}
         </div>
+        {provider?.provider === 'ollama' && (
+          <button
+            className="new-chat-button"
+            type="button"
+            onClick={() => void checkProviderConnection()}
+            disabled={connectionCheck === 'checking' || requestPending}
+          >
+            {connectionCheck === 'checking' ? 'Checking…' : 'Check Ollama'}
+          </button>
+        )}
         <button
           className="new-chat-button"
           type="button"
@@ -204,6 +289,15 @@ export function App() {
           aria-expanded={historyOpen}
         >
           History
+        </button>
+        <button
+          className="new-chat-button"
+          type="button"
+          onClick={() => void togglePermissions()}
+          disabled={requestPending}
+          aria-expanded={permissionsOpen}
+        >
+          Folders
         </button>
         <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
           <span aria-hidden="true">＋</span> New chat
@@ -294,7 +388,57 @@ export function App() {
           </p>
         </section>
 
-        {historyOpen ? (
+        {permissionsOpen ? (
+        <aside className="activity-panel history-panel" aria-label="Filesystem permissions">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">READ ONLY</p>
+              <h2>Folders</h2>
+            </div>
+            <button className="history-close" type="button" onClick={() => setPermissionsOpen(false)}>
+              Close
+            </button>
+          </div>
+          <p className="permissions-disclosure">
+            Vyom can read files only inside folders listed here. File contents may be sent to your configured
+            provider when you ask about them. Access is stored locally on this Mac.
+          </p>
+          <button
+            className="permission-add"
+            type="button"
+            onClick={() => void grantFolderAccess()}
+            disabled={permissionsLoading || requestPending}
+          >
+            Choose folder…
+          </button>
+          <div className="history-content" aria-live="polite">
+            {permissionsLoading ? (
+              <p className="history-message" role="status">Updating folder access…</p>
+            ) : permissionsError ? (
+              <p className="history-message history-error" role="alert">{permissionsError}</p>
+            ) : allowedRoots.length === 0 ? (
+              <p className="history-message">No folders are allowed. Filesystem tools cannot access any files.</p>
+            ) : (
+              <ol className="history-list">
+                {allowedRoots.map(root => (
+                  <li className="permission-item" key={root}>
+                    <span className="permission-path">{root}</span>
+                    <button
+                      className="permission-revoke"
+                      type="button"
+                      onClick={() => void revokeFolderAccess(root)}
+                      disabled={permissionsLoading || requestPending}
+                    >
+                      Revoke
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+          <p className="history-privacy">Revoking access applies to the next request. Current requests cannot change permissions.</p>
+        </aside>
+        ) : historyOpen ? (
         <aside className="activity-panel history-panel" aria-label="Saved conversations">
           <div className="panel-heading">
             <div>
@@ -365,7 +509,7 @@ export function App() {
             <div>
               <h3>Local-first</h3>
               <p>{provider?.provider === 'ollama'
-                ? 'Ollama is configured on this device. The connection is checked when you send a request.'
+                  ? 'Ollama is configured on this device. Connection checks are user-triggered and stay on this Mac.'
                 : 'No cloud provider is used by this placeholder.'}</p>
             </div>
           </div>
