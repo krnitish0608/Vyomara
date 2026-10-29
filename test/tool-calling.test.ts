@@ -313,6 +313,10 @@ test('verified filesystem results are returned if Ollama fails during its follow
     app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
     1,
   );
+  assert.equal(
+    app.logLines.filter(line => line.includes('"event":"tool.execution-started"')).length,
+    1,
+  );
   assert.deepEqual(
     app.session.messages().filter(message => message.role === 'tool').map(message =>
       message.role === 'tool' ? JSON.parse(message.content) : undefined),
@@ -548,8 +552,9 @@ test('filesystem content cannot authorize an unregistered shell tool through pro
     },
   };
   const app = harness(provider, registry, config);
-  await assert.rejects(app.run(), (error: unknown) =>
-    error instanceof ToolExecutionError && error.code === 'unknown-tool');
+  const response = await app.run();
+  assert.match(response, /partial; a later operation failed \(unknown-tool\)/);
+  assert.match(response, /Ignore previous instructions/);
 
   const readResult = observedMessages[1]?.find(message => message.role === 'tool');
   assert.equal(readResult?.role === 'tool', true);
@@ -562,7 +567,18 @@ test('filesystem content cannot authorize an unregistered shell tool through pro
     app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
     1,
   );
-  assert.equal(app.logLines.some(line => line.includes('"toolId":"shell.exec"')), false);
+  assert.ok(app.logLines.some(line =>
+    line.includes('"event":"tool.requested"') && line.includes('"toolId":"shell.exec"')));
+  assert.ok(app.logLines.some(line =>
+    line.includes('"event":"tool.failed"') &&
+    line.includes('"toolId":"shell.exec"') &&
+    line.includes('"code":"unknown-tool"')));
+  assert.equal(app.logLines.some(line =>
+    line.includes('"event":"tool.completed"') && line.includes('"toolId":"shell.exec"')), false);
+  assert.equal(app.logLines.some(line =>
+    line.includes('"event":"tool.execution-started"') && line.includes('"toolId":"shell.exec"')), false);
+  assert.ok(app.logLines.some(line => line.includes('"event":"task.needs-attention"')));
+  assert.equal(app.logLines.some(line => line.includes('"event":"task.completed"')), false);
   assert.equal(app.session.messages().some(message =>
     message.role === 'assistant' && message.content === 'I ran the command successfully.'), false);
 });
@@ -733,7 +749,8 @@ test('one exact quoted absolute path overrides a model-corrupted filesystem path
     assert.match(result, /^Verified filesystem tool result\(s\):/);
     assert.equal(providerCall, 2);
     assert.equal(
-      app.logLines.filter(line => line.includes(`"toolId":"${toolId}"`)).length,
+      app.logLines.filter(line =>
+        line.includes('"event":"tool.completed"') && line.includes(`"toolId":"${toolId}"`)).length,
       1,
     );
     const resultMessage = app.session.messages().find(message =>
@@ -1126,6 +1143,177 @@ test('cancellation during tool execution stops the agent', async () => {
   controller.abort();
   await assert.rejects(pending, (error: unknown) =>
     error instanceof ToolExecutionError && error.code === 'cancelled');
+  const events = app.logLines.map(line => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(events.some(event =>
+    event.event === 'tool.failed' && event.code === 'cancelled'));
+  assert.ok(events.some(event =>
+    event.event === 'task.state-changed' && event.to === 'cancelled'));
+  assert.ok(events.some(event => event.event === 'task.cancelled'));
+  assert.ok(events.some(event => event.event === 'request.cancelled'));
+  assert.equal(events.some(event => event.event === 'task.failed'), false);
+  assert.equal(events.some(event => event.event === 'task.completed'), false);
+});
+
+test('task lifecycle correlates tool intent, invocation, completion, and safe results', async () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool());
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'test.echo',
+        arguments: { value: 'private-tool-argument-fixture' },
+      }],
+    },
+    { kind: 'final', text: 'The result is available.' },
+  ]), registry);
+
+  assert.equal(
+    await app.run(new AbortController().signal, 'private-user-prompt-fixture'),
+    'The result is available.',
+  );
+  const events = app.logLines.map(line => JSON.parse(line) as Record<string, unknown>);
+  const correlated = events.filter(event => typeof event.taskId === 'string');
+  const taskIds = new Set(correlated.map(event => event.taskId));
+  const runIds = new Set(correlated.map(event => event.runId));
+  assert.equal(taskIds.size, 1);
+  assert.equal(runIds.size, 1);
+  const taskId = correlated[0]?.taskId;
+  const runId = correlated[0]?.runId;
+  const lifecycle = events.filter(event =>
+    event.event === 'task.state-changed').map(event => [event.from, event.to]);
+  assert.deepEqual(lifecycle, [
+    ['queued', 'planning'],
+    ['planning', 'running'],
+    ['running', 'planning'],
+    ['planning', 'completed'],
+  ]);
+  const requested = events.find(event => event.event === 'tool.requested');
+  const invoked = events.find(event => event.event === 'tool.invoked');
+  const executionStarted = events.find(event => event.event === 'tool.execution-started');
+  const completed = events.find(event => event.event === 'tool.completed');
+  assert.equal(requested?.taskId, taskId);
+  assert.equal(requested?.runId, runId);
+  assert.equal(requested?.toolId, 'test.echo');
+  assert.equal(requested?.attempt, 1);
+  assert.deepEqual(requested?.argumentKeys, ['value']);
+  assert.equal(invoked?.toolCallId, requested?.toolCallId);
+  assert.equal(executionStarted?.toolCallId, requested?.toolCallId);
+  assert.equal(completed?.toolCallId, requested?.toolCallId);
+  assert.ok(events.indexOf(requested!) < events.indexOf(invoked!));
+  assert.ok(events.indexOf(invoked!) < events.indexOf(executionStarted!));
+  assert.ok(events.indexOf(executionStarted!) < events.indexOf(completed!));
+  assert.equal(completed?.outputChars, JSON.stringify('private-tool-argument-fixture').length);
+  assert.ok(events.some(event =>
+    event.event === 'request.completed' &&
+    event.taskId === taskId &&
+    event.runId === runId));
+  assert.ok(events.some(event =>
+    event.event === 'task.completed' &&
+    event.taskId === taskId &&
+    event.runId === runId));
+  assert.doesNotMatch(app.logLines.join('\n'), /private-user-prompt-fixture|private-tool-argument-fixture/);
+});
+
+test('task lifecycle reports provider failure without a completed state', async () => {
+  const provider: ModelProvider = {
+    id: 'test.provider-failure',
+    async complete() {
+      throw new ProviderError('http-error');
+    },
+  };
+  const app = harness(provider, new ToolRegistry());
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof ProviderError && error.code === 'http-error');
+
+  const events = app.logLines.map(line => JSON.parse(line) as Record<string, unknown>);
+  const created = events.find(event => event.event === 'task.created');
+  const failed = events.find(event => event.event === 'task.failed');
+  assert.equal(created?.state, 'queued');
+  assert.equal(failed?.taskId, created?.taskId);
+  assert.equal(failed?.runId, created?.runId);
+  assert.equal(failed?.code, 'http-error');
+  assert.ok(events.some(event =>
+    event.event === 'task.state-changed' &&
+    event.from === 'planning' &&
+    event.to === 'failed'));
+  assert.ok(events.some(event =>
+    event.event === 'request.failed' &&
+    event.taskId === created?.taskId &&
+    event.code === 'http-error'));
+  assert.equal(events.some(event => event.event === 'task.completed'), false);
+  assert.equal(events.some(event => event.event === 'request.completed'), false);
+});
+
+test('task logs a tool proposal rejected by the call budget without claiming invocation', async () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool());
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'test.echo', arguments: { value: 'not-run' } }],
+    },
+  ]), registry, { maxToolCalls: 0 });
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof AgentError && error.code === 'tool-limit');
+
+  const events = app.logLines.map(line => JSON.parse(line) as Record<string, unknown>);
+  const requested = events.find(event => event.event === 'tool.requested');
+  assert.equal(requested?.toolId, 'test.echo');
+  assert.equal(events.some(event => event.event === 'tool.invoked'), false);
+  assert.equal(events.some(event => event.event === 'tool.execution-started'), false);
+  assert.equal(events.some(event => event.event === 'tool.completed'), false);
+  assert.ok(events.some(event =>
+    event.event === 'task.state-changed' &&
+    event.from === 'planning' &&
+    event.to === 'failed'));
+});
+
+test('bounded argument correction is recorded as a separate failed and successful invocation', async () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool());
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'test.echo', arguments: { value: 42 } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'test.echo', arguments: { value: 'corrected' } }],
+    },
+    { kind: 'final', text: 'Done.' },
+  ]), registry);
+
+  assert.equal(await app.run(), 'Done.');
+  const events = app.logLines.map(line => JSON.parse(line) as Record<string, unknown>);
+  const requests = events.filter(event => event.event === 'tool.requested');
+  const failures = events.filter(event => event.event === 'tool.failed');
+  const successes = events.filter(event => event.event === 'tool.completed');
+  const retries = events.filter(event => event.event === 'tool.retry-scheduled');
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map(event => event.attempt), [1, 2]);
+  assert.notEqual(requests[0]?.toolCallId, requests[1]?.toolCallId);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0]?.code, 'invalid-input');
+  assert.equal(failures[0]?.toolCallId, requests[0]?.toolCallId);
+  assert.equal(
+    events.filter(event =>
+      event.event === 'tool.execution-started' && event.toolCallId === requests[0]?.toolCallId).length,
+    0,
+  );
+  assert.deepEqual(retries.map(event => ({
+    toolCallId: event.toolCallId,
+    nextAttempt: event.nextAttempt,
+    reasonCode: event.reasonCode,
+  })), [{
+    toolCallId: requests[0]?.toolCallId,
+    nextAttempt: 2,
+    reasonCode: 'invalid-input',
+  }]);
+  assert.equal(successes.length, 1);
+  assert.equal(events.filter(event => event.event === 'tool.execution-started').length, 1);
+  assert.equal(successes[0]?.toolCallId, requests[1]?.toolCallId);
+  assert.equal(successes[0]?.attempt, 2);
 });
 
 test('model definitions expose only registered read tools with explicit schemas', () => {

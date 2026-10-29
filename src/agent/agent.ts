@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
 import type { ModelProvider, ProviderResponse } from '../providers/provider.ts';
 import { OperationStoppedError, runBounded } from '../shared/bounded.ts';
 import { Session } from '../session/session.ts';
+import { TaskRun } from '../tasks/task-run.ts';
 import { ToolExecutionError, ToolExecutor } from '../tools/executor.ts';
 
 export class AgentError extends Error {
@@ -125,6 +127,19 @@ function filesystemResultResponse(
     : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
 }
 
+function filesystemPartialResultResponse(
+  results: readonly string[],
+  failureCode: string,
+  failureMessage: string,
+  maxResponseChars: number,
+): string {
+  const response =
+    `Verified filesystem tool result(s), partial; a later operation failed (${failureCode}): ${failureMessage}\n${results.join('\n')}`;
+  return response.length <= maxResponseChars
+    ? response
+    : 'A filesystem operation failed after a verified result; the partial result exceeds the configured response limit and cannot be shown.';
+}
+
 function exactQuotedAbsolutePath(prompt: string): string | undefined {
   const matches = [...prompt.matchAll(/(["'`])(\/[^\r\n]{1,4096}?)\1/g)];
   return matches.length === 1 ? matches[0]?.[2] : undefined;
@@ -235,10 +250,35 @@ export interface AgentOptions {
   readonly logger: Logger;
 }
 
+function safeErrorCode(error: unknown, fallback = 'internal-error'): string {
+  if (error instanceof AgentError || error instanceof ToolExecutionError || error instanceof ProviderError) {
+    return error.code;
+  }
+  if (error instanceof OperationStoppedError) return error.reason;
+  return fallback;
+}
+
 export async function runAgent(
   prompt: string,
   signal: AbortSignal,
   options: AgentOptions,
+): Promise<string> {
+  const task = new TaskRun(options.logger);
+  try {
+    const response = await runAgentTask(prompt, signal, options, task);
+    if (task.state !== 'needs_attention') task.transition('completed');
+    return response;
+  } catch (error) {
+    task.fail(safeErrorCode(error));
+    throw error;
+  }
+}
+
+async function runAgentTask(
+  prompt: string,
+  signal: AbortSignal,
+  options: AgentOptions,
+  task: TaskRun,
 ): Promise<string> {
   if (!prompt.trim() || prompt.length > options.config.maxInputChars) {
     throw new AgentError('Request is empty or exceeds the configured input limit.', 'invalid-request');
@@ -246,11 +286,14 @@ export async function runAgent(
   if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
   options.session.add({ role: 'user', content: prompt });
   const start = Date.now();
+  task.transition('planning');
   const unsupportedResponse = unsupportedCapability(prompt);
   if (unsupportedResponse) {
     options.session.add({ role: 'assistant', content: unsupportedResponse });
     options.logger.emit({
       event: 'request.completed',
+      taskId: task.taskId,
+      runId: task.runId,
       durationMs: Date.now() - start,
       iterations: 0,
     });
@@ -262,6 +305,28 @@ export async function runAgent(
   let correctionAttempts = 0;
   const successfulToolIds = new Set<string>();
   const filesystemToolResults: string[] = [];
+  const toolAttempts = new Map<string, number>();
+  const returnPartialFilesystemResult = (
+    error: { readonly code: string; readonly message: string },
+    iteration: number,
+  ): string => {
+    const response = filesystemPartialResultResponse(
+      filesystemToolResults,
+      error.code,
+      error.message,
+      options.config.maxResponseChars,
+    );
+    options.session.add({ role: 'assistant', content: response });
+    task.needsAttention();
+    options.logger.emit({
+      event: 'request.completed',
+      taskId: task.taskId,
+      runId: task.runId,
+      durationMs: Date.now() - start,
+      iterations: iteration,
+    });
+    return response;
+  };
 
   for (let iteration = 1; iteration <= options.config.maxAgentIterations; iteration++) {
     let rawResponse: unknown;
@@ -287,8 +352,11 @@ export async function runAgent(
           true,
         );
         options.session.add({ role: 'assistant', content: partialResponse });
+        task.needsAttention();
         options.logger.emit({
           event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
           durationMs: Date.now() - start,
           iterations: iteration,
         });
@@ -299,19 +367,34 @@ export async function runAgent(
       }
       throw error;
     }
-    const response = parseProviderResponse(
-      rawResponse,
-      options.config.maxResponseChars,
-      options.config.maxToolOutputChars,
-    );
+    let response: ProviderResponse;
+    try {
+      response = parseProviderResponse(
+        rawResponse,
+        options.config.maxResponseChars,
+        options.config.maxToolOutputChars,
+      );
+    } catch (error) {
+      if (error instanceof AgentError && filesystemToolResults.length > 0) {
+        return returnPartialFilesystemResult(error, iteration);
+      }
+      throw error;
+    }
     if (response.kind === 'final') {
-      if (recoverableToolFailure) throw recoverableToolFailure;
+      if (recoverableToolFailure) {
+        if (filesystemToolResults.length > 0) {
+          return returnPartialFilesystemResult(recoverableToolFailure, iteration);
+        }
+        throw recoverableToolFailure;
+      }
       if (claimsUnsupportedExecution(response.text)) {
         const safeResponse =
           'I cannot verify that action because no registered tool result confirms it. No shell command, web search, or file mutation was performed.';
         options.session.add({ role: 'assistant', content: safeResponse });
         options.logger.emit({
           event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
           durationMs: Date.now() - start,
           iterations: iteration,
         });
@@ -323,6 +406,8 @@ export async function runAgent(
         options.session.add({ role: 'assistant', content: safeResponse });
         options.logger.emit({
           event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
           durationMs: Date.now() - start,
           iterations: iteration,
         });
@@ -334,6 +419,8 @@ export async function runAgent(
         options.session.add({ role: 'assistant', content: safeResponse });
         options.logger.emit({
           event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
           durationMs: Date.now() - start,
           iterations: iteration,
         });
@@ -347,6 +434,8 @@ export async function runAgent(
         options.session.add({ role: 'assistant', content: finalResponse });
         options.logger.emit({
           event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
           durationMs: Date.now() - start,
           iterations: iteration,
         });
@@ -355,17 +444,40 @@ export async function runAgent(
       options.session.add({ role: 'assistant', content: response.text });
       options.logger.emit({
         event: 'request.completed',
+        taskId: task.taskId,
+        runId: task.runId,
         durationMs: Date.now() - start,
         iterations: iteration,
       });
       return response.text;
     }
 
+    const proposedCalls = response.calls.map(call => {
+      const attempt = (toolAttempts.get(call.toolId) ?? 0) + 1;
+      toolAttempts.set(call.toolId, attempt);
+      const toolCallId = randomUUID();
+      const context = task.context(toolCallId, attempt);
+      options.logger.emit({
+        event: 'tool.requested',
+        ...context,
+        toolId: call.toolId,
+        argumentKeys: Object.keys(call.arguments).sort(),
+      });
+      return { call, attempt, toolCallId, context };
+    });
     if (response.calls.length > options.config.maxToolCalls - toolCalls) {
-      throw new AgentError('Tool call limit reached.', 'tool-limit');
+      const error = new AgentError('Tool call limit reached.', 'tool-limit');
+      if (filesystemToolResults.length > 0) {
+        return returnPartialFilesystemResult(error, iteration);
+      }
+      throw error;
     }
     if (iteration === options.config.maxAgentIterations) {
-      throw new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');
+      const error = new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');
+      if (filesystemToolResults.length > 0) {
+        return returnPartialFilesystemResult(error, iteration);
+      }
+      throw error;
     }
     options.session.add({
       role: 'assistant',
@@ -376,11 +488,17 @@ export async function runAgent(
         arguments: call.arguments,
       })),
     });
-    for (const call of response.calls) {
+    for (const { call, attempt, toolCallId, context } of proposedCalls) {
       toolCalls++;
+      if (task.state === 'planning') task.transition('running');
+      options.logger.emit({
+        event: 'tool.invoked',
+        ...context,
+        toolId: call.toolId,
+      });
       try {
         const args = executionArguments(prompt, call.toolId, call.arguments, response.calls.length);
-        const result = await options.tools.execute(call.toolId, args, signal);
+        const result = await options.tools.execute(call.toolId, args, signal, context);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
           throw new ToolExecutionError(
@@ -398,7 +516,17 @@ export async function runAgent(
           failedToolId = undefined;
         }
       } catch (error) {
+        const code = safeErrorCode(error, 'tool-failed');
+        options.logger.emit({
+          event: 'tool.failed',
+          ...context,
+          toolId: call.toolId,
+          code,
+        });
         if (error instanceof ToolExecutionError && error.code === 'policy-denied') {
+          if (filesystemToolResults.length > 0) {
+            return returnPartialFilesystemResult(error, iteration);
+          }
           throw new AgentError('Requested tool was denied by policy.', 'policy-denied');
         }
         if (
@@ -406,12 +534,25 @@ export async function runAgent(
           ['invalid-input', 'input-too-large', 'unknown-tool'].includes(error.code)
         ) {
           if (correctionAttempts >= 1) {
-            throw new ToolExecutionError(
+            const finalError = new ToolExecutionError(
               'Tool arguments remained invalid after one correction attempt; no operation was performed.',
               error.code,
             );
+            if (filesystemToolResults.length > 0) {
+              return returnPartialFilesystemResult(finalError, iteration);
+            }
+            throw finalError;
           }
           correctionAttempts++;
+          options.logger.emit({
+            event: 'tool.retry-scheduled',
+            taskId: task.taskId,
+            runId: task.runId,
+            toolCallId,
+            toolId: call.toolId,
+            nextAttempt: attempt + 1,
+            reasonCode: error.code,
+          });
           recoverableToolFailure = error;
           failedToolId = call.toolId;
           options.session.add({
@@ -427,13 +568,27 @@ export async function runAgent(
           });
           continue;
         }
-        if (error instanceof AgentError || error instanceof ToolExecutionError) throw error;
-        throw new ToolExecutionError(
+        if (error instanceof AgentError || error instanceof ToolExecutionError) {
+          if (
+            error instanceof ToolExecutionError &&
+            error.code !== 'cancelled' &&
+            filesystemToolResults.length > 0
+          ) {
+            return returnPartialFilesystemResult(error, iteration);
+          }
+          throw error;
+        }
+        const wrappedError = new ToolExecutionError(
           'The requested operation failed; no success is implied.',
           'tool-failed',
         );
+        if (filesystemToolResults.length > 0) {
+          return returnPartialFilesystemResult(wrappedError, iteration);
+        }
+        throw wrappedError;
       }
     }
+    if (task.state === 'running') task.transition('planning');
   }
 
   throw new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');

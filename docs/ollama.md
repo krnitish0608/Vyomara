@@ -101,6 +101,29 @@ Filesystem errors are returned with safe categories such as `not-found`,
 omit absolute paths and stack traces. Unexpected failures use a generic safe
 message and never imply success.
 
+## Request task and activity events
+
+Each CLI request receives an in-memory task ID and run ID. Structured events
+record the `queued -> planning -> running -> planning -> completed` lifecycle
+as applicable, with terminal `failed` or `cancelled` states on errors.
+Cancellations are reported separately from task failures. The activity stream
+distinguishes `tool.requested` (model proposal),
+`tool.invoked` (agent calls the executor), `tool.execution-started` (input and
+policy checks passed and the tool is about to run), `tool.completed` (validated
+result), and `tool.failed`. A bounded correction is recorded as
+`tool.retry-scheduled` with the next attempt number.
+If a later operation fails after a filesystem result has already been
+validated, Vyom returns that verified partial result with a safe failure
+notice and marks the task `needs_attention`; it does not flatten the run into
+success or discard the completed read.
+
+Events correlate task/run/tool-call IDs, attempt numbers, safe error codes,
+duration, and serialized output size. They do not log prompt text, argument
+values, file contents, or tool results. This is request-scoped diagnostic
+activity, not a durable task database or user-facing timeline. The queue,
+approval-wait and pause states are reserved but not currently produced;
+concurrency, durable task history, and UI activity display are not implemented.
+
 ## Troubleshooting
 
 - **Ollama unavailable:** start the local Ollama service and verify its local
