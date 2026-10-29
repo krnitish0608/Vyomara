@@ -276,10 +276,11 @@ export async function runAgent(
         signal,
       );
     } catch (error) {
-      if (error instanceof OperationStoppedError) {
-        throw new AgentError(error.message, error.reason);
-      }
-      if (error instanceof ProviderError && error.code !== 'cancelled' && filesystemToolResults.length > 0) {
+      if (
+        filesystemToolResults.length > 0 &&
+        ((error instanceof OperationStoppedError && error.reason === 'timeout') ||
+          (error instanceof ProviderError && error.code !== 'cancelled'))
+      ) {
         const partialResponse = filesystemResultResponse(
           filesystemToolResults,
           options.config.maxResponseChars,
@@ -292,6 +293,9 @@ export async function runAgent(
           iterations: iteration,
         });
         return partialResponse;
+      }
+      if (error instanceof OperationStoppedError) {
+        throw new AgentError(error.message, error.reason);
       }
       throw error;
     }

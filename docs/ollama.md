@@ -52,11 +52,10 @@ filesystem access. A file read result is sent to the configured local Ollama
 service as conversation context, so allow only roots whose contents you are
 willing to provide to that local model.
 
-Ollama may return `null` for optional integer limits even when the schema marks
-them optional. Only optional fields explicitly marked nullable in a registered
-tool schema are converted from `null` to omission at the provider boundary;
-the executor still validates every resulting argument. String numbers,
-out-of-range values, required-field nulls, and other malformed values are not
+Filesystem optional integer limits are advertised as optional and nullable.
+An actual JSON `null` for one of these optional fields is normalized to omission
+at the provider boundary, which uses the configured default. String numbers,
+the string `"null"`, out-of-range values, and other malformed values are not
 coerced. Tool descriptions recommend omitting optional limits when defaults are
 suitable; if a limit is supplied, it must be a JSON integer. Filesystem schema
 errors identify the argument problem (for example, an integer limit supplied
@@ -90,9 +89,10 @@ tool-completion event from being mistaken for proof that the model accurately
 interpreted the result. Claims without a matching result are also screened by
 bounded phrase patterns, not semantic verification. Treat file contents as
 untrusted prompt data: they cannot authorize new tools or override system
-policy. If Ollama returns a typed provider error after a filesystem result has
-already been validated, Vyomara returns that bounded result and states that no
-model summary was generated; cancellation and tool errors are still surfaced.
+policy. If Ollama returns a typed provider error or times out after a
+filesystem result has already been validated, Vyomara returns that bounded
+result and states that no model summary was generated. User cancellation and
+filesystem tool errors are still surfaced.
 Shell execution, web search, package installation, application launching,
 system-feature control, writes, and deletes are not implemented.
 

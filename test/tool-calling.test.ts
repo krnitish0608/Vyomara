@@ -320,6 +320,52 @@ test('verified filesystem results are returned if Ollama fails during its follow
   );
 });
 
+test('verified filesystem results are returned when the model follow-up times out', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-followup-timeout-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const file = join(root, 'note.txt');
+  await writeFile(file, 'real fixture contents');
+  const config = {
+    ...loadConfig({
+      VYOM_PROVIDER: 'placeholder',
+      VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+    }),
+    requestTimeoutMs: 20,
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  let calls = 0;
+  const provider: ModelProvider = {
+    id: 'test.followup-timeout',
+    async complete() {
+      calls++;
+      if (calls === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ toolId: 'filesystem.read-file', arguments: { path: file } }],
+        };
+      }
+      return new Promise(() => {});
+    },
+  };
+  const app = harness(provider, registry, config);
+  const result = await app.run();
+  assert.match(result, /Ollama could not complete its follow-up/);
+  assert.match(result, /"content":"real fixture contents"/);
+  assert.equal(calls, 2);
+  assert.equal(
+    app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
+    1,
+  );
+  assert.deepEqual(
+    app.session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? JSON.parse(message.content) : undefined),
+    [{ content: 'real fixture contents', bytes: Buffer.byteLength('real fixture contents') }],
+  );
+});
+
 test('unsupported shell request is refused without calling the provider or logging tool execution', async () => {
   let providerCalls = 0;
   const provider: ModelProvider = {
@@ -773,7 +819,7 @@ test('ambiguous, unquoted, and batched filesystem paths are not pinned', async t
   }
 });
 
-test('nullable optional Ollama limits pass through normalization and still execute validated tools', async t => {
+test('filesystem JSON null limits use defaults while string null limits remain invalid', async t => {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-null-limits-'));
   t.after(async () => rm(parent, { recursive: true, force: true }));
   const root = join(parent, 'allowed');
@@ -787,16 +833,36 @@ test('nullable optional Ollama limits pass through normalization and still execu
   const registry = new ToolRegistry();
   registerFilesystemTools(registry, config);
 
-  for (const [toolId, arguments_] of [
-    ['filesystem.list-directory', { path: root, maxEntries: null }],
-    ['filesystem.directory-tree', { path: root, maxDepth: null, maxEntries: null }],
+  for (const [toolId, arguments_, valid] of [
+    ['filesystem.list-directory', { path: root, maxEntries: null }, true],
+    ['filesystem.directory-tree', { path: root, maxDepth: null, maxEntries: null }, true],
+    ['filesystem.list-directory', { path: root, maxEntries: 'null' }, false],
+    ['filesystem.directory-tree', { path: root, maxDepth: 'null', maxEntries: 'null' }, false],
   ] as const) {
     let requestCount = 0;
     const provider = new OllamaProvider({
       baseUrl: 'http://127.0.0.1:11434',
       model: 'test-local',
-      fetchImplementation: async () => {
+      fetchImplementation: async (_input, init) => {
         requestCount++;
+        if (requestCount === 1) {
+          const body = JSON.parse(String(init?.body)) as {
+            tools: Array<{
+              function: {
+                name: string;
+                parameters: { properties: Record<string, { type: unknown; nullable?: unknown }> };
+              };
+            }>;
+          };
+          const properties = body.tools.find(tool =>
+            tool.function.name === toolId)
+            ?.function.parameters.properties;
+          assert.ok(properties);
+          if (toolId === 'filesystem.directory-tree') {
+            assert.deepEqual(properties.maxDepth?.type, ['integer', 'null']);
+          }
+          assert.deepEqual(properties.maxEntries?.type, ['integer', 'null']);
+        }
         const message = requestCount === 1
           ? {
             role: 'assistant',
@@ -808,24 +874,38 @@ test('nullable optional Ollama limits pass through normalization and still execu
       },
     });
     const app = harness(provider, registry, config);
-    const result = await app.run(
-      new AbortController().signal,
-      `Use ${toolId} for ${root}`,
-    );
+    if (!valid) {
+      await assert.rejects(app.run(
+        new AbortController().signal,
+        `Use ${toolId} for ${root}`,
+      ), (error: unknown) =>
+        error instanceof ToolExecutionError && error.code === 'invalid-input');
+    } else {
+      const result = await app.run(new AbortController().signal, `Use ${toolId} for ${root}`);
+      assert.match(result, /^Verified filesystem tool result\(s\):/);
+    }
     assert.equal(requestCount, 2);
-    assert.match(result, /^Verified filesystem tool result\(s\):/);
-    assert.doesNotMatch(result, /fabricated\.txt/);
     assert.equal(
-      app.logLines.filter(line => line.includes(`"toolId":"${toolId}"`)).length,
-      1,
+      app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
+      valid ? 1 : 0,
     );
     const toolResult = app.session.messages().find(message =>
       message.role === 'tool' && message.toolId === toolId);
     assert.equal(toolResult?.role, 'tool');
-    assert.equal(
-      toolResult?.role === 'tool' && JSON.parse(toolResult.content).truncated,
-      false,
-    );
+    const parsed = toolResult?.role === 'tool' ? JSON.parse(toolResult.content) : undefined;
+    if (valid) {
+      assert.equal(parsed.truncated, false);
+    } else {
+      assert.deepEqual(parsed, {
+        ok: false,
+        error: {
+          code: 'invalid-input',
+          message: toolId === 'filesystem.list-directory'
+            ? 'maxEntries must be an integer number; omit it to use the configured default.'
+            : 'maxDepth must be an integer number; omit it to use the configured default.',
+        },
+      });
+    }
   }
 });
 
