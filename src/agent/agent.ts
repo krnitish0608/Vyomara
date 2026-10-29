@@ -1,5 +1,6 @@
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
+import { ProviderError } from '../providers/provider.ts';
 import type { ModelProvider, ProviderResponse } from '../providers/provider.ts';
 import { OperationStoppedError, runBounded } from '../shared/bounded.ts';
 import { Session } from '../session/session.ts';
@@ -20,17 +21,17 @@ export class AgentError extends Error {
 
 function unsupportedCapability(prompt: string): string | undefined {
   if (
-    /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?echo\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
+    /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?(?:echo|pwd|ls|cat|grep|find|cd|whoami|uname|curl|wget|git|pnpm|npm|ollama)\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
   ) {
     return 'I cannot run shell or terminal commands. No command was executed.';
   }
   if (
-    /\b(?:web search|search the web|search (?:the )?internet|browse the internet|visit the website|open https?:\/\/|current weather|search online)\b|\b(?:internet|online)\b[\s\S]{0,48}\b(?:search|dhund|dhundo|khoj)\b|\b(?:search|dhund|dhundo|khoj)\b[\s\S]{0,48}\b(?:internet|online)\b|(?:इंटरनेट|ऑनलाइन).{0,48}(?:खोज|ढूंढ|ढूँढ|सर्च)/iu.test(prompt)
+    /\b(?:web search|search the web|search (?:the )?internet|browse the internet|visit the website|open https?:\/\/|current weather|search online)\b|\b(?:internet|online)\b[\s\S]{0,48}\b(?:search|dhund|dhundo|khoj|check|verify|dekh)\b|\b(?:search|dhund|dhundo|khoj)\b[\s\S]{0,48}\b(?:internet|online)\b|\bonline\s+(?:check|verify)\b|(?:इंटरनेट|ऑनलाइन).{0,48}(?:खोज|ढूंढ|ढूँढ|सर्च|जाँच|जांच)/iu.test(prompt)
   ) {
     return 'Web browsing and web search are not available. No search was performed.';
   }
   if (
-    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदलो|हटाओ|मिटाओ)/iu.test(prompt)
+    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदल(?:ो| दो)|हटा(?:ओ| दो)|मिटा(?:ओ| दो)|डिलीट)/iu.test(prompt)
   ) {
     return 'File creation, editing, and deletion are not available. No filesystem change was made.';
   }
@@ -43,6 +44,11 @@ function unsupportedCapability(prompt: string): string | undefined {
     /\b(?:open|launch|access|control|turn on|turn off|restart|shutdown|take)\b[\s\S]{0,48}\b(?:system settings|camera|microphone|mic|bluetooth|wi-?fi|notifications|screenshot|screen recording|mac)\b|(?:कैमरा|माइक्रोफ़ोन|माइक्रोफोन|ब्लूटूथ|वाई-?फ़ाई|स्क्रीनशॉट).{0,40}(?:खोलो|चालू|बंद|लेना|लो|पहुँच)/iu.test(prompt)
   ) {
     return 'That system feature is not available to Vyomara. No system action was performed.';
+  }
+  if (
+    /\b(?:open|launch|start)\s+(?:(?:the|an?)\s+)?(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings|system preferences)\b|\b(?:application|app)\b[\s\S]{0,32}\b(?:open|launch|start)\b|(?:कैलकुलेटर|सफारी|फ़ाइंडर|फाइंडर|टर्मिनल|नोट्स|कैलेंडर).{0,24}(?:खोलो|खोलिए|चलाओ)/iu.test(prompt)
+  ) {
+    return 'Opening applications is not available to Vyomara. No application was opened.';
   }
   return undefined;
 }
@@ -60,9 +66,11 @@ function claimsUnsupportedExecution(
     /\b(?:the\s+)?(?:file|folder|directory)\s+(?:was|has been)\s+(?:created|deleted|written|modified|updated)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:installed|uninstalled|updated|upgraded)\b.{0,60}\b(?:package|application|app|software|dependency)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:opened|accessed|controlled|restarted|shut down)\b.{0,60}\b(?:camera|microphone|system settings|bluetooth|wi-?fi|mac)\b/i,
+    /\b(?:I|we)\s+(?:have\s+)?(?:opened|launched|started)\b.{0,60}\b(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings)\b/i,
     /\b(?:maine|mainee)\b[\s\S]{0,48}\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala(?:ya|o)?|chalaya|execute|run)\b/i,
     /\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala diya|chalaya|run ho gaya|execute ho gaya)\b/i,
     /(?:मैंने|मैने).{0,48}(?:कमांड|टर्मिनल|शेल).{0,32}(?:चलाया|चला दिया|चलाया है)/u,
+    /["'](?:name|toolId)["']\s*:\s*["'](?:shell\.[a-z0-9.-]+|assistant\.(?:open|search|browse)[a-z0-9.-]*|filesystem\.(?:create|write|delete)[a-z0-9.-]*)["']/i,
   ];
   return claims.some(pattern => pattern.test(text));
 }
@@ -101,6 +109,42 @@ function claimsUnverifiedDirectoryRead(
   return (!hasListing && claimsListing.some(pattern => pattern.test(text))) ||
     (!successfulToolIds.has('filesystem.directory-tree') &&
       claimsTree.some(pattern => pattern.test(text)));
+}
+
+function filesystemResultResponse(
+  results: readonly string[],
+  maxResponseChars: number,
+  followupFailed = false,
+): string {
+  const heading = followupFailed
+    ? 'Verified filesystem tool result(s); Ollama could not complete its follow-up, so no summary was generated:'
+    : 'Verified filesystem tool result(s):';
+  const response = `${heading}\n${results.join('\n')}`;
+  return response.length <= maxResponseChars
+    ? response
+    : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
+}
+
+function exactQuotedAbsolutePath(prompt: string): string | undefined {
+  const matches = [...prompt.matchAll(/(["'`])(\/[^\r\n]{1,4096}?)\1/g)];
+  return matches.length === 1 ? matches[0]?.[2] : undefined;
+}
+
+function executionArguments(
+  prompt: string,
+  toolId: string,
+  arguments_: Readonly<Record<string, unknown>>,
+  batchSize: number,
+): Readonly<Record<string, unknown>> {
+  if (
+    batchSize !== 1 ||
+    !['filesystem.list-directory', 'filesystem.read-file', 'filesystem.directory-tree'].includes(toolId)
+  ) {
+    return arguments_;
+  }
+  const exactPath = exactQuotedAbsolutePath(prompt);
+  if (!exactPath || arguments_.path === exactPath) return arguments_;
+  return { ...arguments_, path: exactPath };
 }
 
 function parseProviderResponse(
@@ -235,6 +279,20 @@ export async function runAgent(
       if (error instanceof OperationStoppedError) {
         throw new AgentError(error.message, error.reason);
       }
+      if (error instanceof ProviderError && error.code !== 'cancelled' && filesystemToolResults.length > 0) {
+        const partialResponse = filesystemResultResponse(
+          filesystemToolResults,
+          options.config.maxResponseChars,
+          true,
+        );
+        options.session.add({ role: 'assistant', content: partialResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return partialResponse;
+      }
       throw error;
     }
     const response = parseProviderResponse(
@@ -278,10 +336,10 @@ export async function runAgent(
         return safeResponse;
       }
       if (filesystemToolResults.length > 0) {
-        const verifiedResponse = `Verified filesystem tool result(s):\n${filesystemToolResults.join('\n')}`;
-        const finalResponse = verifiedResponse.length <= options.config.maxResponseChars
-          ? verifiedResponse
-          : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
+        const finalResponse = filesystemResultResponse(
+          filesystemToolResults,
+          options.config.maxResponseChars,
+        );
         options.session.add({ role: 'assistant', content: finalResponse });
         options.logger.emit({
           event: 'request.completed',
@@ -317,7 +375,8 @@ export async function runAgent(
     for (const call of response.calls) {
       toolCalls++;
       try {
-        const result = await options.tools.execute(call.toolId, call.arguments, signal);
+        const args = executionArguments(prompt, call.toolId, call.arguments, response.calls.length);
+        const result = await options.tools.execute(call.toolId, args, signal);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
           throw new ToolExecutionError(

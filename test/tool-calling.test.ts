@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { runAgent, AgentError } from '../src/agent/agent.ts';
 import { loadConfig } from '../src/config/config.ts';
 import { createLogger } from '../src/diagnostics/logger.ts';
-import { OllamaProvider, type ModelProvider, type ProviderResponse } from '../src/providers/provider.ts';
+import { OllamaProvider, ProviderError, type ModelProvider, type ProviderResponse } from '../src/providers/provider.ts';
 import { Session } from '../src/session/session.ts';
 import type { Tool } from '../src/tools/contracts.ts';
 import { ToolRegistry } from '../src/tools/contracts.ts';
@@ -276,6 +276,50 @@ test('agent surfaces tool execution failures without recording a success result'
     message.role === 'assistant' && message.content === 'This must not be returned.'), false);
 });
 
+test('verified filesystem results are returned if Ollama fails during its follow-up request', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-followup-error-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const file = join(root, 'note.txt');
+  await writeFile(file, 'real fixture contents');
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  let calls = 0;
+  const provider: ModelProvider = {
+    id: 'test.followup-http-error',
+    async complete() {
+      calls++;
+      if (calls === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ toolId: 'filesystem.read-file', arguments: { path: file } }],
+        };
+      }
+      throw new ProviderError('http-error');
+    },
+  };
+  const app = harness(provider, registry, config);
+  const result = await app.run();
+  assert.match(result, /Ollama could not complete its follow-up/);
+  assert.match(result, /"content":"real fixture contents"/);
+  assert.doesNotMatch(result, /model summary/);
+  assert.equal(calls, 2);
+  assert.equal(
+    app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
+    1,
+  );
+  assert.deepEqual(
+    app.session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? JSON.parse(message.content) : undefined),
+    [{ content: 'real fixture contents', bytes: Buffer.byteLength('real fixture contents') }],
+  );
+});
+
 test('unsupported shell request is refused without calling the provider or logging tool execution', async () => {
   let providerCalls = 0;
   const provider: ModelProvider = {
@@ -329,22 +373,30 @@ test('unsupported Hinglish and Hindi requests are refused without invoking a too
   };
   const prompts = [
     ['Ek command chala ke output bata.', /cannot run shell or terminal commands/i],
+    ['Run pwd.', /cannot run shell or terminal commands/i],
     ['Run pwd in the terminal.', /cannot run shell or terminal commands/i],
     ['Mere liye terminal mein ls chala do.', /cannot run shell or terminal commands/i],
     ['Can you search the internet?', /web browsing and web search are not available/i],
     ['Internet pe latest info search kar.', /web browsing and web search are not available/i],
+    ['Online check kar ke bata.', /web browsing and web search are not available/i],
     ['Internet se latest news dhundo.', /web browsing and web search are not available/i],
     ['File bana de, bas test ke liye.', /file creation, editing, and deletion are not available/i],
     ['Please change the contents of that file.', /file creation, editing, and deletion are not available/i],
+    ['Modify the file.', /file creation, editing, and deletion are not available/i],
     ['Install the pnpm package for me.', /installing or changing packages and applications is not available/i],
     ['Package install kar do.', /installing or changing packages and applications is not available/i],
     ['Open my camera.', /system feature is not available/i],
     ['Restart my Mac.', /system feature is not available/i],
+    ['Open Calculator.', /opening applications is not available/i],
+    ['Open the application.', /opening applications is not available/i],
     ['कमांड चलाकर output बताओ।', /cannot run shell or terminal commands/i],
     ['इंटरनेट पर खोजो।', /web browsing and web search are not available/i],
     ['फ़ाइल बनाओ।', /file creation, editing, and deletion are not available/i],
+    ['इस फ़ाइल को बदल दो।', /file creation, editing, and deletion are not available/i],
+    ['इस फ़ाइल को हटा दो।', /file creation, editing, and deletion are not available/i],
     ['इस पैकेज को इंस्टॉल करो।', /installing or changing packages and applications is not available/i],
     ['कैमरा खोलो।', /system feature is not available/i],
+    ['कैलकुलेटर खोलो।', /opening applications is not available/i],
   ] as const;
   for (const [prompt, expected] of prompts) {
     const app = harness(provider, new ToolRegistry());
@@ -368,6 +420,16 @@ test('unverified model claims about shell execution are replaced with a truthful
 test('unverified Hinglish shell claims are replaced without a tool event', async () => {
   const app = harness(sequenceProvider([
     { kind: 'final', text: 'Maine command chala diya. Output: audit-check.' },
+  ]), new ToolRegistry());
+  const response = await app.run();
+  assert.match(response, /cannot verify that action/i);
+  assert.match(response, /No shell command.*was performed/);
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+});
+
+test('model-invented unsupported tool definitions are not presented as available actions', async () => {
+  const app = harness(sequenceProvider([
+    { kind: 'final', text: '{"name":"assistant.open","parameters":{"value":"calculator"}}' },
   ]), new ToolRegistry());
   const response = await app.run();
   assert.match(response, /cannot verify that action/i);
@@ -544,7 +606,7 @@ test('invalid model arguments receive one structured correction and corrected li
       ok: false,
       error: {
         code: 'invalid-input',
-        message: 'Tool arguments were invalid; no operation was performed.',
+        message: 'maxEntries must be an integer number; omit it to use the configured default.',
       },
     },
   );
@@ -560,7 +622,7 @@ test('invalid model arguments receive one structured correction and corrected li
         ok: false,
         error: {
           code: 'invalid-input',
-          message: 'Tool arguments were invalid; no operation was performed.',
+          message: 'maxEntries must be an integer number; omit it to use the configured default.',
         },
       },
       {
@@ -572,6 +634,143 @@ test('invalid model arguments receive one structured correction and corrected li
       },
     ],
   );
+});
+
+test('one exact quoted absolute path overrides a model-corrupted filesystem path', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-exact-path-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  const target = join(root, 'Project Alpha', '資料', 'Case (Mixed), v2!');
+  await mkdir(target, { recursive: true });
+  await mkdir(`${target} sibling`);
+  const file = join(target, "note's, final!.txt");
+  await writeFile(file, 'exact path fixture');
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+
+  for (const [toolId, prompt] of [
+    [
+      'filesystem.list-directory',
+      `List the direct children at the exact path "${target}".`,
+    ],
+    [
+      'filesystem.directory-tree',
+      `Show a tree for the exact path \`${target}\`.`,
+    ],
+    [
+      'filesystem.read-file',
+      `Read the exact file path "${file}".`,
+    ],
+  ] as const) {
+    let providerCall = 0;
+    const app = harness({
+      id: 'test.path-corrupting',
+      async complete() {
+        providerCall++;
+        if (providerCall === 1) {
+          return {
+            kind: 'tool-calls',
+            calls: [{
+              toolId,
+              arguments: { path: '/wrong/shortened/path' },
+            }],
+          };
+        }
+        return { kind: 'final', text: 'Model generated summary.' };
+      },
+    }, registry, config);
+    const result = await app.run(new AbortController().signal, prompt);
+    assert.match(result, /^Verified filesystem tool result\(s\):/);
+    assert.equal(providerCall, 2);
+    assert.equal(
+      app.logLines.filter(line => line.includes(`"toolId":"${toolId}"`)).length,
+      1,
+    );
+    const resultMessage = app.session.messages().find(message =>
+      message.role === 'tool' && message.toolId === toolId);
+    assert.equal(resultMessage?.role, 'tool');
+    const parsed = resultMessage?.role === 'tool' ? JSON.parse(resultMessage.content) : undefined;
+    if (toolId === 'filesystem.list-directory') {
+      assert.deepEqual(parsed, {
+        entries: [{ name: "note's, final!.txt", type: 'file' }],
+        truncated: false,
+      });
+    } else if (toolId === 'filesystem.directory-tree') {
+      assert.deepEqual(parsed, {
+        entries: [{
+          name: "note's, final!.txt",
+          path: "note's, final!.txt",
+          type: 'file',
+          depth: 1,
+        }],
+        truncated: false,
+      });
+    } else {
+      assert.deepEqual(parsed, {
+        content: 'exact path fixture',
+        bytes: Buffer.byteLength('exact path fixture'),
+      });
+    }
+    const modelCall = app.session.messages().find(message =>
+      message.role === 'assistant' && message.kind === 'tool-call');
+    assert.equal(
+      modelCall?.role === 'assistant' && modelCall.kind === 'tool-call' &&
+        modelCall.toolCalls[0]?.arguments.path,
+      '/wrong/shortened/path',
+    );
+  }
+});
+
+test('ambiguous, unquoted, and batched filesystem paths are not pinned', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-ambiguous-path-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const scenarios = [
+    {
+      prompt: `Compare "${join(root, 'first')}" with "${join(root, 'second')}".`,
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: '/wrong/target' },
+      }],
+    },
+    {
+      prompt: `List directory ${join(root, 'first')}.`,
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: '/wrong/target' },
+      }],
+    },
+    {
+      prompt: `Use the exact path "${root}" for listing and reading.`,
+      calls: [
+        {
+          toolId: 'filesystem.list-directory',
+          arguments: { path: '/wrong/target' },
+        },
+        {
+          toolId: 'filesystem.read-file',
+          arguments: { path: '/wrong/file' },
+        },
+      ],
+    },
+  ] as const;
+  for (const { prompt, calls } of scenarios) {
+    const app = harness(sequenceProvider([{ kind: 'tool-calls', calls }]), registry, config);
+    await assert.rejects(app.run(new AbortController().signal, prompt), (error: unknown) =>
+      error instanceof ToolExecutionError && error.code === 'outside-root');
+    assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+  }
 });
 
 test('nullable optional Ollama limits pass through normalization and still execute validated tools', async t => {
@@ -723,7 +922,7 @@ test('out-of-range tree arguments can be corrected without weakening validation'
         ok: false,
         error: {
           code: 'invalid-input',
-          message: 'Tool arguments were invalid; no operation was performed.',
+          message: 'maxEntries must be between 1 and 100.',
         },
       },
       {

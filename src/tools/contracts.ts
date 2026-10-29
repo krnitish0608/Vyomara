@@ -47,6 +47,7 @@ export interface Tool<Input, Output> {
   readonly description: string;
   readonly parameters: ToolArgumentSchema;
   readonly validateInput: (value: unknown) => value is Input;
+  readonly inputError?: (value: unknown) => string | undefined;
   readonly validateOutput: (value: unknown) => value is Output;
   readonly run: (input: Input, signal: AbortSignal) => Promise<Output>;
 }

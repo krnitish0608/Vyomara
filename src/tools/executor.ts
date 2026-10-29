@@ -58,7 +58,7 @@ export class ToolExecutor {
     if (!tool) throw new ToolExecutionError('This capability is not available.', 'unknown-tool');
     if (!tool.validateInput(input)) {
       throw new ToolExecutionError(
-        'Tool arguments were invalid; no operation was performed.',
+        tool.inputError?.(input) ?? 'Tool arguments were invalid; no operation was performed.',
         'invalid-input',
       );
     }

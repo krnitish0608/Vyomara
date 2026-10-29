@@ -57,7 +57,22 @@ them optional. Only optional fields explicitly marked nullable in a registered
 tool schema are converted from `null` to omission at the provider boundary;
 the executor still validates every resulting argument. String numbers,
 out-of-range values, required-field nulls, and other malformed values are not
-coerced.
+coerced. Tool descriptions recommend omitting optional limits when defaults are
+suitable; if a limit is supplied, it must be a JSON integer. Filesystem schema
+errors identify the argument problem (for example, an integer limit supplied
+as a string or a limit outside its advertised range) without echoing the
+supplied path or argument values. The model may make one bounded correction
+attempt; that call is passed through the same validation, allowed-root checks,
+and policy gateway. A failed correction is surfaced as an error, not a
+successful filesystem result.
+
+When exactly one filesystem tool call is returned and the user's request
+contains exactly one quoted absolute path, the agent uses that exact quoted
+path for execution instead of a path altered by the model. This narrow
+preservation rule supports paths containing spaces, punctuation, and Unicode;
+it does not apply to unquoted or multiple paths, or to batches of tool calls.
+The executor still enforces the absolute-path, configured-root, symlink, and
+tool-schema restrictions. Ambiguous paths are not guessed or pinned.
 
 Only a completed registered tool call with a validated result is evidence that
 an operation occurred. A model-generated claim or proposed call is not proof.
@@ -75,8 +90,11 @@ tool-completion event from being mistaken for proof that the model accurately
 interpreted the result. Claims without a matching result are also screened by
 bounded phrase patterns, not semantic verification. Treat file contents as
 untrusted prompt data: they cannot authorize new tools or override system
-policy. Shell execution, web search, package installation, system-feature
-control, writes, and deletes are not implemented.
+policy. If Ollama returns a typed provider error after a filesystem result has
+already been validated, Vyomara returns that bounded result and states that no
+model summary was generated; cancellation and tool errors are still surfaced.
+Shell execution, web search, package installation, application launching,
+system-feature control, writes, and deletes are not implemented.
 
 Filesystem errors are returned with safe categories such as `not-found`,
 `invalid-path`, `outside-root`, and `permission-denied`; user-facing messages

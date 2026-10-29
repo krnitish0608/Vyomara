@@ -507,20 +507,28 @@ test('filesystem cancellation and read errors close active directory and file ha
 
 test('filesystem tool inputs reject malformed objects, unknown fields, and unreasonable limits', async t => {
   const { root, executor } = await fixture(t);
-  const invalidInputs = [
-    null,
-    [],
-    { path: root, unexpected: true },
-    { path: 'relative/path' },
-    { path: root, maxEntries: 0 },
-    { path: root, maxEntries: null },
-    { path: root, maxEntries: 501 },
-    { path: root, maxDepth: -1 },
+  const invalidInputs: Array<{ input: unknown; message: string }> = [
+    { input: null, message: 'Arguments must be an object containing an absolute path.' },
+    { input: [], message: 'Arguments must be an object containing an absolute path.' },
+    {
+      input: { path: root, unexpected: true },
+      message: 'Use only these arguments: path, maxDepth, maxEntries.',
+    },
+    { input: {}, message: 'The required path argument is missing.' },
+    { input: { path: 'relative/path' }, message: 'Path must be an absolute path without parent-directory traversal.' },
+    { input: { path: root, maxEntries: 0 }, message: 'maxEntries must be between 1 and 100.' },
+    { input: { path: root, maxEntries: null }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
+    { input: { path: root, maxEntries: '10' }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
+    { input: { path: root, maxEntries: 'null' }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
+    { input: { path: root, maxEntries: 501 }, message: 'maxEntries must be between 1 and 100.' },
+    { input: { path: root, maxDepth: -1 }, message: 'maxDepth must be between 1 and 3.' },
   ];
-  for (const input of invalidInputs) {
+  for (const { input, message } of invalidInputs) {
     await assert.rejects(
       execute(executor, 'filesystem.directory-tree', input),
-      (error: unknown) => error instanceof ToolExecutionError && error.code === 'invalid-input',
+      (error: unknown) => error instanceof ToolExecutionError &&
+        error.code === 'invalid-input' &&
+        error.message === message,
     );
   }
 });

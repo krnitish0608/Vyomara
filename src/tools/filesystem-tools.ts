@@ -105,6 +105,34 @@ function boundedOptionalInteger(value: unknown, maximum: number): boolean {
     (Number.isSafeInteger(value) && typeof value === 'number' && value >= 1 && value <= maximum);
 }
 
+function inputError(
+  value: unknown,
+  allowedFields: readonly string[],
+  limits: Readonly<Record<string, number>>,
+): string {
+  if (!isRecord(value)) return 'Arguments must be an object containing an absolute path.';
+  if (!exactKeys(value, allowedFields)) {
+    return `Use only these arguments: ${allowedFields.join(', ')}.`;
+  }
+  if (!Object.hasOwn(value, 'path')) return 'The required path argument is missing.';
+  if (typeof value.path !== 'string') return 'Path must be a string.';
+  if (value.path.length === 0) return 'Path must not be empty.';
+  if (!validPath(value.path)) {
+    return 'Path must be an absolute path without parent-directory traversal.';
+  }
+  for (const [name, maximum] of Object.entries(limits)) {
+    const candidate = value[name];
+    if (candidate === undefined) continue;
+    if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)) {
+      return `${name} must be an integer number; omit it to use the configured default.`;
+    }
+    if (candidate < 1 || candidate > maximum) {
+      return `${name} must be between 1 and ${maximum}.`;
+    }
+  }
+  return 'Tool arguments did not match the filesystem tool schema.';
+}
+
 function isWithin(root: string, target: string): boolean {
   const child = relative(root, target);
   return child === '' ||
@@ -576,14 +604,14 @@ export function registerFilesystemTools(
   const listDirectoryTool: Tool<ListInput, ListOutput> = {
     id: 'filesystem.list-directory',
     effect: 'read',
-    description: 'List direct children of an allowed directory; arguments are path and optional maxEntries only. Does not recurse or follow symlinks.',
+    description: 'List direct children only (not recursively). Required path is the exact absolute path inside an allowed root; preserve it including spaces and Unicode. Optional maxEntries is a JSON integer; omit for the configured default. Never use tree-only arguments.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
         maxEntries: {
           type: 'integer',
-          description: 'Optional maximum returned entries; null uses the configured default.',
+          description: 'Optional maximum returned entries; omit to use the configured default.',
           nullable: true,
           minimum: 1,
           maximum: config.maxDirectoryEntries,
@@ -598,6 +626,11 @@ export function registerFilesystemTools(
         validPath(value.path) &&
         boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
     },
+    inputError(value) {
+      return inputError(value, ['path', 'maxEntries'], {
+        maxEntries: config.maxDirectoryEntries,
+      });
+    },
     validateOutput: isListOutput,
     run(input, signal) {
       return listDirectory(input, config, signal, openDirectory);
@@ -606,17 +639,20 @@ export function registerFilesystemTools(
   const readFileTool: Tool<PathInput, ReadOutput> = {
     id: 'filesystem.read-file',
     effect: 'read',
-    description: 'Read a bounded UTF-8 text file inside a configured allowed root.',
+    description: 'Read one bounded UTF-8 text file. Required path is the exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to an allowed text file.', maxLength: 4096, pattern: '^/' },
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
       },
       required: ['path'],
       additionalProperties: false,
     },
     validateInput(value): value is PathInput {
       return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
+    },
+    inputError(value) {
+      return inputError(value, ['path'], {});
     },
     validateOutput: isReadOutput,
     run(input, signal) {
@@ -626,21 +662,21 @@ export function registerFilesystemTools(
   const tree: Tool<TreeInput, TreeOutput> = {
     id: 'filesystem.directory-tree',
     effect: 'read',
-    description: 'Return a bounded recursive tree of an allowed directory; arguments are path and optional maxDepth and maxEntries. Does not follow symlinks.',
+    description: 'Return a recursive tree (not a direct-child listing). Required path is the exact absolute path inside an allowed root; preserve spaces and Unicode. Optional maxDepth and maxEntries are JSON integers; omit either for its configured default. Does not follow symlinks.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
         maxDepth: {
           type: 'integer',
-          description: 'Optional maximum tree depth; null uses the configured default.',
+          description: 'Optional maximum tree depth; omit to use the configured default.',
           nullable: true,
           minimum: 1,
           maximum: config.maxTreeDepth,
         },
         maxEntries: {
           type: 'integer',
-          description: 'Optional maximum total tree entries; null uses the configured default.',
+          description: 'Optional maximum total tree entries; omit to use the configured default.',
           nullable: true,
           minimum: 1,
           maximum: config.maxDirectoryEntries,
@@ -655,6 +691,12 @@ export function registerFilesystemTools(
         validPath(value.path) &&
         boundedOptionalInteger(value.maxDepth, config.maxTreeDepth) &&
         boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
+    },
+    inputError(value) {
+      return inputError(value, ['path', 'maxDepth', 'maxEntries'], {
+        maxDepth: config.maxTreeDepth,
+        maxEntries: config.maxDirectoryEntries,
+      });
     },
     validateOutput: isTreeOutput,
     run(input, signal) {
