@@ -1,5 +1,23 @@
 export type ToolEffect = 'read' | 'write' | 'delete' | 'shell' | 'network';
 
+export type ToolFailureCode =
+  | 'not-found'
+  | 'invalid-path'
+  | 'outside-root'
+  | 'permission-denied'
+  | 'unsupported-operation'
+  | 'tool-failed';
+
+export class ToolFailure extends Error {
+  readonly code: ToolFailureCode;
+
+  constructor(message: string, code: ToolFailureCode) {
+    super(message);
+    this.name = 'ToolFailure';
+    this.code = code;
+  }
+}
+
 export interface ToolArgumentProperty {
   readonly type: 'string' | 'integer';
   readonly description?: string;

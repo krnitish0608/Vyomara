@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', onInterrupt);
   try {
     console.log(config.provider === 'ollama'
-      ? 'Provider: local Ollama; your request is sent to the configured local Ollama service.'
+      ? 'Provider: local Ollama; supported requests are sent to the configured local service.'
       : 'Provider: deterministic placeholder; no model service is contacted.');
     const response = await runRequest(prompt, controller.signal, config, createLogger());
     console.log(response);

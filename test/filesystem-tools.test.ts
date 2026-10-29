@@ -119,11 +119,14 @@ test('filesystem access rejects paths outside configured roots', async t => {
 
   await assert.rejects(
     execute(executor, 'filesystem.read-file', { path: outside }),
-    /outside the configured allowed roots/,
+    error => error instanceof ToolExecutionError &&
+      error.code === 'outside-root' &&
+      error.message.includes('outside the allowed filesystem roots') &&
+      !error.message.includes(parent),
   );
   await assert.rejects(
     execute(executor, 'filesystem.read-file', { path: siblingFile }),
-    /outside the configured allowed roots/,
+    error => error instanceof ToolExecutionError && error.code === 'outside-root',
   );
   assert.notEqual(root, outside);
 });
@@ -158,7 +161,9 @@ test('filesystem tools reject a symlink to a file outside an allowed root', asyn
 
   await assert.rejects(
     execute(executor, 'filesystem.read-file', { path: link }),
-    /Symbolic links are not allowed/,
+    error => error instanceof ToolExecutionError &&
+      error.code === 'invalid-path' &&
+      /Symbolic links are not allowed/.test(error.message),
   );
   const listing = await execute(executor, 'filesystem.list-directory', { path: root }) as {
     entries: Array<{ name: string; type: string }>;
@@ -189,13 +194,15 @@ test('filesystem tools handle missing files and directories without exposing mac
   await assert.rejects(
     execute(executor, 'filesystem.read-file', { path: missingFile }),
     error => error instanceof Error &&
-      error.message.includes('does not exist') &&
+      error.message.includes('not found') &&
+      'code' in error && error.code === 'not-found' &&
       !error.message.includes(root),
   );
   await assert.rejects(
     execute(executor, 'filesystem.list-directory', { path: missingDirectory }),
     error => error instanceof Error &&
-      error.message.includes('does not exist') &&
+      error.message.includes('not found') &&
+      'code' in error && error.code === 'not-found' &&
       !error.message.includes(root),
   );
 });

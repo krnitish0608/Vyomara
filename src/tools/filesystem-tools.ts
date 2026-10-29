@@ -4,8 +4,10 @@ import type { Dir, Dirent, Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
+import { ToolFailure } from './contracts.ts';
 import type { Tool } from './contracts.ts';
 import type { ToolRegistry } from './contracts.ts';
+import type { ToolFailureCode } from './contracts.ts';
 
 type EntryType = 'file' | 'directory' | 'symlink' | 'other';
 
@@ -74,9 +76,9 @@ export interface FilesystemToolOperations {
   readonly openFile?: (path: string, flags: number) => Promise<ReadFileHandle>;
 }
 
-class FilesystemToolError extends Error {
-  constructor(message: string) {
-    super(message);
+class FilesystemToolError extends ToolFailure {
+  constructor(message: string, code: ToolFailureCode = 'tool-failed') {
+    super(message, code);
     this.name = 'FilesystemToolError';
   }
 }
@@ -135,20 +137,23 @@ function publicFilesystemError(error: unknown): FilesystemToolError {
     ? error.code
     : undefined;
   if (code === 'ENOENT' || code === 'ENOTDIR') {
-    return new FilesystemToolError('Requested filesystem path does not exist.');
+    return new FilesystemToolError('The requested file or directory was not found.', 'not-found');
   }
   if (code === 'EACCES' || code === 'EPERM') {
-    return new FilesystemToolError('Filesystem path is not accessible.');
+    return new FilesystemToolError('The filesystem path is not accessible.', 'permission-denied');
   }
   if (code === 'ELOOP') {
-    return new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    return new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
-  return new FilesystemToolError('Filesystem operation failed safely.');
+  return new FilesystemToolError('The filesystem operation failed safely.', 'tool-failed');
 }
 
 async function canonicalRoots(roots: readonly string[], signal: AbortSignal): Promise<CanonicalRoot[]> {
   if (roots.length === 0) {
-    throw new FilesystemToolError('Filesystem access is disabled; no allowed roots are configured.');
+    throw new FilesystemToolError(
+      'Filesystem access is unavailable because no allowed roots are configured.',
+      'permission-denied',
+    );
   }
   const result: CanonicalRoot[] = [];
   for (const configuredRoot of roots) {
@@ -156,7 +161,7 @@ async function canonicalRoots(roots: readonly string[], signal: AbortSignal): Pr
     try {
       const root = await realpath(configuredRoot);
       if (!(await stat(root)).isDirectory()) {
-        throw new FilesystemToolError('A configured filesystem root is not a directory.');
+        throw new FilesystemToolError('A configured filesystem root is not a directory.', 'invalid-path');
       }
       result.push({ configured: configuredRoot, canonical: root });
     } catch (error) {
@@ -174,7 +179,10 @@ async function resolveAllowedPath(
   signal: AbortSignal,
 ): Promise<ResolvedPath> {
   if (!validPath(inputPath)) {
-    throw new FilesystemToolError('Filesystem paths must be absolute, valid, and contain no parent traversal.');
+    throw new FilesystemToolError(
+      'The filesystem path is invalid; use an absolute path without parent traversal.',
+      'invalid-path',
+    );
   }
   const normalized = resolve(inputPath);
   const matchingRoots = roots
@@ -192,7 +200,7 @@ async function resolveAllowedPath(
     });
   const matchedRoot = matchingRoots[0];
   if (!matchedRoot) {
-    throw new FilesystemToolError('Requested path is outside the configured allowed roots.');
+    throw new FilesystemToolError('The requested path is outside the allowed filesystem roots.', 'outside-root');
   }
 
   const lexicalRoot = isWithin(matchedRoot.configured, normalized)
@@ -208,10 +216,10 @@ async function resolveAllowedPath(
     throw publicFilesystemError(error);
   }
   if (!isWithin(root, actualTarget)) {
-    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
   if (actualTarget !== expectedTarget) {
-    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
 
   const segments = relative(root, expectedTarget).split(sep).filter(Boolean);
@@ -220,32 +228,32 @@ async function resolveAllowedPath(
   try {
     currentStats = await lstat(root);
     if (currentStats.isSymbolicLink() || !currentStats.isDirectory()) {
-      throw new FilesystemToolError('Configured filesystem root is not a safe directory.');
+      throw new FilesystemToolError('Configured filesystem root is not a safe directory.', 'invalid-path');
     }
     for (const segment of segments) {
       checkCancelled(signal);
       current = resolve(current, segment);
       currentStats = await lstat(current);
       if (currentStats.isSymbolicLink()) {
-        throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+        throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
       }
     }
     const canonicalTarget = await realpath(current);
     if (!isWithin(root, canonicalTarget)) {
-      throw new FilesystemToolError('Requested path is outside the configured allowed roots.');
+      throw new FilesystemToolError('The requested path is outside the allowed filesystem roots.', 'outside-root');
     }
     if (canonicalTarget !== expectedTarget) {
-      throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+      throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
     }
   } catch (error) {
     throw publicFilesystemError(error);
   }
 
   if (kind === 'file' && !currentStats.isFile()) {
-    throw new FilesystemToolError('Requested path is not a regular file.');
+    throw new FilesystemToolError('The requested path is not a regular file.', 'invalid-path');
   }
   if (kind === 'directory' && !currentStats.isDirectory()) {
-    throw new FilesystemToolError('Requested path is not a directory.');
+    throw new FilesystemToolError('The requested path is not a directory.', 'invalid-path');
   }
   return { root, target: current, stats: currentStats };
 }

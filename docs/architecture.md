@@ -3,7 +3,7 @@
 ## Status
 
 This architecture blueprint was created in Phase 3 and is updated selectively
-to reflect implementation status. As of Phases 1–6, the CLI, Ollama adapter,
+to reflect implementation status. As of Phases 1–7.1, the CLI, Ollama adapter,
 request-scoped in-memory session, tool registry/executor/policy gateway, and
 read-only filesystem tools are implemented. The diagram and component
 boundaries also describe proposed or future components; their implementation
@@ -57,7 +57,11 @@ shown in the diagram are not implemented. Filesystem roots are configured
 through environment variables, not through an approval UI. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor
-validation and the policy gateway. In MVP, policy denies side effects; the
+validation and the policy gateway. Invalid arguments receive at most one
+structured correction opportunity through the same executor and policy path.
+Unsupported shell, web, and filesystem mutation requests are refused without
+calling the provider; assistant claims about unsupported execution are not
+accepted as evidence. In MVP, policy denies side effects; the
 approval gateway is a fail-closed boundary for future approved capabilities,
 not permission to add them now.
 

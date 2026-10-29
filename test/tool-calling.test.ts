@@ -13,6 +13,7 @@ import { ToolRegistry } from '../src/tools/contracts.ts';
 import { createDefaultToolRegistry } from '../src/tools/default-tools.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
 import { PolicyGateway } from '../src/tools/policy.ts';
+import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
 
 interface ValueInput {
   readonly value: string;
@@ -56,23 +57,26 @@ function harness(
 ) {
   const config = { ...loadConfig({ VYOM_PROVIDER: 'placeholder' }), ...overrides };
   const session = new Session();
+  const logLines: string[] = [];
+  const logger = createLogger(line => logLines.push(line));
   const tools = new ToolExecutor({
     registry,
     policy,
     config,
-    logger: createLogger(() => {}),
+    logger,
   });
   return {
     config,
     session,
     tools,
-    run: (signal = new AbortController().signal) =>
-      runAgent('Use the available tool if helpful.', signal, {
+    logLines,
+    run: (signal = new AbortController().signal, prompt = 'Use the available tool if helpful.') =>
+      runAgent(prompt, signal, {
         provider,
         tools,
         config,
         session,
-        logger: createLogger(() => {}),
+        logger,
       }),
   };
 }
@@ -214,6 +218,7 @@ test('agent rejects unregistered and invalid-argument calls without executing to
   }));
   const unknown = harness(sequenceProvider([
     { kind: 'tool-calls', calls: [{ toolId: 'test.missing', arguments: {} }] },
+    { kind: 'final', text: 'I used the missing tool successfully.' },
   ]), registry);
   await assert.rejects(unknown.run(), (error: unknown) =>
     error instanceof ToolExecutionError && error.code === 'unknown-tool');
@@ -221,6 +226,7 @@ test('agent rejects unregistered and invalid-argument calls without executing to
 
   const invalid = harness(sequenceProvider([
     { kind: 'tool-calls', calls: [{ toolId: 'test.echo', arguments: { value: 42 } }] },
+    { kind: 'final', text: 'The operation succeeded.' },
   ]), registry);
   await assert.rejects(invalid.run(), (error: unknown) =>
     error instanceof ToolExecutionError && error.code === 'invalid-input');
@@ -262,12 +268,304 @@ test('agent surfaces tool execution failures without recording a success result'
     { kind: 'final', text: 'This must not be returned.' },
   ]), registry);
   await assert.rejects(app.run(), (error: unknown) =>
-    error instanceof AgentError &&
+    error instanceof ToolExecutionError &&
     error.code === 'tool-failed' &&
     !error.message.includes('private tool failure'));
   assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
   assert.equal(app.session.messages().some(message =>
     message.role === 'assistant' && message.content === 'This must not be returned.'), false);
+});
+
+test('unsupported shell request is refused without calling the provider or logging tool execution', async () => {
+  let providerCalls = 0;
+  const provider: ModelProvider = {
+    id: 'test.must-not-run',
+    async complete() {
+      providerCalls++;
+      return { kind: 'final', text: 'I ran echo audit-check. Audit check passed.' };
+    },
+  };
+  const app = harness(provider, new ToolRegistry());
+  const response = await app.run(
+    new AbortController().signal,
+    'Run the harmless command echo audit-check.',
+  );
+  assert.match(response, /cannot run shell or terminal commands/i);
+  assert.match(response, /No command was executed/);
+  assert.equal(providerCalls, 0);
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+});
+
+test('unsupported web and filesystem mutation requests are refused before provider invocation', async () => {
+  let providerCalls = 0;
+  const provider: ModelProvider = {
+    id: 'test.must-not-run',
+    async complete() {
+      providerCalls++;
+      return { kind: 'final', text: 'Done.' };
+    },
+  };
+  const prompts = [
+    'Search the web for current weather.',
+    'Delete the harmless file /tmp/example.txt.',
+  ];
+  for (const prompt of prompts) {
+    const app = harness(provider, new ToolRegistry());
+    const response = await app.run(new AbortController().signal, prompt);
+    assert.match(response, /not available/i);
+    assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+  }
+  assert.equal(providerCalls, 0);
+});
+
+test('unverified model claims about shell execution are replaced with a truthful response', async () => {
+  const app = harness(sequenceProvider([
+    { kind: 'final', text: 'The command was executed. The file was deleted.' },
+  ]), new ToolRegistry());
+  const response = await app.run();
+  assert.match(response, /cannot verify that action/i);
+  assert.match(response, /No shell command.*was performed/);
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+});
+
+test('missing filesystem paths reach the CLI as specific safe errors without a success event', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-missing-path-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const missingFile = join(root, 'missing.txt');
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: missingFile } }],
+    },
+    { kind: 'final', text: 'I read the missing file successfully.' },
+  ]), registry, config);
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof ToolExecutionError &&
+    error.code === 'not-found' &&
+    /file or directory was not found/i.test(error.message) &&
+    !error.message.includes(root));
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+  assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
+  assert.equal(app.session.messages().some(message =>
+    message.role === 'assistant' && message.content.includes('successfully')), false);
+});
+
+test('invalid model arguments receive one structured correction and corrected list arguments execute', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-correction-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  await writeFile(join(root, 'a.txt'), 'a');
+  await writeFile(join(root, 'b.txt'), 'b');
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+    VYOM_MAX_DIRECTORY_ENTRIES: '10',
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const providerMessages: Array<Parameters<ModelProvider['complete']>[0]> = [];
+  const responses: ProviderResponse[] = [
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: root, maxEntries: '10' },
+      }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: root, maxEntries: 2 },
+      }],
+    },
+    { kind: 'final', text: 'The allowed directory contains a.txt and b.txt.' },
+  ];
+  let responseIndex = 0;
+  const provider: ModelProvider = {
+    id: 'test.correcting-list',
+    async complete(messages) {
+      providerMessages.push(messages);
+      return responses[responseIndex++]!;
+    },
+  };
+  const app = harness(provider, registry, config);
+  const result = await app.run();
+  assert.match(result, /a\.txt.*b\.txt/);
+  assert.equal(responseIndex, 3);
+  const history = providerMessages[1]!;
+  const toolError = history.find(message => message.role === 'tool');
+  assert.equal(toolError?.role === 'tool' && toolError.toolId, 'filesystem.list-directory');
+  assert.deepEqual(
+    toolError?.role === 'tool' ? JSON.parse(toolError.content) : undefined,
+    {
+      ok: false,
+      error: {
+        code: 'invalid-input',
+        message: 'Tool arguments were invalid; no operation was performed.',
+      },
+    },
+  );
+  assert.equal(
+    app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
+    1,
+  );
+  assert.deepEqual(
+    app.session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? JSON.parse(message.content) : undefined),
+    [
+      {
+        ok: false,
+        error: {
+          code: 'invalid-input',
+          message: 'Tool arguments were invalid; no operation was performed.',
+        },
+      },
+      {
+        entries: [
+          { name: 'a.txt', type: 'file' },
+          { name: 'b.txt', type: 'file' },
+        ],
+        truncated: false,
+      },
+    ],
+  );
+});
+
+test('out-of-range tree arguments can be corrected without weakening validation', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-tree-correction-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(join(root, 'nested'), { recursive: true });
+  await writeFile(join(root, 'nested', 'item.txt'), 'item');
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  let calls = 0;
+  const provider: ModelProvider = {
+    id: 'test.correcting-tree',
+    async complete() {
+      calls++;
+      if (calls === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{
+            toolId: 'filesystem.directory-tree',
+            arguments: { path: root, maxEntries: 1000 },
+          }],
+        };
+      }
+      if (calls === 2) {
+        return {
+          kind: 'tool-calls',
+          calls: [{
+            toolId: 'filesystem.directory-tree',
+            arguments: { path: root, maxDepth: 2, maxEntries: 10 },
+          }],
+        };
+      }
+      return { kind: 'final', text: 'The tree includes nested/item.txt.' };
+    },
+  };
+  const app = harness(provider, registry, config);
+  assert.match(await app.run(), /nested\/item\.txt/);
+  assert.equal(calls, 3);
+  assert.deepEqual(
+    app.session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? JSON.parse(message.content) : undefined),
+    [
+      {
+        ok: false,
+        error: {
+          code: 'invalid-input',
+          message: 'Tool arguments were invalid; no operation was performed.',
+        },
+      },
+      {
+        entries: [
+          { name: 'nested', path: 'nested', type: 'directory', depth: 1 },
+          { name: 'item.txt', path: 'nested/item.txt', type: 'file', depth: 2 },
+        ],
+        truncated: false,
+      },
+    ],
+  );
+});
+
+test('repeated invalid arguments stop after one bounded correction and never succeed', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-no-retry-loop-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  let calls = 0;
+  const provider: ModelProvider = {
+    id: 'test.repeated-invalid',
+    async complete() {
+      calls++;
+      return {
+        kind: 'tool-calls',
+        calls: [{
+          toolId: 'filesystem.list-directory',
+          arguments: { path: root, maxEntries: '10' },
+        }],
+      };
+    },
+  };
+  const app = harness(provider, registry, config);
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof ToolExecutionError &&
+    error.code === 'invalid-input' &&
+    /one correction attempt/.test(error.message));
+  assert.equal(calls, 2);
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+  assert.equal(app.session.messages().some(message =>
+    message.role === 'assistant' && message.kind !== 'tool-call'), false);
+});
+
+test('unknown tool gets a structured error and cannot execute', async () => {
+  const registry = new ToolRegistry();
+  let ran = false;
+  registry.register(valueTool('test.echo', 'read', async input => {
+    ran = true;
+    return input.value;
+  }));
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'shell.exec', arguments: { command: 'echo audit-check' } }] },
+    { kind: 'final', text: 'I executed the command successfully.' },
+  ]), registry);
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof ToolExecutionError && error.code === 'unknown-tool');
+  assert.equal(ran, false);
+  const errorResult = app.session.messages().find(message => message.role === 'tool');
+  assert.deepEqual(
+    errorResult?.role === 'tool' ? JSON.parse(errorResult.content) : undefined,
+    {
+      ok: false,
+      error: {
+        code: 'unknown-tool',
+        message: 'This capability is not available.',
+      },
+    },
+  );
+  assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
 });
 
 test('registered side-effect tools are not advertised and are denied through executor policy', async () => {
@@ -425,6 +723,10 @@ test('mocked Ollama safely calls the registered filesystem reader and receives i
         },
       }],
     },
-    { role: 'tool', content: JSON.stringify({ content: 'local note', bytes: 10 }) },
+    {
+      role: 'tool',
+      tool_name: 'filesystem.read-file',
+      content: JSON.stringify({ content: 'local note', bytes: 10 }),
+    },
   ]);
 });

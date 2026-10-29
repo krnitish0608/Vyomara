@@ -3,14 +3,31 @@ import type { Logger } from '../types.ts';
 import { OperationStoppedError, runBounded } from '../shared/bounded.ts';
 import { PolicyGateway } from './policy.ts';
 import { ToolRegistry } from './contracts.ts';
+import { ToolFailure } from './contracts.ts';
 import type { ModelToolDefinition } from './contracts.ts';
 
+type ToolExecutionErrorCode =
+  | 'unknown-tool'
+  | 'invalid-input'
+  | 'input-too-large'
+  | 'policy-denied'
+  | 'invalid-output'
+  | 'output-too-large'
+  | 'timeout'
+  | 'cancelled'
+  | 'not-found'
+  | 'invalid-path'
+  | 'outside-root'
+  | 'permission-denied'
+  | 'unsupported-operation'
+  | 'tool-failed';
+
 export class ToolExecutionError extends Error {
-  readonly code: 'unknown-tool' | 'invalid-input' | 'input-too-large' | 'policy-denied' | 'invalid-output' | 'output-too-large' | 'timeout' | 'cancelled';
+  readonly code: ToolExecutionErrorCode;
 
   constructor(
     message: string,
-    code: ToolExecutionError['code'],
+    code: ToolExecutionErrorCode,
   ) {
     super(message);
     this.name = 'ToolExecutionError';
@@ -38,9 +55,12 @@ export class ToolExecutor {
 
   async execute(toolId: string, input: unknown, signal: AbortSignal): Promise<unknown> {
     const tool = this.options.registry.get(toolId);
-    if (!tool) throw new ToolExecutionError('Requested tool is not registered.', 'unknown-tool');
+    if (!tool) throw new ToolExecutionError('This capability is not available.', 'unknown-tool');
     if (!tool.validateInput(input)) {
-      throw new ToolExecutionError('Tool input did not match its schema.', 'invalid-input');
+      throw new ToolExecutionError(
+        'Tool arguments were invalid; no operation was performed.',
+        'invalid-input',
+      );
     }
     let serializedInput: string | undefined;
     try {
@@ -49,7 +69,10 @@ export class ToolExecutor {
       throw new ToolExecutionError('Tool input could not be serialized.', 'invalid-input');
     }
     if (serializedInput === undefined || serializedInput.length > this.options.config.maxToolOutputChars) {
-      throw new ToolExecutionError('Tool input exceeded the configured limit.', 'input-too-large');
+      throw new ToolExecutionError(
+        'Tool arguments exceeded the configured limit; no operation was performed.',
+        'input-too-large',
+      );
     }
 
     const decision = this.options.policy.authorize(tool.effect);
@@ -96,6 +119,9 @@ export class ToolExecutor {
           error.message,
           error.reason,
         );
+      }
+      if (error instanceof ToolFailure) {
+        throw new ToolExecutionError(error.message, error.code);
       }
       throw error;
     }

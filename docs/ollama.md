@@ -43,11 +43,27 @@ model-generated code is evaluated.
 
 The agent enforces the configured iteration and total tool-call limits.
 Arguments and results are bounded, tool input/output schemas are validated,
-and failures stop the request without a success-shaped response. Filesystem
+and invalid arguments can receive one bounded correction attempt. The original
+validation remains authoritative; each correction is revalidated by the same
+executor and policy gateway. A structured tool error is returned to the model,
+and a failed correction stops the request with a clear error. Filesystem
 tools require explicit `VYOM_ALLOWED_ROOTS`; the default `[]` grants no
 filesystem access. A file read result is sent to the configured local Ollama
 service as conversation context, so allow only roots whose contents you are
 willing to provide to that local model.
+
+Only a completed registered tool call with a validated result is evidence that
+an operation occurred. A model-generated claim or proposed call is not proof.
+Requests for unsupported shell, web, or file mutation capabilities are refused
+without asking the model to invent an execution result. Final responses that
+claim an unsupported command, search, or file mutation was performed are
+replaced with a truthful status. Shell execution, web search, writes, and
+deletes are not implemented.
+
+Filesystem errors are returned with safe categories such as `not-found`,
+`invalid-path`, `outside-root`, and `permission-denied`; user-facing messages
+omit absolute paths and stack traces. Unexpected failures use a generic safe
+message and never imply success.
 
 ## Troubleshooting
 
@@ -63,7 +79,8 @@ willing to provide to that local model.
 Automated tests use an injected mock `fetch`; they verify request shape,
 response handling, errors, timeout, and cancellation without a running Ollama
 server or internet access. Tool-call request/response messages are verified
-with mock responses; their compatibility has not been checked against a
-recorded live Ollama version. A live CLI request using the defaults succeeded
-against the local Ollama instance in this environment, but that did not verify
-tool calling. Compatibility with other Ollama versions remains unverified.
+with mock responses. Live basic chat and read-only list, tree, and file-read
+tool calls have also been exercised with Ollama `0.40.11` and `llama3.2` in the
+development environment. Model argument compliance is not deterministic:
+invalid arguments are rejected, with at most one bounded correction attempt.
+Other Ollama versions and models remain unverified.

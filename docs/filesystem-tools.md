@@ -60,6 +60,14 @@ the traversal and final path order described above. `truncated` indicates omitte
 entries due to count, depth, or output limits. Unknown input fields, relative
 paths, negative limits, and values above configured maxima are rejected.
 
+Invalid model-generated arguments are not coerced. The agent may return one
+structured validation error to the model for a correction attempt; corrected
+arguments pass through the same schema validation, executor, and policy checks.
+If the correction is invalid, the request stops without a success response.
+Missing paths, invalid paths, paths outside allowed roots, and permission
+failures are reported with concise messages and safe error codes, without
+printing absolute paths or stack traces.
+
 File contents are sensitive user data. The filesystem tools do not log them,
 but a model-requested read result is added to the temporary conversation and
 sent to the configured local Ollama service on the next provider request.
@@ -68,6 +76,11 @@ are bounded by the configured iteration, call, input, and output limits, and
 every call still passes through executor validation and the fail-closed policy
 gateway. Treat file contents as untrusted data; they cannot change system
 policy.
+
+Assistant prose is not proof of filesystem activity: a read is considered
+successful only when the matching registered tool completed and returned a
+validated result. Shell commands, web searches, and file mutations are
+unsupported and are not implemented.
 
 ## Symlinks and race limitation
 

@@ -144,6 +144,31 @@ test('CLI discloses the configured provider before processing a request', () => 
   assert.ok(result.stdout.indexOf('Provider:') < result.stdout.indexOf('[Placeholder provider]'));
 });
 
+test('CLI refuses unsupported shell requests without contacting the configured Ollama service', () => {
+  const result = spawnSync(process.execPath, [
+    '--disable-warning=ExperimentalWarning',
+    '--experimental-strip-types',
+    'src/cli.ts',
+    '--',
+    'Run the harmless command echo audit-check.',
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      VYOM_PROVIDER: 'ollama',
+      VYOM_ALLOWED_ROOTS: '[]',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /supported requests are sent to the configured local service/);
+  assert.match(result.stdout, /cannot run shell or terminal commands/i);
+  assert.match(result.stdout, /No command was executed/);
+  assert.doesNotMatch(result.stdout, /tool\.completed|audit-check passed/i);
+});
+
 test('placeholder provider is deterministic and clearly not an LLM', async () => {
   const provider = new PlaceholderProvider();
   const response = await provider.complete(
