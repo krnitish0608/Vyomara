@@ -77,7 +77,9 @@ seeds the desktop permissions on first launch. Filesystem tools remain
 unavailable until a folder is allowed. App signing, `.app`/`.dmg` distribution,
 settings, and voice are not implemented. Saved sessions can be reviewed and
 continued from History; the desktop view displays user and final assistant
-messages, not raw tool calls or tool results.
+messages, not raw tool calls or tool results. The Memory panel supports
+explicit review, save, inspection, and typed-confirmation deletion; saved
+memory is not automatically inserted into model context.
 
 ## Local history and memory
 
@@ -91,7 +93,7 @@ pnpm dev -- --session <session-id> "continue this conversation"
 pnpm dev -- --sessions delete <session-id> --confirm
 ```
 
-Memory is explicit and managed separately:
+Memory can be managed explicitly in the desktop Memory panel or through the CLI:
 
 ```sh
 pnpm dev -- --memory save "content to remember" --confirm

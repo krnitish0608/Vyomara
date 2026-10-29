@@ -37,6 +37,12 @@ export interface DesktopSessionHistory {
   readonly messages: readonly DesktopConversationMessage[];
 }
 
+export interface DesktopMemorySummary {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export type DesktopFilesystemRootGrant =
   | { readonly status: 'cancelled'; readonly roots: readonly string[] }
   | { readonly status: 'granted'; readonly roots: readonly string[] };
@@ -51,5 +57,9 @@ export interface VyomaraDesktopApi {
   listFilesystemRoots(): Promise<readonly string[]>;
   grantFilesystemRoot(): Promise<DesktopFilesystemRootGrant>;
   revokeFilesystemRoot(root: string): Promise<readonly string[]>;
+  listMemories(): Promise<readonly DesktopMemorySummary[]>;
+  readMemory(id: string): Promise<string>;
+  saveMemory(content: string, confirmation: string): Promise<string>;
+  deleteMemory(id: string, confirmation: string): Promise<boolean>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
 }

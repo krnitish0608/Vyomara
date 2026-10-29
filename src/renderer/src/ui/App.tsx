@@ -4,6 +4,7 @@ import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
   DesktopProviderConnectionResult,
   DesktopProviderStatus,
+  DesktopMemorySummary,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
 
@@ -66,6 +67,16 @@ export function App() {
   const [allowedRoots, setAllowedRoots] = useState<readonly string[]>([]);
   const [permissionsLoading, setPermissionsLoading] = useState(false);
   const [permissionsError, setPermissionsError] = useState<string>();
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memories, setMemories] = useState<readonly DesktopMemorySummary[]>([]);
+  const [memoryDraft, setMemoryDraft] = useState('');
+  const [memoryPreviewOpen, setMemoryPreviewOpen] = useState(false);
+  const [memoryConfirmation, setMemoryConfirmation] = useState('');
+  const [selectedMemory, setSelectedMemory] = useState<{ readonly id: string; readonly content: string }>();
+  const [memoryDeleteConfirmation, setMemoryDeleteConfirmation] = useState('');
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState<string>();
+  const [memoryNotice, setMemoryNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
@@ -166,6 +177,7 @@ export function App() {
     }
 
     setPermissionsOpen(false);
+    setMemoryOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -206,6 +218,7 @@ export function App() {
     }
 
     setHistoryOpen(false);
+    setMemoryOpen(false);
     setPermissionsOpen(true);
     setPermissionsLoading(true);
     setPermissionsError(undefined);
@@ -240,6 +253,77 @@ export function App() {
       setPermissionsError(error instanceof Error ? error.message : 'Folder access could not be revoked.');
     } finally {
       setPermissionsLoading(false);
+    }
+  }
+
+  async function toggleMemory(): Promise<void> {
+    if (memoryOpen) {
+      setMemoryOpen(false);
+      return;
+    }
+
+    setHistoryOpen(false);
+    setPermissionsOpen(false);
+    setMemoryOpen(true);
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    setMemoryNotice(undefined);
+    try {
+      setMemories(await window.vyomara.listMemories());
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : 'Saved memory could not be loaded.');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function openMemory(id: string): Promise<void> {
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    setMemoryNotice(undefined);
+    setMemoryDeleteConfirmation('');
+    try {
+      setSelectedMemory({ id, content: await window.vyomara.readMemory(id) });
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : 'The selected memory could not be read.');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function saveReviewedMemory(): Promise<void> {
+    if (memoryConfirmation !== 'SAVE' || memoryDraft.trim() === '' || memoryLoading) return;
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    try {
+      await window.vyomara.saveMemory(memoryDraft, memoryConfirmation);
+      setMemories(await window.vyomara.listMemories());
+      setMemoryDraft('');
+      setMemoryConfirmation('');
+      setMemoryPreviewOpen(false);
+      setMemoryNotice('Memory saved locally.');
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : 'Memory could not be saved.');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function deleteReviewedMemory(): Promise<void> {
+    if (!selectedMemory || memoryDeleteConfirmation !== 'DELETE' || memoryLoading) return;
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    try {
+      const deleted = await window.vyomara.deleteMemory(selectedMemory.id, memoryDeleteConfirmation);
+      if (!deleted) throw new Error('The selected memory no longer exists.');
+      setMemories(await window.vyomara.listMemories());
+      setSelectedMemory(undefined);
+      setMemoryDeleteConfirmation('');
+      setMemoryNotice('Memory deleted.');
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : 'Memory could not be deleted.');
+    } finally {
+      setMemoryLoading(false);
     }
   }
 
@@ -298,6 +382,15 @@ export function App() {
           aria-expanded={permissionsOpen}
         >
           Folders
+        </button>
+        <button
+          className="new-chat-button"
+          type="button"
+          onClick={() => void toggleMemory()}
+          disabled={requestPending}
+          aria-expanded={memoryOpen}
+        >
+          Memory
         </button>
         <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
           <span aria-hidden="true">＋</span> New chat
@@ -388,7 +481,139 @@ export function App() {
           </p>
         </section>
 
-        {permissionsOpen ? (
+        {memoryOpen ? (
+        <aside className="activity-panel history-panel memory-panel" aria-label="Explicit memory">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">USER CONTROLLED</p>
+              <h2>Memory</h2>
+            </div>
+            <button className="history-close" type="button" onClick={() => setMemoryOpen(false)}>
+              Close
+            </button>
+          </div>
+          <p className="memory-disclosure">
+            Memory is separate from chat history and is never created from conversation automatically.
+            Saved memories are local and are not currently added to Vyom&apos;s context.
+          </p>
+          <div className="memory-create">
+            <label className="memory-label" htmlFor="memory-draft">Save a memory</label>
+            <textarea
+              id="memory-draft"
+              className="memory-draft"
+              value={memoryDraft}
+              onChange={event => {
+                setMemoryDraft(event.target.value);
+                setMemoryPreviewOpen(false);
+                setMemoryConfirmation('');
+              }}
+              maxLength={32000}
+              rows={3}
+              placeholder="Write only what you want saved…"
+              disabled={memoryPreviewOpen || memoryLoading}
+            />
+            <button
+              className="permission-add"
+              type="button"
+              onClick={() => {
+                setMemoryError(undefined);
+                setMemoryConfirmation('');
+                setMemoryPreviewOpen(true);
+              }}
+              disabled={memoryDraft.trim() === '' || memoryLoading || memoryPreviewOpen}
+            >
+              Review before saving
+            </button>
+          </div>
+          {memoryPreviewOpen && (
+            <div className="memory-review" aria-label="Review memory before saving">
+              <p className="memory-review-title">Review the exact content to save</p>
+              <pre className="memory-content">{memoryDraft}</pre>
+              <label className="memory-label" htmlFor="memory-save-confirm">Type SAVE to confirm</label>
+              <input
+                id="memory-save-confirm"
+                className="memory-confirm-input"
+                value={memoryConfirmation}
+                onChange={event => setMemoryConfirmation(event.target.value)}
+                autoComplete="off"
+                disabled={memoryLoading}
+              />
+              <div className="memory-actions">
+                <button
+                  className="history-close"
+                  type="button"
+                  onClick={() => {
+                    setMemoryPreviewOpen(false);
+                    setMemoryConfirmation('');
+                  }}
+                  disabled={memoryLoading}
+                >
+                  Back
+                </button>
+                <button
+                  className="permission-add"
+                  type="button"
+                  onClick={() => void saveReviewedMemory()}
+                  disabled={memoryConfirmation !== 'SAVE' || memoryLoading}
+                >
+                  Save memory
+                </button>
+              </div>
+            </div>
+          )}
+          {selectedMemory && (
+            <div className="memory-review" aria-label="Selected saved memory">
+              <p className="memory-review-title">Saved content</p>
+              <pre className="memory-content">{selectedMemory.content}</pre>
+              <label className="memory-label" htmlFor="memory-delete-confirm">
+                Review the content, then type DELETE to remove it
+              </label>
+              <input
+                id="memory-delete-confirm"
+                className="memory-confirm-input"
+                value={memoryDeleteConfirmation}
+                onChange={event => setMemoryDeleteConfirmation(event.target.value)}
+                autoComplete="off"
+                disabled={memoryLoading}
+              />
+              <button
+                className="permission-revoke"
+                type="button"
+                onClick={() => void deleteReviewedMemory()}
+                disabled={memoryDeleteConfirmation !== 'DELETE' || memoryLoading}
+              >
+                Delete this memory
+              </button>
+            </div>
+          )}
+          {memoryNotice && <p className="memory-notice" role="status">{memoryNotice}</p>}
+          {memoryError && <p className="history-message history-error" role="alert">{memoryError}</p>}
+          <div className="history-content" aria-live="polite">
+            {memoryLoading ? (
+              <p className="history-message" role="status">Loading saved memories…</p>
+            ) : memories.length === 0 ? (
+              <p className="history-message">No explicit memories saved.</p>
+            ) : (
+              <ol className="history-list">
+                {memories.map(memory => (
+                  <li key={memory.id}>
+                    <button
+                      className={`history-item${memory.id === selectedMemory?.id ? ' history-item-current' : ''}`}
+                      type="button"
+                      onClick={() => void openMemory(memory.id)}
+                      disabled={memoryLoading}
+                    >
+                      <span>{new Date(memory.updatedAt).toLocaleString()}</span>
+                      <span>Review saved memory</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+          <p className="history-privacy">Only the exact content you review and confirm is saved. Deletion requires reviewing the target and typing DELETE.</p>
+        </aside>
+        ) : permissionsOpen ? (
         <aside className="activity-panel history-panel" aria-label="Filesystem permissions">
           <div className="panel-heading">
             <div>

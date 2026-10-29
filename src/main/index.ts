@@ -5,9 +5,13 @@ import { AgentError } from '../agent/agent.ts';
 import {
   grantDesktopFilesystemRoot,
   initializeDesktopFilesystemRoots,
+  deleteDesktopMemory,
   readDesktopSession,
+  readDesktopMemories,
+  readDesktopMemory,
   readDesktopSessions,
   revokeDesktopFilesystemRoot,
+  saveDesktopMemory,
   runRequest,
 } from '../app/application.ts';
 import { loadConfig } from '../config/config.ts';
@@ -18,8 +22,12 @@ import type { Logger } from '../types.ts';
 import type { AppConfig } from '../config/config.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import {
+  DesktopValidationError,
   parseDesktopChatRequest,
   parseDesktopFilesystemRoot,
+  parseDesktopMemoryDeleteRequest,
+  parseDesktopMemoryId,
+  parseDesktopMemorySaveRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
 
@@ -218,6 +226,46 @@ ipcMain.handle('vyomara:filesystem-root-revoke', (_event, input: unknown) => {
     config = revokeDesktopFilesystemRoot(config, parseDesktopFilesystemRoot(input));
     return config.filesystemAllowedRoots;
   } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:memories-list', () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    return readDesktopMemories(config);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:memory-read', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    return readDesktopMemory(config, parseDesktopMemoryId(input));
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:memory-save', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    const request = parseDesktopMemorySaveRequest(input);
+    return saveDesktopMemory(config, request.content);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    const request = parseDesktopMemoryDeleteRequest(input);
+    return deleteDesktopMemory(config, request.id);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
     throw new Error(publicErrorMessage(error));
   }
 });

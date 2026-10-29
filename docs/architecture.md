@@ -10,7 +10,7 @@ local session history and separately managed explicit memory through SQLite.
 Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
 local session-history browser and continuation from the desktop UI. Phase 12
 added a local Ollama reachability check and persistent, revocable desktop
-filesystem roots. The diagram and component
+filesystem roots. Phase 13 adds explicit desktop memory management. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -69,7 +69,10 @@ separate from reachability. Memory is not currently injected into model
 context. The desktop can make an explicit, loopback-only Ollama reachability
 check; it does not verify model installation. Allowed filesystem roots are
 selected and revoked through the native folder picker, then persisted in the
-owner-only SQLite database. CLI roots are configured through environment
+owner-only SQLite database. Memory content can be saved only after exact
+content review and typed confirmation, inspected, and deleted after review
+and typed confirmation; it is not automatically injected into requests. CLI
+roots are configured through environment
 variables. There is no interactive approval UI. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor

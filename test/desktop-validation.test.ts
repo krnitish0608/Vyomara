@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   parseDesktopChatRequest,
   parseDesktopFilesystemRoot,
+  parseDesktopMemoryDeleteRequest,
+  parseDesktopMemoryId,
+  parseDesktopMemorySaveRequest,
   parseDesktopSessionId,
 } from '../src/desktop/validation.ts';
 
@@ -41,5 +44,43 @@ test('desktop IPC accepts only bounded absolute filesystem roots', () => {
   assert.equal(parseDesktopFilesystemRoot('/Users/test/Documents'), '/Users/test/Documents');
   for (const invalid of [null, undefined, {}, '', 'relative/path', '/bad\0path', ' '.repeat(4097)]) {
     assert.throws(() => parseDesktopFilesystemRoot(invalid), /Filesystem permission request is invalid/);
+  }
+});
+
+test('desktop IPC requires exact SAVE confirmation for reviewed memory content', () => {
+  assert.deepEqual(
+    parseDesktopMemorySaveRequest({ content: 'Keep my answer concise.', confirmation: 'SAVE' }),
+    { content: 'Keep my answer concise.', confirmation: 'SAVE' },
+  );
+  for (const invalid of [
+    null,
+    {},
+    { content: 'private note' },
+    { content: 'private note', confirmation: 'save' },
+    { content: '  ', confirmation: 'SAVE' },
+    { content: 'x'.repeat(32_001), confirmation: 'SAVE' },
+    { content: 'private note', confirmation: 'SAVE', unexpected: true },
+  ]) {
+    assert.throws(() => parseDesktopMemorySaveRequest(invalid), /Memory save request|type SAVE/);
+  }
+});
+
+test('desktop IPC requires a valid memory ID and exact DELETE confirmation', () => {
+  assert.equal(parseDesktopMemoryId(validSessionId), validSessionId);
+  assert.deepEqual(
+    parseDesktopMemoryDeleteRequest({ id: validSessionId, confirmation: 'DELETE' }),
+    { id: validSessionId, confirmation: 'DELETE' },
+  );
+  for (const invalid of [
+    null,
+    {},
+    { id: validSessionId, confirmation: 'delete' },
+    { id: '../outside', confirmation: 'DELETE' },
+    { id: validSessionId, confirmation: 'DELETE', extra: true },
+  ]) {
+    assert.throws(
+      () => parseDesktopMemoryDeleteRequest(invalid),
+      /Memory deletion request|Memory request|type DELETE/,
+    );
   }
 });

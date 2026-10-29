@@ -7,6 +7,7 @@ import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
   DesktopConversationMessage,
+  DesktopMemorySummary,
   DesktopSessionHistory,
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
@@ -61,6 +62,42 @@ export function revokeDesktopFilesystemRoot(config: AppConfig, root: string): Ap
   const store = new SqliteStore(config.dataDirectory);
   try {
     return { ...config, filesystemAllowedRoots: store.removeFilesystemRoot(root) };
+  } finally {
+    store.close();
+  }
+}
+
+export function readDesktopMemories(config: AppConfig): readonly DesktopMemorySummary[] {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.listMemories();
+  } finally {
+    store.close();
+  }
+}
+
+export function readDesktopMemory(config: AppConfig, id: string): string {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.getMemory(id);
+  } finally {
+    store.close();
+  }
+}
+
+export function saveDesktopMemory(config: AppConfig, content: string): string {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.saveMemory(content);
+  } finally {
+    store.close();
+  }
+}
+
+export function deleteDesktopMemory(config: AppConfig, id: string): boolean {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.deleteMemory(id);
   } finally {
     store.close();
   }

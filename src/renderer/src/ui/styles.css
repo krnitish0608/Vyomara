@@ -211,6 +211,18 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .permission-item { display: grid; gap: 7px; padding: 10px; border: 1px solid #303846; border-radius: 9px; background: #151c25; }
 .permission-path { color: #c4cbd5; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .permission-revoke { justify-self: start; padding: 5px 8px; border: 1px solid #463238; border-radius: 7px; background: #211a20; color: #f0a3aa; font-size: 9px; cursor: pointer; }
+.memory-panel { gap: 12px; }
+.memory-disclosure { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
+.memory-create, .memory-review { display: grid; gap: 8px; padding: 11px; border: 1px solid #303846; border-radius: 10px; background: #151c25; }
+.memory-label { color: #b7c0cc; font-size: 10px; line-height: 1.5; }
+.memory-draft { width: 100%; min-height: 70px; resize: vertical; padding: 8px; border: 1px solid #303846; border-radius: 7px; outline: 0; background: #10161e; color: #d3d9e2; font-size: 10px; line-height: 1.55; }
+.memory-draft:focus, .memory-confirm-input:focus { border-color: rgba(189, 156, 255, 0.57); }
+.memory-draft:disabled { opacity: 0.75; }
+.memory-review-title { margin: 0; color: #e0d9eb; font-size: 10px; font-weight: 700; }
+.memory-content { max-height: 140px; overflow: auto; margin: 0; padding: 9px; border-radius: 7px; background: #10161e; color: #c4cbd5; font: inherit; font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-confirm-input { width: 100%; padding: 8px; border: 1px solid #303846; border-radius: 7px; outline: 0; background: #10161e; color: #e7eaf0; font-size: 11px; }
+.memory-actions { display: flex; justify-content: space-between; gap: 8px; }
+.memory-notice { margin: 0; color: #92d9bd; font-size: 10px; }
 
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 

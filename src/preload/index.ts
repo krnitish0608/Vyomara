@@ -30,6 +30,18 @@ const api: VyomaraDesktopApi = {
   revokeFilesystemRoot(root: string) {
     return ipcRenderer.invoke('vyomara:filesystem-root-revoke', root);
   },
+  listMemories() {
+    return ipcRenderer.invoke('vyomara:memories-list');
+  },
+  readMemory(id: string) {
+    return ipcRenderer.invoke('vyomara:memory-read', id);
+  },
+  saveMemory(content: string, confirmation: string) {
+    return ipcRenderer.invoke('vyomara:memory-save', { content, confirmation });
+  },
+  deleteMemory(id: string, confirmation: string) {
+    return ipcRenderer.invoke('vyomara:memory-delete', { id, confirmation });
+  },
   onActivity(listener: (event: DiagnosticEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, activity: DiagnosticEvent): void => {
       listener(activity);
