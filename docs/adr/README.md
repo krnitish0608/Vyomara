@@ -13,7 +13,7 @@ Proposed decisions must not be presented as approved implementation choices.
 | [0002](./0002-runtime-and-language.md) | Runtime and language | Accepted |
 | [0003](./0003-model-provider.md) | Provider interface and local Ollama integration | Accepted |
 | [0004](./0004-text-interaction.md) | First text interaction interface | Accepted |
-| [0005](./0005-persistence.md) | Sessions, messages, and explicit memory | Proposed |
+| [0005](./0005-persistence.md) | Sessions, messages, and explicit memory | Accepted |
 | [0006](./0006-tool-contracts.md) | Tool registration and execution | Accepted |
 | [0007](./0007-permission-gateway.md) | Permissions and approval gateway | Accepted |
 | [0008](./0008-configuration-and-secrets.md) | Configuration and secrets | Accepted |
@@ -25,18 +25,16 @@ Proposed decisions must not be presented as approved implementation choices.
 
 User confirmation is needed for:
 
-1. **Persistence:** format/engine, encryption, retention, backup/export, and
-   deletion guarantees for history and explicit memory.
-2. **Approval UX:** how future side-effect requests are displayed and scoped.
-3. **Configuration:** secret injection for any future credential-bearing
+1. **Approval UX:** how future side-effect requests are displayed and scoped.
+2. **Configuration:** secret injection for any future credential-bearing
    provider.
-4. **Diagnostics:** retention/rotation policy and any future opt-in content
+3. **Diagnostics:** retention/rotation policy and any future opt-in content
    logging.
-5. **Testing:** evaluation set, model-evaluation acceptance criteria, and
+4. **Testing:** evaluation set, model-evaluation acceptance criteria, and
    benchmark environment.
-6. **Compatibility:** minimum macOS release, packaging/distribution, and
+5. **Compatibility:** minimum macOS release, packaging/distribution, and
    confirmation that Node.js `>=22.22.1` is the release baseline.
-7. **Filesystem access UX:** selection, display, and revocation of allowed
+6. **Filesystem access UX:** selection, display, and revocation of allowed
    roots. The read-only tools and default resource limits are implemented;
    root configuration is currently environment-only and defaults to no access.
 
