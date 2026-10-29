@@ -1,5 +1,7 @@
 import type { Tool } from './contracts.ts';
 import { ToolRegistry } from './contracts.ts';
+import type { AppConfig } from '../config/config.ts';
+import { registerFilesystemTools } from './filesystem-tools.ts';
 
 interface EmptyInput {
   readonly [key: string]: never;
@@ -35,8 +37,9 @@ const appInfoTool: Tool<EmptyInput, AppInfo> = {
   },
 };
 
-export function createDefaultToolRegistry(): ToolRegistry {
+export function createDefaultToolRegistry(config: AppConfig): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(appInfoTool);
+  registerFilesystemTools(registry, config);
   return registry;
 }

@@ -6,7 +6,8 @@ name is **Vyom**.
 ## Development status
 
 Initial implementation is in progress. The current CLI can use the local
-Ollama provider or an explicit deterministic placeholder.
+Ollama provider or an explicit deterministic placeholder. Read-only filesystem
+tools are registered but not yet advertised to Ollama.
 
 ## Prerequisites
 
@@ -26,3 +27,4 @@ Use pnpm only. Do not mix npm and pnpm lockfiles in this project.
 - Test changes before marking work complete.
 
 See [the Ollama setup and troubleshooting guide](./docs/ollama.md).
+See [the read-only filesystem tool guide](./docs/filesystem-tools.md).

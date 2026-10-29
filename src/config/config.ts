@@ -1,7 +1,10 @@
+import { isAbsolute } from 'node:path';
+
 export interface AppConfig {
   readonly provider: 'ollama' | 'placeholder';
   readonly ollamaBaseUrl: string;
   readonly ollamaModel: string;
+  readonly filesystemAllowedRoots: readonly string[];
   readonly maxAgentIterations: number;
   readonly maxToolCalls: number;
   readonly requestTimeoutMs: number;
@@ -9,6 +12,9 @@ export interface AppConfig {
   readonly maxInputChars: number;
   readonly maxToolOutputChars: number;
   readonly maxResponseChars: number;
+  readonly maxFileBytes: number;
+  readonly maxDirectoryEntries: number;
+  readonly maxTreeDepth: number;
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -65,6 +71,28 @@ function modelName(raw: string | undefined): string {
   return value;
 }
 
+function allowedRoots(raw: string | undefined): readonly string[] {
+  if (raw === undefined) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('VYOM_ALLOWED_ROOTS must be a JSON array of absolute directory paths.');
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length > 32 ||
+    parsed.some(root =>
+      typeof root !== 'string' ||
+      root.trim() === '' ||
+      root !== root.trim() ||
+      !isAbsolute(root))
+  ) {
+    throw new Error('VYOM_ALLOWED_ROOTS must be a JSON array of at most 32 absolute directory paths.');
+  }
+  return parsed;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const providerValue = env.VYOM_PROVIDER?.trim() || 'ollama';
   if (providerValue !== 'ollama' && providerValue !== 'placeholder') {
@@ -75,6 +103,7 @@ export function loadConfig(env: Environment): AppConfig {
     provider: providerValue,
     ollamaBaseUrl: localOllamaBaseUrl(env.VYOM_OLLAMA_BASE_URL),
     ollamaModel: modelName(env.VYOM_OLLAMA_MODEL),
+    filesystemAllowedRoots: allowedRoots(env.VYOM_ALLOWED_ROOTS),
     maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 3, 1, 10),
     maxToolCalls: boundedInteger(env, 'VYOM_MAX_TOOL_CALLS', 2, 0, 10),
     requestTimeoutMs: boundedInteger(env, 'VYOM_REQUEST_TIMEOUT_MS', 120_000, 1_000, 300_000),
@@ -82,5 +111,8 @@ export function loadConfig(env: Environment): AppConfig {
     maxInputChars: boundedInteger(env, 'VYOM_MAX_INPUT_CHARS', 8_000, 1, 32_000),
     maxToolOutputChars: boundedInteger(env, 'VYOM_MAX_TOOL_OUTPUT_CHARS', 4_000, 1, 20_000),
     maxResponseChars: boundedInteger(env, 'VYOM_MAX_RESPONSE_CHARS', 16_000, 1_000, 64_000),
+    maxFileBytes: boundedInteger(env, 'VYOM_MAX_FILE_BYTES', 65_536, 1, 1_048_576),
+    maxDirectoryEntries: boundedInteger(env, 'VYOM_MAX_DIRECTORY_ENTRIES', 100, 1, 500),
+    maxTreeDepth: boundedInteger(env, 'VYOM_MAX_TREE_DEPTH', 3, 1, 10),
   };
 }

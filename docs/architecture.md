@@ -47,11 +47,12 @@ flowchart TD
     Tools --> Audit
 ```
 
-The Ollama adapter is an initial local compatibility target, not a provider
-API decision. The diagram does not imply Ollama, persistence, CLI, tools, or
-logging have already been implemented. In MVP, policy denies side effects;
-the approval gateway is a fail-closed boundary for future approved
-capabilities, not permission to add them now.
+The Ollama adapter, CLI, and first read-only filesystem tools are implemented.
+The diagram remains a component-level view; it does not imply persistence or
+future capabilities are implemented. The current Ollama adapter does not
+advertise or accept model tool calls. In MVP, policy denies side effects; the
+approval gateway is a fail-closed boundary for future approved capabilities,
+not permission to add them now.
 
 ## Components and boundaries
 

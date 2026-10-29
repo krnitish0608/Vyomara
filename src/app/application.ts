@@ -22,7 +22,7 @@ export async function runRequest(
     })
     : new PlaceholderProvider();
   const tools = new ToolExecutor({
-    registry: createDefaultToolRegistry(),
+    registry: createDefaultToolRegistry(config),
     policy: new PolicyGateway(),
     config,
     logger,

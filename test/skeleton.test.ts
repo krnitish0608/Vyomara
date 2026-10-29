@@ -70,6 +70,10 @@ test('configuration uses safe defaults and rejects invalid values without echoin
   assert.equal(loadConfig({}).provider, 'ollama');
   assert.equal(loadConfig({}).ollamaBaseUrl, 'http://127.0.0.1:11434');
   assert.equal(loadConfig({}).ollamaModel, 'llama3.2');
+  assert.deepEqual(loadConfig({}).filesystemAllowedRoots, []);
+  assert.equal(loadConfig({}).maxFileBytes, 65_536);
+  assert.equal(loadConfig({}).maxDirectoryEntries, 100);
+  assert.equal(loadConfig({}).maxTreeDepth, 3);
   assert.equal(loadConfig({ VYOM_PROVIDER: 'placeholder' }).provider, 'placeholder');
   assert.equal(loadConfig({}).maxAgentIterations, 3);
   assert.throws(
@@ -84,6 +88,10 @@ test('configuration uses safe defaults and rejects invalid values without echoin
   assert.throws(() => loadConfig({ VYOM_OLLAMA_BASE_URL: '' }), /valid local HTTP URL/);
   assert.throws(() => loadConfig({ VYOM_OLLAMA_MODEL: '   ' }), /VYOM_OLLAMA_MODEL/);
   assert.throws(() => loadConfig({ VYOM_REQUEST_TIMEOUT_MS: '999' }), /VYOM_REQUEST_TIMEOUT_MS/);
+  assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: 'not json' }), /VYOM_ALLOWED_ROOTS/);
+  assert.throws(() => loadConfig({ VYOM_ALLOWED_ROOTS: '["relative/path"]' }), /absolute directory paths/);
+  assert.throws(() => loadConfig({ VYOM_MAX_FILE_BYTES: '0' }), /VYOM_MAX_FILE_BYTES/);
+  assert.throws(() => loadConfig({ VYOM_MAX_TREE_DEPTH: '11' }), /VYOM_MAX_TREE_DEPTH/);
 });
 
 test('placeholder provider is deterministic and clearly not an LLM', async () => {

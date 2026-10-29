@@ -1,0 +1,309 @@
+import assert from 'node:assert/strict';
+import test, { type TestContext } from 'node:test';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadConfig } from '../src/config/config.ts';
+import { createLogger } from '../src/diagnostics/logger.ts';
+import { ToolRegistry } from '../src/tools/contracts.ts';
+import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
+import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
+import { PolicyGateway } from '../src/tools/policy.ts';
+
+async function fixture(t: TestContext, env: Record<string, string> = {}) {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-fs-'));
+  const root = join(parent, 'allowed');
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  await mkdir(root);
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+    ...env,
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const logLines: string[] = [];
+  const executor = new ToolExecutor({
+    registry,
+    policy: new PolicyGateway(),
+    config,
+    logger: createLogger(line => logLines.push(line)),
+  });
+  return { parent, root, config, registry, executor, logLines };
+}
+
+function execute(
+  executor: ToolExecutor,
+  id: string,
+  input: unknown,
+): Promise<unknown> {
+  return executor.execute(id, input, new AbortController().signal);
+}
+
+test('filesystem listing returns bounded structured entries for an allowed directory', async t => {
+  const { root, executor } = await fixture(t);
+  await writeFile(join(root, 'hello.txt'), 'hello');
+  await mkdir(join(root, 'subfolder'));
+
+  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: root }), {
+    entries: [
+      { name: 'hello.txt', type: 'file' },
+      { name: 'subfolder', type: 'directory' },
+    ],
+    truncated: false,
+  });
+});
+
+test('filesystem read returns permitted UTF-8 text without exposing the path in results', async t => {
+  const { root, executor } = await fixture(t);
+  const file = join(root, 'example.ts');
+  await writeFile(file, 'export const greeting = "hello";\n');
+
+  assert.deepEqual(await execute(executor, 'filesystem.read-file', { path: file }), {
+    content: 'export const greeting = "hello";\n',
+    bytes: Buffer.byteLength('export const greeting = "hello";\n'),
+  });
+});
+
+test('filesystem access rejects paths outside configured roots', async t => {
+  const { parent, root, executor } = await fixture(t);
+  const outside = join(parent, 'private.txt');
+  const prefixSibling = join(parent, 'allowed-evil');
+  await mkdir(prefixSibling);
+  const siblingFile = join(prefixSibling, 'private.txt');
+  await writeFile(outside, 'private');
+  await writeFile(siblingFile, 'private sibling');
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: outside }),
+    /outside the configured allowed roots/,
+  );
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: siblingFile }),
+    /outside the configured allowed roots/,
+  );
+  assert.notEqual(root, outside);
+});
+
+test('filesystem access rejects explicit parent traversal', async t => {
+  const { parent, root, executor } = await fixture(t);
+  const outside = join(parent, 'outside.txt');
+  await writeFile(outside, 'private');
+  const traversal = `${root}/../outside.txt`;
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: traversal }),
+    (error: unknown) => error instanceof ToolExecutionError && error.code === 'invalid-input',
+  );
+});
+
+test('filesystem tools reject a symlink to a file outside an allowed root', async t => {
+  const { parent, root, executor } = await fixture(t);
+  const outside = join(parent, 'outside.txt');
+  const outsideDirectory = join(parent, 'outside-directory');
+  const link = join(root, 'outside-link.txt');
+  const directoryLink = join(root, 'outside-directory-link');
+  await writeFile(outside, 'must not be read');
+  await mkdir(outsideDirectory);
+  await writeFile(join(outsideDirectory, 'secret.txt'), 'must not be traversed');
+  try {
+    await symlink(outside, link);
+    await symlink(outsideDirectory, directoryLink);
+  } catch (error) {
+    assert.fail(`Symlink security test could not create its fixture on this platform: ${String(error)}`);
+  }
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: link }),
+    /Symbolic links are not allowed/,
+  );
+  const listing = await execute(executor, 'filesystem.list-directory', { path: root }) as {
+    entries: Array<{ name: string; type: string }>;
+  };
+  assert.deepEqual(listing.entries, [
+    { name: 'outside-directory-link', type: 'symlink' },
+    { name: 'outside-link.txt', type: 'symlink' },
+  ]);
+  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+    entries: Array<{ name: string; path: string; type: string; depth: number }>;
+  };
+  assert.deepEqual(tree.entries, [
+    {
+      name: 'outside-directory-link',
+      path: 'outside-directory-link',
+      type: 'symlink',
+      depth: 1,
+    },
+    { name: 'outside-link.txt', path: 'outside-link.txt', type: 'symlink', depth: 1 },
+  ]);
+});
+
+test('filesystem tools handle missing files and directories without exposing machine paths', async t => {
+  const { root, executor } = await fixture(t);
+  const missingFile = join(root, 'missing.txt');
+  const missingDirectory = join(root, 'missing-directory');
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: missingFile }),
+    error => error instanceof Error &&
+      error.message.includes('does not exist') &&
+      !error.message.includes(root),
+  );
+  await assert.rejects(
+    execute(executor, 'filesystem.list-directory', { path: missingDirectory }),
+    error => error instanceof Error &&
+      error.message.includes('does not exist') &&
+      !error.message.includes(root),
+  );
+});
+
+test('filesystem read rejects files above the byte limit', async t => {
+  const { root, executor } = await fixture(t, { VYOM_MAX_FILE_BYTES: '8' });
+  const file = join(root, 'large.txt');
+  await writeFile(file, '123456789');
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: file }),
+    /maximum size/,
+  );
+});
+
+test('filesystem read stays within the configured serialized output limit', async t => {
+  const { root, executor } = await fixture(t, { VYOM_MAX_TOOL_OUTPUT_CHARS: '300' });
+  const file = join(root, 'output-bound.txt');
+  await writeFile(file, 'x'.repeat(400));
+
+  await assert.rejects(
+    execute(executor, 'filesystem.read-file', { path: file }),
+    /tool-output limit/,
+  );
+});
+
+test('filesystem read rejects binary and invalid UTF-8 content', async t => {
+  const { root, executor } = await fixture(t);
+  const binary = join(root, 'binary.dat');
+  const invalid = join(root, 'invalid.txt');
+  await writeFile(binary, Buffer.from([0x61, 0x00, 0x62]));
+  await writeFile(invalid, Buffer.from([0xc3, 0x28]));
+
+  await assert.rejects(execute(executor, 'filesystem.read-file', { path: binary }), /Binary files/);
+  await assert.rejects(execute(executor, 'filesystem.read-file', { path: invalid }), /valid UTF-8/);
+});
+
+test('directory tree honors configured depth, entry, and output bounds', async t => {
+  const { root, executor } = await fixture(t, {
+    VYOM_MAX_TREE_DEPTH: '1',
+    VYOM_MAX_DIRECTORY_ENTRIES: '2',
+    VYOM_MAX_TOOL_OUTPUT_CHARS: '200',
+  });
+  await mkdir(join(root, 'a'));
+  await mkdir(join(root, 'a', 'nested'));
+  await writeFile(join(root, 'a', 'nested', 'deep.txt'), 'x');
+  await writeFile(join(root, 'b.txt'), 'x');
+  await writeFile(join(root, 'c.txt'), 'x');
+
+  const tree = await execute(executor, 'filesystem.directory-tree', {
+    path: root,
+    maxDepth: 1,
+    maxEntries: 1,
+  }) as { entries: Array<{ depth: number }>; truncated: boolean };
+  assert.equal(tree.entries.length, 1);
+  assert.ok(tree.entries.every(entry => entry.depth <= 1));
+  assert.equal(tree.truncated, true);
+
+  const list = await execute(executor, 'filesystem.list-directory', { path: root }) as {
+    entries: unknown[];
+    truncated: boolean;
+  };
+  assert.ok(list.entries.length <= 2);
+  assert.equal(list.truncated, true);
+  assert.ok(JSON.stringify(list).length <= 200);
+});
+
+test('directory tree marks omitted descendants when the depth limit is reached', async t => {
+  const { root, executor } = await fixture(t, {
+    VYOM_MAX_TREE_DEPTH: '1',
+    VYOM_MAX_DIRECTORY_ENTRIES: '20',
+  });
+  await mkdir(join(root, 'folder'));
+  await writeFile(join(root, 'folder', 'child.txt'), 'x');
+
+  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+    entries: Array<{ path: string; depth: number }>;
+    truncated: boolean;
+  };
+  assert.deepEqual(tree.entries, [{ name: 'folder', path: 'folder', type: 'directory', depth: 1 }]);
+  assert.equal(tree.truncated, true);
+});
+
+test('filesystem tool inputs reject malformed objects, unknown fields, and unreasonable limits', async t => {
+  const { root, executor } = await fixture(t);
+  const invalidInputs = [
+    null,
+    [],
+    { path: root, unexpected: true },
+    { path: 'relative/path' },
+    { path: root, maxEntries: 0 },
+    { path: root, maxEntries: 501 },
+    { path: root, maxDepth: -1 },
+  ];
+  for (const input of invalidInputs) {
+    await assert.rejects(
+      execute(executor, 'filesystem.directory-tree', input),
+      (error: unknown) => error instanceof ToolExecutionError && error.code === 'invalid-input',
+    );
+  }
+});
+
+test('filesystem registry exposes no write or delete tools and policy denies side effects', async t => {
+  const { root, registry, executor } = await fixture(t);
+  const file = join(root, 'keep.txt');
+  await writeFile(file, 'unchanged');
+
+  assert.equal(registry.get('filesystem.write-file'), undefined);
+  assert.equal(registry.get('filesystem.delete-file'), undefined);
+  await assert.rejects(
+    execute(executor, 'filesystem.write-file', { path: file, content: 'changed' }),
+    (error: unknown) => error instanceof ToolExecutionError && error.code === 'unknown-tool',
+  );
+  await assert.rejects(
+    execute(executor, 'filesystem.delete-file', { path: file }),
+    (error: unknown) => error instanceof ToolExecutionError && error.code === 'unknown-tool',
+  );
+  assert.equal(await readFile(file, 'utf8'), 'unchanged');
+  const policy = new PolicyGateway();
+  assert.deepEqual(policy.authorize('write'), { allowed: false, reason: 'side-effects-disabled' });
+  assert.deepEqual(policy.authorize('delete'), { allowed: false, reason: 'side-effects-disabled' });
+  assert.deepEqual(policy.authorize('shell'), { allowed: false, reason: 'side-effects-disabled' });
+});
+
+test('filesystem operations fail closed when no allowed roots are configured', async t => {
+  const { root } = await fixture(t);
+  const config = loadConfig({ VYOM_PROVIDER: 'placeholder' });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const executor = new ToolExecutor({
+    registry,
+    policy: new PolicyGateway(),
+    config,
+    logger: createLogger(() => {}),
+  });
+
+  await assert.rejects(
+    execute(executor, 'filesystem.list-directory', { path: root }),
+    /no allowed roots are configured/,
+  );
+});
+
+test('filesystem diagnostics omit file content and absolute paths', async t => {
+  const { root, executor, logLines } = await fixture(t);
+  const file = join(root, 'private.txt');
+  const secretText = 'private filesystem content must not enter logs';
+  await writeFile(file, secretText);
+  await execute(executor, 'filesystem.read-file', { path: file });
+
+  const logs = logLines.join('\n');
+  assert.doesNotMatch(logs, new RegExp(secretText));
+  assert.doesNotMatch(logs, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(logs, /filesystem\.read-file/);
+});
