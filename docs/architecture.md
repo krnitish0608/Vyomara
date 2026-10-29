@@ -7,7 +7,8 @@ to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
 adapter, tool registry/executor/policy gateway, and read-only filesystem
 tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
 local session history and separately managed explicit memory through SQLite.
-Phase 10 is adding the first Electron/React desktop chat shell. The diagram and component
+Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
+local session-history browser and continuation from the desktop UI. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -60,8 +61,8 @@ flowchart TD
 The CLI stores local session history, supports review, continuation, and
 deletion, and offers separate explicitly confirmed memory operations. The
 desktop shell uses the same application service and exposes chat, cancellation,
-provider configuration status, and request-scoped activity through a restricted
-preload bridge. Provider status is not a connection check. Memory is not
+provider configuration status, request-scoped activity, and filtered session
+history through a restricted preload bridge. Provider status is not a connection check. Memory is not
 currently injected into model context. There is no interactive approval UI;
 filesystem roots are configured through environment variables. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts

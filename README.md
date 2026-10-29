@@ -67,7 +67,9 @@ The app uses the current process environment. Vyomara does not automatically
 load `.env` files. Filesystem tools remain unavailable unless
 `VYOM_ALLOWED_ROOTS` is configured before launching; the desktop UI does not
 yet manage workspace permissions. App signing, `.app`/`.dmg` distribution,
-session browsing, settings, and voice are not implemented.
+settings, and voice are not implemented. Saved sessions can be reviewed and
+continued from History; the desktop view displays user and final assistant
+messages, not raw tool calls or tool results.
 
 ## Local history and memory
 

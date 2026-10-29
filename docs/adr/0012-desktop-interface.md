@@ -39,9 +39,9 @@ is made. The CLI remains supported.
 
 Electron and React add package size and build complexity. They provide a
 replaceable desktop shell while keeping agent, policy, and storage logic in
-the existing Node process. Packaging, project selection, session browsing,
-settings, workspace permission management, voice, and any side-effect UI
-remain future work; visible planned areas must not be presented as working.
+the existing Node process. Packaging, project selection, settings, workspace
+permission management, voice, and any side-effect UI remain future work;
+visible planned areas must not be presented as working.
 
 ## Security/privacy implications
 

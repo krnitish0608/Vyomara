@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
-import type { DesktopProviderStatus } from '../../../desktop/contracts.ts';
+import type {
+  DesktopProviderStatus,
+  DesktopSessionSummary,
+} from '../../../desktop/contracts.ts';
 
 interface ChatMessage {
   readonly id: number;
@@ -52,6 +55,10 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activity, setActivity] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sessions, setSessions] = useState<readonly DesktopSessionSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
@@ -129,6 +136,46 @@ export function App() {
     setMessages([]);
     setActivity([]);
     setRequestError(undefined);
+    setHistoryOpen(false);
+  }
+
+  async function toggleHistory(): Promise<void> {
+    if (historyOpen) {
+      setHistoryOpen(false);
+      return;
+    }
+
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    try {
+      setSessions(await window.vyomara.listSessions());
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'Saved sessions could not be loaded.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function openSession(id: string): Promise<void> {
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    try {
+      const saved = await window.vyomara.loadSession(id);
+      setSessionId(saved.sessionId);
+      setMessages(saved.messages.map((message, index) => ({
+        id: index,
+        role: message.role,
+        content: message.content,
+      })));
+      setActivity([]);
+      setRequestError(undefined);
+      setHistoryOpen(false);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The saved session could not be opened.');
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   const providerTitle = provider
@@ -149,6 +196,15 @@ export function App() {
           <span>{providerError ?? providerTitle}</span>
           {provider?.provider === 'ollama' && <span className="status-note">connection not checked</span>}
         </div>
+        <button
+          className="new-chat-button"
+          type="button"
+          onClick={() => void toggleHistory()}
+          disabled={requestPending}
+          aria-expanded={historyOpen}
+        >
+          History
+        </button>
         <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
           <span aria-hidden="true">＋</span> New chat
         </button>
@@ -238,6 +294,45 @@ export function App() {
           </p>
         </section>
 
+        {historyOpen ? (
+        <aside className="activity-panel history-panel" aria-label="Saved conversations">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">ON THIS MAC</p>
+              <h2>History</h2>
+            </div>
+            <button className="history-close" type="button" onClick={() => setHistoryOpen(false)}>
+              Close
+            </button>
+          </div>
+          <div className="history-content" aria-live="polite">
+            {historyLoading ? (
+              <p className="history-message" role="status">Loading saved conversations…</p>
+            ) : historyError ? (
+              <p className="history-message history-error" role="alert">{historyError}</p>
+            ) : sessions.length === 0 ? (
+              <p className="history-message">No saved conversations yet.</p>
+            ) : (
+              <ol className="history-list">
+                {sessions.map(session => (
+                  <li key={session.id}>
+                    <button
+                      className={`history-item${session.id === sessionId ? ' history-item-current' : ''}`}
+                      type="button"
+                      onClick={() => void openSession(session.id)}
+                      disabled={historyLoading}
+                    >
+                      <span>{new Date(session.updatedAt).toLocaleString()}</span>
+                      <span>{session.messageCount} messages</span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+          <p className="history-privacy">Saved locally. Tool results are not shown in this history view.</p>
+        </aside>
+        ) : (
         <aside className="activity-panel" aria-label="Task activity">
           <div className="panel-heading">
             <div>
@@ -276,6 +371,7 @@ export function App() {
           </div>
           <p className="planned-note">Project, files, Git, web research, and voice views are planned and not available yet.</p>
         </aside>
+        )}
       </div>
     </main>
   );

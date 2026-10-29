@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { AgentError } from '../agent/agent.ts';
-import { runRequest } from '../app/application.ts';
+import { readDesktopSession, readDesktopSessions, runRequest } from '../app/application.ts';
 import { loadConfig } from '../config/config.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -9,7 +9,7 @@ import { ToolExecutionError } from '../tools/executor.ts';
 import type { Logger } from '../types.ts';
 import type { AppConfig } from '../config/config.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
-import { parseDesktopChatRequest } from '../desktop/validation.ts';
+import { parseDesktopChatRequest, parseDesktopSessionId } from '../desktop/validation.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
@@ -119,6 +119,25 @@ ipcMain.handle('vyomara:chat-cancel', () => {
   if (!activeRequest) return false;
   activeRequest.abort();
   return true;
+});
+
+ipcMain.handle('vyomara:sessions-list', () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    return readDesktopSessions(config);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:session-load', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    const sessionId = parseDesktopSessionId(input);
+    return readDesktopSession(config, sessionId);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
 });
 
 app.whenReady().then(() => {

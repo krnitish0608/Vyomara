@@ -3,6 +3,11 @@ import type { Logger } from '../types.ts';
 import { runAgent } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
+import type {
+  DesktopConversationMessage,
+  DesktopSessionHistory,
+  DesktopSessionSummary,
+} from '../desktop/contracts.ts';
 import { createDefaultToolRegistry } from '../tools/default-tools.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
@@ -11,6 +16,32 @@ import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
 export interface RequestResult {
   readonly response: string;
   readonly sessionId: string;
+}
+
+export function readDesktopSessions(config: AppConfig): readonly DesktopSessionSummary[] {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.listSessions();
+  } finally {
+    store.close();
+  }
+}
+
+export function readDesktopSession(config: AppConfig, sessionId: string): DesktopSessionHistory {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    const messages: DesktopConversationMessage[] = [];
+    for (const message of store.getSession(sessionId).messages()) {
+      if (message.role === 'user') {
+        messages.push({ role: 'user', content: message.content });
+      } else if (message.role === 'assistant' && message.kind !== 'tool-call') {
+        messages.push({ role: 'assistant', content: message.content });
+      }
+    }
+    return { sessionId, messages };
+  } finally {
+    store.close();
+  }
 }
 
 export async function runRequest(

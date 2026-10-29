@@ -2,6 +2,13 @@ import type { DesktopChatRequest } from './contracts.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export function parseDesktopSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !uuidPattern.test(value)) {
+    throw new Error('Session request is invalid.');
+  }
+  return value;
+}
+
 export function parseDesktopChatRequest(
   value: unknown,
   maxInputChars: number,
