@@ -77,6 +77,36 @@ test('filesystem listing returns bounded structured entries for an allowed direc
   });
 });
 
+test('empty directories produce empty non-truncated listings and trees', async t => {
+  const { root, executor } = await fixture(t);
+  const empty = join(root, 'empty');
+  await mkdir(empty);
+  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: empty }), {
+    entries: [],
+    truncated: false,
+  });
+  assert.deepEqual(await execute(executor, 'filesystem.directory-tree', { path: empty }), {
+    entries: [],
+    truncated: false,
+  });
+});
+
+test('filesystem permission errors are classified without exposing paths', async t => {
+  const { root, executor } = await fixture(t, {}, {
+    openDirectory: async () => {
+      const error = Object.assign(new Error('private path detail'), { code: 'EACCES' });
+      throw error;
+    },
+  });
+  await assert.rejects(
+    execute(executor, 'filesystem.list-directory', { path: root }),
+    error => error instanceof ToolExecutionError &&
+      error.code === 'permission-denied' &&
+      !error.message.includes(root) &&
+      !error.message.includes('private path detail'),
+  );
+});
+
 test('filesystem listing subset is independent of directory enumeration order', async t => {
   const outputs = [];
   for (const order of ['ascending', 'descending'] as const) {
@@ -483,6 +513,7 @@ test('filesystem tool inputs reject malformed objects, unknown fields, and unrea
     { path: root, unexpected: true },
     { path: 'relative/path' },
     { path: root, maxEntries: 0 },
+    { path: root, maxEntries: null },
     { path: root, maxEntries: 501 },
     { path: root, maxDepth: -1 },
   ];

@@ -52,13 +52,31 @@ filesystem access. A file read result is sent to the configured local Ollama
 service as conversation context, so allow only roots whose contents you are
 willing to provide to that local model.
 
+Ollama may return `null` for optional integer limits even when the schema marks
+them optional. Only optional fields explicitly marked nullable in a registered
+tool schema are converted from `null` to omission at the provider boundary;
+the executor still validates every resulting argument. String numbers,
+out-of-range values, required-field nulls, and other malformed values are not
+coerced.
+
 Only a completed registered tool call with a validated result is evidence that
 an operation occurred. A model-generated claim or proposed call is not proof.
 Requests for unsupported shell, web, or file mutation capabilities are refused
-without asking the model to invent an execution result. Final responses that
-claim an unsupported command, search, or file mutation was performed are
-replaced with a truthful status. Shell execution, web search, writes, and
-deletes are not implemented.
+without asking the model to invent an execution result. Common English, Hindi,
+and Hinglish request phrases are recognized; this bounded phrase matching is
+not a general multilingual intent classifier. Final responses that claim an
+unsupported command, search, or file mutation was performed are replaced with
+a truthful status. Claims to have read a file or report its contents are replaced unless
+`filesystem.read-file` completed successfully. Claims to have listed a
+directory or generated a tree likewise require a successful matching tool.
+After a filesystem tool succeeds, Vyomara returns its validated serialized
+result rather than relying on a model-generated summary. This prevents a
+tool-completion event from being mistaken for proof that the model accurately
+interpreted the result. Claims without a matching result are also screened by
+bounded phrase patterns, not semantic verification. Treat file contents as
+untrusted prompt data: they cannot authorize new tools or override system
+policy. Shell execution, web search, package installation, system-feature
+control, writes, and deletes are not implemented.
 
 Filesystem errors are returned with safe categories such as `not-found`,
 `invalid-path`, `outside-root`, and `permission-denied`; user-facing messages

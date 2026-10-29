@@ -576,14 +576,15 @@ export function registerFilesystemTools(
   const listDirectoryTool: Tool<ListInput, ListOutput> = {
     id: 'filesystem.list-directory',
     effect: 'read',
-    description: 'List entries in a configured allowed directory without following symlinks.',
+    description: 'List direct children of an allowed directory; arguments are path and optional maxEntries only. Does not recurse or follow symlinks.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
         maxEntries: {
           type: 'integer',
-          description: 'Optional maximum number of returned entries.',
+          description: 'Optional maximum returned entries; null uses the configured default.',
+          nullable: true,
           minimum: 1,
           maximum: config.maxDirectoryEntries,
         },
@@ -625,20 +626,22 @@ export function registerFilesystemTools(
   const tree: Tool<TreeInput, TreeOutput> = {
     id: 'filesystem.directory-tree',
     effect: 'read',
-    description: 'Return a bounded depth-first tree of an allowed directory without following symlinks.',
+    description: 'Return a bounded recursive tree of an allowed directory; arguments are path and optional maxDepth and maxEntries. Does not follow symlinks.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
         maxDepth: {
           type: 'integer',
-          description: 'Optional maximum tree depth.',
+          description: 'Optional maximum tree depth; null uses the configured default.',
+          nullable: true,
           minimum: 1,
           maximum: config.maxTreeDepth,
         },
         maxEntries: {
           type: 'integer',
-          description: 'Optional maximum total entries in the tree.',
+          description: 'Optional maximum total tree entries; null uses the configured default.',
+          nullable: true,
           minimum: 1,
           maximum: config.maxDirectoryEntries,
         },

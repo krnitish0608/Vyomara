@@ -21,6 +21,7 @@ export class ToolFailure extends Error {
 export interface ToolArgumentProperty {
   readonly type: 'string' | 'integer';
   readonly description?: string;
+  readonly nullable?: true;
   readonly maxLength?: number;
   readonly minimum?: number;
   readonly maximum?: number;
@@ -73,8 +74,10 @@ function validToolArgumentSchema(schema: ToolArgumentSchema): boolean {
       typeof property !== 'object' ||
       property === null ||
       Object.keys(property).some(key =>
-        !['type', 'description', 'maxLength', 'minimum', 'maximum', 'pattern'].includes(key)) ||
+        !['type', 'description', 'nullable', 'maxLength', 'minimum', 'maximum', 'pattern'].includes(key)) ||
       (property.type !== 'string' && property.type !== 'integer') ||
+      (property.nullable !== undefined && property.nullable !== true) ||
+      (property.nullable === true && (schema.required ?? []).includes(name)) ||
       (property.description !== undefined &&
         (typeof property.description !== 'string' || property.description.length > 256)) ||
       (property.maxLength !== undefined &&

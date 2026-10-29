@@ -20,24 +20,36 @@ export class AgentError extends Error {
 
 function unsupportedCapability(prompt: string): string | undefined {
   if (
-    /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?echo\b/i.test(prompt)
+    /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?echo\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
   ) {
     return 'I cannot run shell or terminal commands. No command was executed.';
   }
   if (
-    /\b(?:web search|search the web|browse the internet|visit the website|open https?:\/\/|current weather|search online)\b/i.test(prompt)
+    /\b(?:web search|search the web|search (?:the )?internet|browse the internet|visit the website|open https?:\/\/|current weather|search online)\b|\b(?:internet|online)\b[\s\S]{0,48}\b(?:search|dhund|dhundo|khoj)\b|\b(?:search|dhund|dhundo|khoj)\b[\s\S]{0,48}\b(?:internet|online)\b|(?:इंटरनेट|ऑनलाइन).{0,48}(?:खोज|ढूंढ|ढूँढ|सर्च)/iu.test(prompt)
   ) {
     return 'Web browsing and web search are not available. No search was performed.';
   }
   if (
-    /\b(?:create|write|edit|modify|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b/i.test(prompt)
+    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदलो|हटाओ|मिटाओ)/iu.test(prompt)
   ) {
     return 'File creation, editing, and deletion are not available. No filesystem change was made.';
+  }
+  if (
+    /\b(?:install|uninstall|update|upgrade)\b[\s\S]{0,48}\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b|\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b[\s\S]{0,40}\b(?:install|uninstall|update|upgrade)\b|(?:पैकेज|ऐप|एप्लिकेशन|सॉफ़्टवेयर).{0,40}(?:इंस्टॉल|अपडेट|हटाओ)/iu.test(prompt)
+  ) {
+    return 'Installing or changing packages and applications is not available. No installation was performed.';
+  }
+  if (
+    /\b(?:open|launch|access|control|turn on|turn off|restart|shutdown|take)\b[\s\S]{0,48}\b(?:system settings|camera|microphone|mic|bluetooth|wi-?fi|notifications|screenshot|screen recording|mac)\b|(?:कैमरा|माइक्रोफ़ोन|माइक्रोफोन|ब्लूटूथ|वाई-?फ़ाई|स्क्रीनशॉट).{0,40}(?:खोलो|चालू|बंद|लेना|लो|पहुँच)/iu.test(prompt)
+  ) {
+    return 'That system feature is not available to Vyomara. No system action was performed.';
   }
   return undefined;
 }
 
-function claimsUnsupportedExecution(text: string): boolean {
+function claimsUnsupportedExecution(
+  text: string,
+): boolean {
   const claims = [
     /\b(?:I|we)\s+(?:have\s+)?(?:run|executed|launched)\b.{0,60}\b(?:command|script|shell)\b/i,
     /\b(?:the\s+)?(?:command|script)\s+(?:was|has been|is)\s+(?:run|executed|launched|completed)\b/i,
@@ -46,8 +58,49 @@ function claimsUnsupportedExecution(text: string): boolean {
     /\b(?:the\s+)?(?:web search|search)\s+(?:is|was|has been)\s+(?:complete|completed|successful)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:created|deleted|wrote|modified|updated)\s+(?:the\s+)?(?:file|folder|directory)\b/i,
     /\b(?:the\s+)?(?:file|folder|directory)\s+(?:was|has been)\s+(?:created|deleted|written|modified|updated)\b/i,
+    /\b(?:I|we)\s+(?:have\s+)?(?:installed|uninstalled|updated|upgraded)\b.{0,60}\b(?:package|application|app|software|dependency)\b/i,
+    /\b(?:I|we)\s+(?:have\s+)?(?:opened|accessed|controlled|restarted|shut down)\b.{0,60}\b(?:camera|microphone|system settings|bluetooth|wi-?fi|mac)\b/i,
+    /\b(?:maine|mainee)\b[\s\S]{0,48}\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala(?:ya|o)?|chalaya|execute|run)\b/i,
+    /\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala diya|chalaya|run ho gaya|execute ho gaya)\b/i,
+    /(?:मैंने|मैने).{0,48}(?:कमांड|टर्मिनल|शेल).{0,32}(?:चलाया|चला दिया|चलाया है)/u,
   ];
   return claims.some(pattern => pattern.test(text));
+}
+
+function claimsUnverifiedFileRead(
+  text: string,
+  successfulToolIds: ReadonlySet<string>,
+): boolean {
+  const fileReadClaims = [
+    /\b(?:I|we)\s+(?:have\s+)?(?:read|opened|checked)\s+(?:the\s+)?(?:file|document)\b/i,
+    /\b(?:the\s+)?file\s+(?:contains|says|states)\b/i,
+    /\b(?:maine|mainee)\b[\s\S]{0,40}\b(?:file|document)\b[\s\S]{0,32}\b(?:padha|dekha|read)\b/i,
+    /(?:मैंने|मैने).{0,40}(?:फ़ाइल|फाइल|दस्तावेज़).{0,32}(?:पढ़ी|देखी|पढ़ा)/u,
+  ];
+  return !successfulToolIds.has('filesystem.read-file') &&
+    fileReadClaims.some(pattern => pattern.test(text));
+}
+
+function claimsUnverifiedDirectoryRead(
+  text: string,
+  successfulToolIds: ReadonlySet<string>,
+): boolean {
+  const claimsListing = [
+    /\b(?:I|we)\s+(?:have\s+)?(?:listed|scanned|enumerated)\s+(?:the\s+)?(?:directory|folder)\b/i,
+    /\b(?:the\s+)?(?:directory|folder)\s+(?:contains|has)\b/i,
+    /\bhere\s+(?:are|is)\s+(?:the\s+)?(?:files|entries)\s+(?:in|of)\s+(?:the\s+)?(?:directory|folder)\b/i,
+    /\b(?:maine|mainee)\b[\s\S]{0,40}\b(?:folder|directory)\b[\s\S]{0,32}\b(?:list|files|entries)\b/i,
+    /(?:फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:में ये फ़ाइलें|में ये फाइलें|की सूची|में मौजूद)/u,
+  ];
+  const claimsTree = [
+    /\b(?:I|we)\s+(?:have\s+)?(?:shown|generated|built)\s+(?:the\s+)?(?:directory|folder)\s+tree\b/i,
+    /\b(?:directory|folder)\s+tree\s+(?:shows|contains|is)\b/i,
+  ];
+  const hasListing = successfulToolIds.has('filesystem.list-directory') ||
+    successfulToolIds.has('filesystem.directory-tree');
+  return (!hasListing && claimsListing.some(pattern => pattern.test(text))) ||
+    (!successfulToolIds.has('filesystem.directory-tree') &&
+      claimsTree.some(pattern => pattern.test(text)));
 }
 
 function parseProviderResponse(
@@ -163,6 +216,8 @@ export async function runAgent(
   let recoverableToolFailure: ToolExecutionError | undefined;
   let failedToolId: string | undefined;
   let correctionAttempts = 0;
+  const successfulToolIds = new Set<string>();
+  const filesystemToolResults: string[] = [];
 
   for (let iteration = 1; iteration <= options.config.maxAgentIterations; iteration++) {
     let rawResponse: unknown;
@@ -200,6 +255,41 @@ export async function runAgent(
         });
         return safeResponse;
       }
+      if (claimsUnverifiedFileRead(response.text, successfulToolIds)) {
+        const safeResponse =
+          'I cannot report file contents because no registered filesystem read completed successfully.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
+      if (claimsUnverifiedDirectoryRead(response.text, successfulToolIds)) {
+        const safeResponse =
+          'I cannot report directory contents because no registered directory listing or tree tool completed successfully.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
+      if (filesystemToolResults.length > 0) {
+        const verifiedResponse = `Verified filesystem tool result(s):\n${filesystemToolResults.join('\n')}`;
+        const finalResponse = verifiedResponse.length <= options.config.maxResponseChars
+          ? verifiedResponse
+          : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
+        options.session.add({ role: 'assistant', content: finalResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return finalResponse;
+      }
       options.session.add({ role: 'assistant', content: response.text });
       options.logger.emit({
         event: 'request.completed',
@@ -236,6 +326,10 @@ export async function runAgent(
           );
         }
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
+        successfulToolIds.add(call.toolId);
+        if (call.toolId.startsWith('filesystem.')) {
+          filesystemToolResults.push(`${call.toolId}: ${serialized}`);
+        }
         if (failedToolId === call.toolId) {
           recoverableToolFailure = undefined;
           failedToolId = undefined;
