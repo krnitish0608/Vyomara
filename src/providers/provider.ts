@@ -78,6 +78,13 @@ function isToolArguments(value: unknown): value is Readonly<Record<string, unkno
   return isRecord(value);
 }
 
+function isValidToolCallIndex(value: unknown): boolean {
+  return typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value < 10;
+}
+
 function ollamaMessage(message: SessionMessage): Record<string, unknown> {
   if (message.role === 'assistant' && message.kind === 'tool-call') {
     return {
@@ -266,9 +273,14 @@ export class OllamaProvider implements ModelProvider {
       const calls = message.tool_calls.map(call => {
         if (
           !isRecord(call) ||
-          Object.keys(call).some(key => key !== 'function') ||
+          Object.keys(call).some(key => key !== 'id' && key !== 'function') ||
+          (Object.hasOwn(call, 'id') &&
+            (typeof call.id !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(call.id))) ||
           !isRecord(call.function) ||
-          Object.keys(call.function).some(key => key !== 'name' && key !== 'arguments')
+          Object.keys(call.function).some(key =>
+            key !== 'index' && key !== 'name' && key !== 'arguments') ||
+          (Object.hasOwn(call.function, 'index') &&
+            !isValidToolCallIndex(call.function.index))
         ) {
           throw new ProviderError('malformed-response');
         }

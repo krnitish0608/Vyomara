@@ -159,7 +159,10 @@ test('Ollama provider parses valid registered tool calls', async () => {
     message: {
       role: 'assistant',
       content: '',
-      tool_calls: [{ function: { name: listTool.id, arguments: { path: '/allowed' } } }],
+      tool_calls: [{
+        id: 'call_jhfubo5a',
+        function: { index: 0, name: listTool.id, arguments: { path: '/allowed' } },
+      }],
     },
   })).complete([], new AbortController().signal, [listTool]);
   assert.deepEqual(result, {
@@ -204,6 +207,9 @@ test('Ollama provider rejects malformed, unknown, and oversized tool calls', asy
     [{ function: { name: listTool.id, arguments: [] } }],
     [{ function: { name: listTool.id, arguments: {}, code: 'not-allowed' } }],
     [{ function: { name: listTool.id, arguments: { path: 'x'.repeat(100) } } }],
+    [{ id: {}, function: { name: listTool.id, arguments: {} } }],
+    [{ function: { index: '0', name: listTool.id, arguments: {} } }],
+    [{ function: { index: 10, name: listTool.id, arguments: {} } }],
   ];
   for (const toolCalls of invalidToolCalls) {
     await assert.rejects(
