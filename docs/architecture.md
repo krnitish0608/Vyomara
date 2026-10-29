@@ -55,10 +55,11 @@ flowchart TD
 The persistence interface, durable history/memory, and approval interaction
 shown in the diagram are not implemented. Filesystem roots are configured
 through environment variables, not through an approval UI. The current Ollama
-adapter does not advertise or accept model tool calls; filesystem tools are
-registered for the executor but are not callable by the model. In MVP, policy
-denies side effects; the approval gateway is a fail-closed boundary for future
-approved capabilities, not permission to add them now.
+adapter advertises explicitly registered read-only tools and accepts
+structured tool calls. Every requested call still passes through executor
+validation and the policy gateway. In MVP, policy denies side effects; the
+approval gateway is a fail-closed boundary for future approved capabilities,
+not permission to add them now.
 
 ## Components and boundaries
 
@@ -123,8 +124,10 @@ No automatic cloud fallback is allowed.
 The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
 default model `llama3.2`, and loopback endpoint documented in
 [ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
-the installed Ollama version was not recorded. The adapter rejects tool-call
-responses, and no provider framework or SDK has been added.
+the installed Ollama version was not recorded. Tool definitions come from
+registered read-only tools; structured assistant tool-call and tool-result
+messages stay in the temporary session. No provider framework or SDK has been
+added.
 
 ## History and explicit memory data flow
 
@@ -200,11 +203,11 @@ provider-specific behavior inside adapters.
 ## MVP implementation sequence
 
 This is the original planning sequence, not a checklist of pending work.
-Phases 1–6 have implemented the core contracts and validation, policy and
-executor, Ollama adapter, request-scoped agent/session flow, and CLI
-composition. Durable persistence/memory, model-invoked tool calling,
-user-facing allowed-root management, and end-to-end evaluation remain future
-work.
+Phases 1–7 have implemented the core contracts and validation, policy and
+executor, Ollama adapter, request-scoped agent/session flow, CLI composition,
+and bounded Ollama tool calling for registered read-only tools. Durable
+persistence/memory, user-facing allowed-root management, and end-to-end
+evaluation remain future work.
 
 1. **Resolve Proposed choices** affecting public interfaces: runtime/language,
    text interface, Ollama compatibility target, persistence/privacy policy,

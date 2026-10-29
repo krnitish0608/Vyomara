@@ -6,7 +6,7 @@ import { Session } from '../session/session.ts';
 import { ToolExecutionError, ToolExecutor } from '../tools/executor.ts';
 
 export class AgentError extends Error {
-  readonly code: 'invalid-request' | 'timeout' | 'cancelled' | 'iteration-limit' | 'tool-limit' | 'policy-denied' | 'invalid-provider-response';
+  readonly code: 'invalid-request' | 'timeout' | 'cancelled' | 'iteration-limit' | 'tool-limit' | 'policy-denied' | 'tool-failed' | 'invalid-provider-response';
 
   constructor(
     message: string,
@@ -18,21 +18,82 @@ export class AgentError extends Error {
   }
 }
 
-function parseProviderResponse(value: unknown, maxTextChars: number): ProviderResponse {
+function parseProviderResponse(
+  value: unknown,
+  maxTextChars: number,
+  maxToolInputChars: number,
+): ProviderResponse {
   if (typeof value !== 'object' || value === null) {
     throw new AgentError('Provider returned an invalid response.', 'invalid-provider-response');
   }
   const response = value as Record<string, unknown>;
-  if (response.kind === 'final' && typeof response.text === 'string' && response.text.length <= maxTextChars) {
+  if (
+    Object.hasOwn(response, 'kind') &&
+    response.kind === 'final' &&
+    Object.keys(response).every(key => key === 'kind' || key === 'text') &&
+    Object.hasOwn(response, 'text') &&
+    typeof response.text === 'string' &&
+    response.text.trim() !== '' &&
+    response.text.length <= maxTextChars
+  ) {
     return { kind: 'final', text: response.text };
   }
   if (
-    response.kind === 'tool-call' &&
-    typeof response.toolId === 'string' &&
-    response.toolId.length <= 64 &&
-    Object.hasOwn(response, 'input')
+    Object.hasOwn(response, 'kind') &&
+    response.kind === 'tool-calls' &&
+    Object.keys(response).every(key => key === 'kind' || key === 'calls' || key === 'content') &&
+    Object.hasOwn(response, 'calls') &&
+    Array.isArray(response.calls) &&
+    response.calls.length > 0 &&
+    response.calls.length <= 10 &&
+    (response.content === undefined ||
+      (typeof response.content === 'string' && response.content.length <= maxTextChars))
   ) {
-    return { kind: 'tool-call', toolId: response.toolId, input: response.input };
+    const calls = response.calls.map(call => {
+      if (typeof call !== 'object' || call === null || Array.isArray(call)) {
+        throw new AgentError('Provider returned an invalid tool call.', 'invalid-provider-response');
+      }
+      const candidate = call as Record<string, unknown>;
+      if (
+        !Object.hasOwn(candidate, 'toolId') ||
+        !Object.hasOwn(candidate, 'arguments') ||
+        Object.keys(candidate).some(key => key !== 'toolId' && key !== 'arguments') ||
+        typeof candidate.toolId !== 'string' ||
+        !/^[a-z][a-z0-9.-]{0,63}$/.test(candidate.toolId) ||
+        typeof candidate.arguments !== 'object' ||
+        candidate.arguments === null ||
+        Array.isArray(candidate.arguments)
+      ) {
+        throw new AgentError('Provider returned an invalid tool call.', 'invalid-provider-response');
+      }
+      let serialized: string | undefined;
+      try {
+        serialized = JSON.stringify(candidate.arguments);
+      } catch {
+        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
+      }
+      if (serialized === undefined || serialized.length > maxToolInputChars) {
+        throw new AgentError('Provider returned oversized tool arguments.', 'invalid-provider-response');
+      }
+      let normalized: unknown;
+      try {
+        normalized = JSON.parse(serialized);
+      } catch {
+        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
+      }
+      if (typeof normalized !== 'object' || normalized === null || Array.isArray(normalized)) {
+        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
+      }
+      return {
+        toolId: candidate.toolId,
+        arguments: normalized as Readonly<Record<string, unknown>>,
+      };
+    });
+    return {
+      kind: 'tool-calls',
+      content: response.content ?? '',
+      calls,
+    };
   }
   throw new AgentError('Provider returned an invalid response.', 'invalid-provider-response');
 }
@@ -61,7 +122,11 @@ export async function runAgent(
     let rawResponse: unknown;
     try {
       rawResponse = await runBounded(
-        providerSignal => options.provider.complete(options.session.messages(), providerSignal),
+        providerSignal => options.provider.complete(
+          options.session.messages(),
+          providerSignal,
+          toolCalls < options.config.maxToolCalls ? options.tools.modelTools() : [],
+        ),
         options.config.requestTimeoutMs,
         signal,
       );
@@ -71,7 +136,11 @@ export async function runAgent(
       }
       throw error;
     }
-    const response = parseProviderResponse(rawResponse, options.config.maxResponseChars);
+    const response = parseProviderResponse(
+      rawResponse,
+      options.config.maxResponseChars,
+      options.config.maxToolOutputChars,
+    );
     if (response.kind === 'final') {
       options.session.add({ role: 'assistant', content: response.text });
       options.logger.emit({
@@ -82,22 +151,37 @@ export async function runAgent(
       return response.text;
     }
 
-    if (toolCalls >= options.config.maxToolCalls) {
+    if (response.calls.length > options.config.maxToolCalls - toolCalls) {
       throw new AgentError('Tool call limit reached.', 'tool-limit');
     }
-    toolCalls++;
+    if (iteration === options.config.maxAgentIterations) {
+      throw new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');
+    }
     options.session.add({
       role: 'assistant',
-      content: JSON.stringify({ kind: response.kind, toolId: response.toolId }),
+      kind: 'tool-call',
+      content: response.content ?? '',
+      toolCalls: response.calls.map(call => ({
+        toolId: call.toolId,
+        arguments: call.arguments,
+      })),
     });
-    try {
-      const result = await options.tools.execute(response.toolId, response.input, signal);
-      options.session.add({ role: 'tool', content: JSON.stringify(result) });
-    } catch (error) {
-      if (error instanceof ToolExecutionError && error.code === 'policy-denied') {
-        throw new AgentError('Requested tool was denied by policy.', 'policy-denied');
+    for (const call of response.calls) {
+      toolCalls++;
+      try {
+        const result = await options.tools.execute(call.toolId, call.arguments, signal);
+        const serialized = JSON.stringify(result);
+        if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
+          throw new AgentError('Tool result exceeded the configured safety limit.', 'invalid-provider-response');
+        }
+        options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
+      } catch (error) {
+        if (error instanceof ToolExecutionError && error.code === 'policy-denied') {
+          throw new AgentError('Requested tool was denied by policy.', 'policy-denied');
+        }
+        if (error instanceof AgentError || error instanceof ToolExecutionError) throw error;
+        throw new AgentError('Requested tool failed; no success is implied.', 'tool-failed');
       }
-      throw error;
     }
   }
 

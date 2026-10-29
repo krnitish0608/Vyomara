@@ -6,8 +6,9 @@ name is **Vyom**.
 ## Development status
 
 Initial implementation is in progress. The current CLI can use the local
-Ollama provider or an explicit deterministic placeholder. Read-only filesystem
-tools are registered but not yet advertised to Ollama.
+Ollama provider or an explicit deterministic placeholder. Ollama can request
+registered read-only tools; filesystem access remains disabled unless allowed
+roots are explicitly configured.
 
 ## Prerequisites
 

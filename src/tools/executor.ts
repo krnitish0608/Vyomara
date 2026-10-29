@@ -3,6 +3,7 @@ import type { Logger } from '../types.ts';
 import { OperationStoppedError, runBounded } from '../shared/bounded.ts';
 import { PolicyGateway } from './policy.ts';
 import { ToolRegistry } from './contracts.ts';
+import type { ModelToolDefinition } from './contracts.ts';
 
 export class ToolExecutionError extends Error {
   readonly code: 'unknown-tool' | 'invalid-input' | 'input-too-large' | 'policy-denied' | 'invalid-output' | 'output-too-large' | 'timeout' | 'cancelled';
@@ -29,6 +30,10 @@ export class ToolExecutor {
 
   constructor(options: ToolExecutorOptions) {
     this.options = options;
+  }
+
+  modelTools(): readonly ModelToolDefinition[] {
+    return this.options.registry.modelTools();
   }
 
   async execute(toolId: string, input: unknown, signal: AbortSignal): Promise<unknown> {

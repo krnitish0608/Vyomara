@@ -1,0 +1,430 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runAgent, AgentError } from '../src/agent/agent.ts';
+import { loadConfig } from '../src/config/config.ts';
+import { createLogger } from '../src/diagnostics/logger.ts';
+import { OllamaProvider, type ModelProvider, type ProviderResponse } from '../src/providers/provider.ts';
+import { Session } from '../src/session/session.ts';
+import type { Tool } from '../src/tools/contracts.ts';
+import { ToolRegistry } from '../src/tools/contracts.ts';
+import { createDefaultToolRegistry } from '../src/tools/default-tools.ts';
+import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
+import { PolicyGateway } from '../src/tools/policy.ts';
+
+interface ValueInput {
+  readonly value: string;
+}
+
+function valueTool(
+  id = 'test.echo',
+  effect: Tool<ValueInput, string>['effect'] = 'read',
+  run: Tool<ValueInput, string>['run'] = async input => input.value,
+): Tool<ValueInput, string> {
+  return {
+    id,
+    effect,
+    description: 'Return the supplied value.',
+    parameters: {
+      type: 'object',
+      properties: { value: { type: 'string', maxLength: 100 } },
+      required: ['value'],
+      additionalProperties: false,
+    },
+    validateInput(value): value is ValueInput {
+      return typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === 1 &&
+        'value' in value &&
+        typeof value.value === 'string';
+    },
+    validateOutput(value): value is string {
+      return typeof value === 'string';
+    },
+    run,
+  };
+}
+
+function harness(
+  provider: ModelProvider,
+  registry: ToolRegistry,
+  overrides: Partial<ReturnType<typeof loadConfig>> = {},
+  policy: PolicyGateway = new PolicyGateway(),
+) {
+  const config = { ...loadConfig({ VYOM_PROVIDER: 'placeholder' }), ...overrides };
+  const session = new Session();
+  const tools = new ToolExecutor({
+    registry,
+    policy,
+    config,
+    logger: createLogger(() => {}),
+  });
+  return {
+    config,
+    session,
+    tools,
+    run: (signal = new AbortController().signal) =>
+      runAgent('Use the available tool if helpful.', signal, {
+        provider,
+        tools,
+        config,
+        session,
+        logger: createLogger(() => {}),
+      }),
+  };
+}
+
+function sequenceProvider(
+  responses: readonly ProviderResponse[],
+  onComplete?: (messages: Parameters<ModelProvider['complete']>[0], tools: Parameters<ModelProvider['complete']>[2]) => void,
+): ModelProvider {
+  let index = 0;
+  return {
+    id: 'test.sequence',
+    async complete(messages, _signal, tools) {
+      onComplete?.(messages, tools);
+      const response = responses[index++];
+      if (!response) throw new Error('Unexpected provider request in test.');
+      return response;
+    },
+  };
+}
+
+test('agent performs one tool call and returns a later final response with structured history', async () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool());
+  const providerMessages: Array<Parameters<ModelProvider['complete']>[0]> = [];
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.echo', arguments: { value: 'hello' } }] },
+    { kind: 'final', text: 'The tool returned hello.' },
+  ], (messages, tools) => {
+    providerMessages.push(messages);
+    advertised.push((tools ?? []).map(tool => tool.id));
+  }), registry);
+
+  assert.equal(await app.run(), 'The tool returned hello.');
+  assert.deepEqual(advertised, [['test.echo'], ['test.echo']]);
+  assert.deepEqual(providerMessages[1], [
+    { role: 'user', content: 'Use the available tool if helpful.' },
+    {
+      role: 'assistant',
+      kind: 'tool-call',
+      content: '',
+      toolCalls: [{ toolId: 'test.echo', arguments: { value: 'hello' } }],
+    },
+    { role: 'tool', toolId: 'test.echo', content: '"hello"' },
+  ]);
+  assert.deepEqual(app.session.messages(), [
+    { role: 'user', content: 'Use the available tool if helpful.' },
+    {
+      role: 'assistant',
+      kind: 'tool-call',
+      content: '',
+      toolCalls: [{ toolId: 'test.echo', arguments: { value: 'hello' } }],
+    },
+    { role: 'tool', toolId: 'test.echo', content: '"hello"' },
+    { role: 'assistant', content: 'The tool returned hello.' },
+  ]);
+});
+
+test('agent accepts a final response without invoking available tools', async () => {
+  let ran = false;
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.echo', 'read', async input => {
+    ran = true;
+    return input.value;
+  }));
+  const app = harness(sequenceProvider([
+    { kind: 'final', text: 'No tool was needed.' },
+  ]), registry);
+  assert.equal(await app.run(), 'No tool was needed.');
+  assert.equal(ran, false);
+  assert.deepEqual(app.session.messages().at(-1), {
+    role: 'assistant',
+    content: 'No tool was needed.',
+  });
+});
+
+test('agent executes multiple sequential tool calls within the configured call limit', async () => {
+  const values: string[] = [];
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.first', 'read', async input => {
+    values.push('first');
+    return input.value;
+  }));
+  registry.register(valueTool('test.second', 'read', async input => {
+    values.push('second');
+    return input.value;
+  }));
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.first', arguments: { value: 'one' } }] },
+    { kind: 'tool-calls', calls: [{ toolId: 'test.second', arguments: { value: 'two' } }] },
+    { kind: 'final', text: 'Both reads completed.' },
+  ]), registry, { maxAgentIterations: 3, maxToolCalls: 2 });
+
+  assert.equal(await app.run(), 'Both reads completed.');
+  assert.deepEqual(values, ['first', 'second']);
+});
+
+test('agent executes a batch of tool calls deterministically within the limit', async () => {
+  const values: string[] = [];
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.first', 'read', async input => {
+    values.push('first');
+    return input.value;
+  }));
+  registry.register(valueTool('test.second', 'read', async input => {
+    values.push('second');
+    return input.value;
+  }));
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [
+        { toolId: 'test.second', arguments: { value: '2' } },
+        { toolId: 'test.first', arguments: { value: '1' } },
+      ],
+    },
+    { kind: 'final', text: 'Done.' },
+  ]), registry, { maxToolCalls: 2 });
+
+  assert.equal(await app.run(), 'Done.');
+  assert.deepEqual(values, ['second', 'first']);
+  const history = app.session.messages();
+  assert.deepEqual(history[1]?.role === 'assistant' && history[1].kind === 'tool-call'
+    ? history[1].toolCalls.map(call => call.toolId)
+    : [], ['test.second', 'test.first']);
+  assert.deepEqual(history.slice(2).flatMap(message =>
+    message.role === 'tool' ? [message.toolId] : []), [
+    'test.second',
+    'test.first',
+  ]);
+});
+
+test('agent rejects unregistered and invalid-argument calls without executing tools', async () => {
+  let ran = false;
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.echo', 'read', async input => {
+    ran = true;
+    return input.value;
+  }));
+  const unknown = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.missing', arguments: {} }] },
+  ]), registry);
+  await assert.rejects(unknown.run(), (error: unknown) =>
+    error instanceof ToolExecutionError && error.code === 'unknown-tool');
+  assert.equal(ran, false);
+
+  const invalid = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.echo', arguments: { value: 42 } }] },
+  ]), registry);
+  await assert.rejects(invalid.run(), (error: unknown) =>
+    error instanceof ToolExecutionError && error.code === 'invalid-input');
+  assert.equal(ran, false);
+});
+
+test('agent does not run any calls from a batch exceeding the remaining call budget', async () => {
+  let ran = false;
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.first', 'read', async input => {
+    ran = true;
+    return input.value;
+  }));
+  registry.register(valueTool('test.second', 'read', async input => {
+    ran = true;
+    return input.value;
+  }));
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [
+        { toolId: 'test.first', arguments: { value: 'one' } },
+        { toolId: 'test.second', arguments: { value: 'two' } },
+      ],
+    },
+  ]), registry, { maxToolCalls: 1 });
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof AgentError && error.code === 'tool-limit');
+  assert.equal(ran, false);
+});
+
+test('agent surfaces tool execution failures without recording a success result', async () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.fail', 'read', async () => {
+    throw new Error('private tool failure');
+  }));
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.fail', arguments: { value: 'x' } }] },
+    { kind: 'final', text: 'This must not be returned.' },
+  ]), registry);
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof AgentError &&
+    error.code === 'tool-failed' &&
+    !error.message.includes('private tool failure'));
+  assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
+  assert.equal(app.session.messages().some(message =>
+    message.role === 'assistant' && message.content === 'This must not be returned.'), false);
+});
+
+test('registered side-effect tools are not advertised and are denied through executor policy', async () => {
+  let authorizedEffect = '';
+  let ran = false;
+  class RecordingPolicy extends PolicyGateway {
+    override authorize(effect: Parameters<PolicyGateway['authorize']>[0]) {
+      authorizedEffect = effect;
+      return super.authorize(effect);
+    }
+  }
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.write', 'write', async input => {
+    ran = true;
+    return input.value;
+  }));
+  let advertised: string[] = [];
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.write', arguments: { value: 'x' } }] },
+  ], (_messages, tools) => {
+    advertised = (tools ?? []).map(tool => tool.id);
+  }), registry, {}, new RecordingPolicy());
+  await assert.rejects(app.run(), (error: unknown) =>
+    error instanceof AgentError && error.code === 'policy-denied');
+  assert.deepEqual(advertised, []);
+  assert.equal(authorizedEffect, 'write');
+  assert.equal(ran, false);
+});
+
+test('cancellation during tool execution stops the agent', async () => {
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.wait', 'read', async (_input, signal) =>
+    new Promise<string>((_resolve, reject) => {
+      markStarted();
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    })));
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'test.wait', arguments: { value: 'x' } }] },
+    { kind: 'final', text: 'Must not reach the provider again.' },
+  ]), registry);
+  const controller = new AbortController();
+  const pending = app.run(controller.signal);
+  await started;
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) =>
+    error instanceof ToolExecutionError && error.code === 'cancelled');
+});
+
+test('model definitions expose only registered read tools with explicit schemas', () => {
+  const registry = new ToolRegistry();
+  registry.register(valueTool('test.read'));
+  registry.register(valueTool('test.write', 'write'));
+  const app = harness(sequenceProvider([{ kind: 'final', text: 'Done.' }]), registry);
+  assert.deepEqual(app.tools.modelTools(), [{
+    id: 'test.read',
+    description: 'Return the supplied value.',
+    parameters: {
+      type: 'object',
+      properties: { value: { type: 'string', maxLength: 100 } },
+      required: ['value'],
+      additionalProperties: false,
+    },
+  }]);
+});
+
+test('policy gateway still denies every side-effect effect', () => {
+  const policy = new PolicyGateway();
+  for (const effect of ['write', 'delete', 'shell', 'network'] as const) {
+    assert.deepEqual(policy.authorize(effect), {
+      allowed: false,
+      reason: 'side-effects-disabled',
+    });
+  }
+});
+
+test('mocked Ollama safely calls the registered filesystem reader and receives its result', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-tool-calling-'));
+  t.after(async () => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const file = join(root, 'notes.txt');
+  await writeFile(file, 'local note');
+
+  const config = loadConfig({
+    VYOM_PROVIDER: 'ollama',
+    VYOM_ALLOWED_ROOTS: JSON.stringify([root]),
+  });
+  const registry = createDefaultToolRegistry(config);
+  const tools = new ToolExecutor({
+    registry,
+    policy: new PolicyGateway(),
+    config,
+    logger: createLogger(() => {}),
+  });
+  const session = new Session();
+  const requests: Array<Record<string, unknown>> = [];
+  let responseNumber = 0;
+  const provider = new OllamaProvider({
+    baseUrl: 'http://127.0.0.1:11434',
+    model: 'llama3.2',
+    maxResponseChars: config.maxResponseChars,
+    maxToolCallArgumentsChars: config.maxToolOutputChars,
+    fetchImplementation: async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      responseNumber += 1;
+      const payload = responseNumber === 1
+        ? {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{
+              function: {
+                name: 'filesystem.read-file',
+                arguments: { path: file },
+              },
+            }],
+          },
+        }
+        : { message: { role: 'assistant', content: 'The note says: local note.' } };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const result = await runAgent('Read my note.', new AbortController().signal, {
+    provider,
+    tools,
+    config,
+    session,
+    logger: createLogger(() => {}),
+  });
+  assert.equal(result, 'The note says: local note.');
+  assert.equal(await readFile(file, 'utf8'), 'local note');
+  const advertised = requests[0]?.tools as Array<{ function: { name: string } }>;
+  assert.deepEqual(advertised.map(tool => tool.function.name), [
+    'assistant.info',
+    'filesystem.list-directory',
+    'filesystem.read-file',
+    'filesystem.directory-tree',
+  ]);
+  assert.deepEqual(requests[1]?.messages instanceof Array
+    ? (requests[1]?.messages as Array<Record<string, unknown>>).slice(-2)
+    : [], [
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{
+        function: {
+          name: 'filesystem.read-file',
+          arguments: { path: file },
+        },
+      }],
+    },
+    { role: 'tool', content: JSON.stringify({ content: 'local note', bytes: 10 }) },
+  ]);
+});

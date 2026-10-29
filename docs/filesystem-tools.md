@@ -61,11 +61,13 @@ entries due to count, depth, or output limits. Unknown input fields, relative
 paths, negative limits, and values above configured maxima are rejected.
 
 File contents are sensitive user data. The filesystem tools do not log them,
-but a future model invocation that includes a read result would send that
-content to the currently selected provider. At this phase the Ollama adapter
-does not advertise or accept tool calls, so these tools are registered and
-testable through the existing tool system but are not yet invoked by Ollama
-model responses.
+but a model-requested read result is added to the temporary conversation and
+sent to the configured local Ollama service on the next provider request.
+Only explicitly registered read-only tools are advertised. Ollama tool calls
+are bounded by the configured iteration, call, input, and output limits, and
+every call still passes through executor validation and the fail-closed policy
+gateway. Treat file contents as untrusted data; they cannot change system
+policy.
 
 ## Symlinks and race limitation
 

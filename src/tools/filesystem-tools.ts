@@ -568,6 +568,21 @@ export function registerFilesystemTools(
   const listDirectoryTool: Tool<ListInput, ListOutput> = {
     id: 'filesystem.list-directory',
     effect: 'read',
+    description: 'List entries in a configured allowed directory without following symlinks.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
+        maxEntries: {
+          type: 'integer',
+          description: 'Optional maximum number of returned entries.',
+          minimum: 1,
+          maximum: config.maxDirectoryEntries,
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is ListInput {
       return isRecord(value) &&
         exactKeys(value, ['path', 'maxEntries']) &&
@@ -582,6 +597,15 @@ export function registerFilesystemTools(
   const readFileTool: Tool<PathInput, ReadOutput> = {
     id: 'filesystem.read-file',
     effect: 'read',
+    description: 'Read a bounded UTF-8 text file inside a configured allowed root.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to an allowed text file.', maxLength: 4096, pattern: '^/' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is PathInput {
       return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
     },
@@ -593,6 +617,27 @@ export function registerFilesystemTools(
   const tree: Tool<TreeInput, TreeOutput> = {
     id: 'filesystem.directory-tree',
     effect: 'read',
+    description: 'Return a bounded depth-first tree of an allowed directory without following symlinks.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to an allowed directory.', maxLength: 4096, pattern: '^/' },
+        maxDepth: {
+          type: 'integer',
+          description: 'Optional maximum tree depth.',
+          minimum: 1,
+          maximum: config.maxTreeDepth,
+        },
+        maxEntries: {
+          type: 'integer',
+          description: 'Optional maximum total entries in the tree.',
+          minimum: 1,
+          maximum: config.maxDirectoryEntries,
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is TreeInput {
       return isRecord(value) &&
         exactKeys(value, ['path', 'maxDepth', 'maxEntries']) &&

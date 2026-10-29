@@ -31,6 +31,24 @@ The application caps response body size and assistant text; other safe
 resource bounds are configurable through the `VYOM_MAX_*` variables validated
 at startup.
 
+## Read-only tool calling
+
+The Ollama `/api/chat` request advertises only tools in the existing registry
+whose effect is `read`. Each has an explicit function name, description, and
+closed JSON argument schema. The agent accepts only calls matching an
+advertised registered tool, processes a returned batch in order, and sends
+assistant `tool_calls` plus corresponding `tool` result messages on the next
+request. Calls go through the existing executor and policy gateway; no
+model-generated code is evaluated.
+
+The agent enforces the configured iteration and total tool-call limits.
+Arguments and results are bounded, tool input/output schemas are validated,
+and failures stop the request without a success-shaped response. Filesystem
+tools require explicit `VYOM_ALLOWED_ROOTS`; the default `[]` grants no
+filesystem access. A file read result is sent to the configured local Ollama
+service as conversation context, so allow only roots whose contents you are
+willing to provide to that local model.
+
 ## Troubleshooting
 
 - **Ollama unavailable:** start the local Ollama service and verify its local
@@ -44,7 +62,8 @@ at startup.
 
 Automated tests use an injected mock `fetch`; they verify request shape,
 response handling, errors, timeout, and cancellation without a running Ollama
-server or internet access. A live CLI request using the defaults succeeded
-against the local Ollama instance in this environment. The installed server
-version was not recorded, so compatibility with other Ollama versions remains
-unverified.
+server or internet access. Tool-call request/response messages are verified
+with mock responses; their compatibility has not been checked against a
+recorded live Ollama version. A live CLI request using the defaults succeeded
+against the local Ollama instance in this environment, but that did not verify
+tool calling. Compatibility with other Ollama versions remains unverified.

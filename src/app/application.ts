@@ -19,6 +19,7 @@ export async function runRequest(
       baseUrl: config.ollamaBaseUrl,
       model: config.ollamaModel,
       maxResponseChars: config.maxResponseChars,
+      maxToolCallArgumentsChars: config.maxToolOutputChars,
     })
     : new PlaceholderProvider();
   const tools = new ToolExecutor({
