@@ -60,6 +60,27 @@ const api: VyomaraDesktopApi = {
   deleteMemory(id: string, confirmation: string) {
     return ipcRenderer.invoke('vyomara:memory-delete', { id, confirmation });
   },
+  deleteAllHistoryAndMemories(confirmation: string) {
+    return ipcRenderer.invoke('vyomara:data-delete-all', { confirmation });
+  },
+  backupLocalData() {
+    return ipcRenderer.invoke('vyomara:data-backup');
+  },
+  selectBackupForRestore() {
+    return ipcRenderer.invoke('vyomara:data-restore-select');
+  },
+  restoreLocalData(confirmation: string) {
+    return ipcRenderer.invoke('vyomara:data-restore', { confirmation });
+  },
+  selectCheckProject() {
+    return ipcRenderer.invoke('vyomara:checks-project-select');
+  },
+  runApprovedCheck(checkId) {
+    return ipcRenderer.invoke('vyomara:checks-run', checkId);
+  },
+  cancelApprovedCheck() {
+    return ipcRenderer.invoke('vyomara:checks-cancel');
+  },
   onActivity(listener: (event: DiagnosticEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, activity: DiagnosticEvent): void => {
       listener(activity);

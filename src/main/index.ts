@@ -5,10 +5,13 @@ import { AgentError } from '../agent/agent.ts';
 import {
   grantDesktopFilesystemRoot,
   initializeDesktopFilesystemRoots,
+  deleteAllDesktopSessionsAndMemories,
   deleteDesktopMemory,
   deleteDesktopSession,
+  exportDesktopBackup,
   exportDesktopSession,
   exportDesktopMemory,
+  inspectDesktopBackup,
   initializeDesktopProviderSettings,
   readDesktopSession,
   readDesktopMemories,
@@ -16,6 +19,7 @@ import {
   readDesktopSessions,
   resetDesktopProviderSettings,
   revokeDesktopFilesystemRoot,
+  restoreDesktopBackup,
   saveDesktopMemory,
   saveDesktopProviderSettings,
   runRequest,
@@ -30,20 +34,26 @@ import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import {
   DesktopValidationError,
   parseDesktopChatRequest,
+  parseDesktopDeleteAllRequest,
   parseDesktopFilesystemRoot,
   parseDesktopOllamaModelName,
   parseDesktopMemoryDeleteRequest,
   parseDesktopMemoryId,
   parseDesktopMemorySaveRequest,
   parseDesktopProviderSettings,
+  parseDesktopRestoreRequest,
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
 import { exportToSelectedFile } from '../desktop/session-export.ts';
+import { runApprovedCheck, validateCheckDirectory } from '../desktop/check-runner.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
+let activeCheck: AbortController | undefined;
 let activePermissionChange = false;
+let checkProjectDirectory: string | undefined;
+let pendingRestoreBackupPath: string | undefined;
 let config: AppConfig | undefined;
 let environmentConfig: AppConfig | undefined;
 
@@ -127,7 +137,7 @@ ipcMain.handle('vyomara:provider-status', () => {
 
 ipcMain.handle('vyomara:provider-settings-save', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before changing provider settings.');
   }
   try {
@@ -143,7 +153,7 @@ ipcMain.handle('vyomara:provider-settings-save', (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:provider-settings-reset', () => {
   if (!config || !environmentConfig) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before resetting provider settings.');
   }
   try {
@@ -206,6 +216,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   const request = parseDesktopChatRequest(input, config.maxInputChars);
   if (activePermissionChange) throw new Error('Wait for filesystem permissions to finish changing before starting a request.');
   if (activeRequest) throw new Error('A request is already in progress.');
+  if (activeCheck) throw new Error('Wait for the approved project check to finish before starting a request.');
 
   const controller = new AbortController();
   activeRequest = controller;
@@ -251,7 +262,7 @@ ipcMain.handle('vyomara:session-load', (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:session-export', async (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before exporting a conversation.');
   }
 
@@ -281,7 +292,7 @@ ipcMain.handle('vyomara:session-export', async (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before deleting a conversation.');
   }
   try {
@@ -293,6 +304,134 @@ ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
   }
 });
 
+ipcMain.handle('vyomara:data-delete-all', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before deleting saved data.');
+  }
+  try {
+    parseDesktopDeleteAllRequest(input);
+    return deleteAllDesktopSessionsAndMemories(config);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-backup', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before backing up saved data.');
+  }
+  const timestamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-');
+  const options: SaveDialogOptions = {
+    title: 'Back up Vyomara local data',
+    buttonLabel: 'Create backup',
+    defaultPath: `vyomara-backup-${timestamp}.sqlite`,
+    filters: [{ name: 'SQLite database', extensions: ['sqlite'] }],
+  };
+  try {
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (result.canceled) return { status: 'cancelled' as const };
+    exportDesktopBackup(config, result.filePath);
+    return { status: 'exported' as const };
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-restore-select', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before selecting a backup.');
+  }
+  pendingRestoreBackupPath = undefined;
+  const options: OpenDialogOptions = {
+    title: 'Select a Vyomara backup to restore',
+    buttonLabel: 'Review backup',
+    properties: ['openFile'],
+    filters: [{ name: 'SQLite database', extensions: ['sqlite'] }],
+  };
+  try {
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return undefined;
+    const backupPath = result.filePaths[0]!;
+    const preview = inspectDesktopBackup(config, backupPath);
+    pendingRestoreBackupPath = backupPath;
+    return preview;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-restore', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before restoring saved data.');
+  }
+  try {
+    parseDesktopRestoreRequest(input);
+    if (!pendingRestoreBackupPath) {
+      throw new DesktopValidationError('Select and review a backup before confirming restore.');
+    }
+    const result = restoreDesktopBackup(config, pendingRestoreBackupPath);
+    pendingRestoreBackupPath = undefined;
+    config = initializeDesktopFilesystemRoots(config);
+    config = initializeDesktopProviderSettings(config);
+    return result;
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:checks-project-select', async () => {
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before selecting a project.');
+  }
+  const options: OpenDialogOptions = {
+    title: 'Choose a project for approved checks',
+    buttonLabel: 'Select project',
+    properties: ['openDirectory'],
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || result.filePaths.length === 0) return undefined;
+  try {
+    checkProjectDirectory = await validateCheckDirectory(result.filePaths[0]);
+    return checkProjectDirectory;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:checks-run', async (_event, checkId: unknown) => {
+  if (!checkProjectDirectory) throw new Error('Choose a project directory before running a check.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before running a check.');
+  }
+  const controller = new AbortController();
+  activeCheck = controller;
+  try {
+    return await runApprovedCheck(checkProjectDirectory, checkId, controller.signal);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  } finally {
+    activeCheck = undefined;
+  }
+});
+
+ipcMain.handle('vyomara:checks-cancel', () => {
+  if (!activeCheck) return false;
+  activeCheck.abort();
+  return true;
+});
+
 ipcMain.handle('vyomara:filesystem-roots-list', () => {
   if (!config) throw new Error('Application configuration is unavailable.');
   return config.filesystemAllowedRoots;
@@ -300,7 +439,7 @@ ipcMain.handle('vyomara:filesystem-roots-list', () => {
 
 ipcMain.handle('vyomara:filesystem-root-grant', async () => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before changing filesystem access.');
   }
   activePermissionChange = true;
@@ -327,7 +466,7 @@ ipcMain.handle('vyomara:filesystem-root-grant', async () => {
 
 ipcMain.handle('vyomara:filesystem-root-revoke', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before changing filesystem access.');
   }
   try {
@@ -358,7 +497,7 @@ ipcMain.handle('vyomara:memory-read', (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:memory-export', async (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  if (activeRequest || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange) {
     throw new Error('Wait for the active operation to finish before exporting a memory.');
   }
   try {
@@ -387,6 +526,9 @@ ipcMain.handle('vyomara:memory-export', async (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:memory-save', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before saving a memory.');
+  }
   try {
     const request = parseDesktopMemorySaveRequest(input);
     return saveDesktopMemory(config, request.content);
@@ -398,6 +540,9 @@ ipcMain.handle('vyomara:memory-save', (_event, input: unknown) => {
 
 ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activeCheck || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before deleting a memory.');
+  }
   try {
     const request = parseDesktopMemoryDeleteRequest(input);
     return deleteDesktopMemory(config, request.id);
@@ -424,7 +569,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => activeRequest?.abort());
+app.on('before-quit', () => {
+  activeRequest?.abort();
+  activeCheck?.abort();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

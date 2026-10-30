@@ -25,9 +25,13 @@ Store the database at
 absolute `VYOM_DATA_DIR` override for testing and advanced local setups. Use
 owner-only directory/file permissions (`0700`/`0600`) and SQLite foreign keys.
 History is retained until the user deletes it; there is no automatic expiry,
-application-managed backup, or cloud sync. macOS FileVault is recommended;
-the application does not provide database-level encryption, and operating
-system backups may include the database.
+automatic backup, or cloud sync. The desktop app can create a manual,
+unencrypted SQLite snapshot at a user-selected destination. Restore is not
+automatic: the user selects a validated snapshot, reviews its record counts,
+and types `RESTORE`. Before replacement, the app writes a private safety
+snapshot of the current database in the local data directory. macOS FileVault
+is recommended; the application does not provide database-level encryption,
+and operating system backups may include the database.
 
 Persist session messages locally for review and continuation; this includes
 user prompts, model replies, tool calls, and their returned data, which may
@@ -58,20 +62,22 @@ interface before adding concurrent workers or long-running storage work.
 ## Security/privacy implications
 
 History is not memory. No ordinary conversation becomes durable memory without
-explicit user request and content confirmation. Application-level encryption and backup/export are not provided. Restrict
-access to the current macOS user, recommend FileVault, retain until explicit
-deletion, cascade message deletion with its session, and never store
-credentials. A corrupted database must fail visibly; do not silently replace
-it or discard records.
+explicit user request and content confirmation. Manual backups contain the
+complete SQLite database, including raw history and settings; they are
+unencrypted and must be protected by the user. Restrict access to the current
+macOS user, recommend FileVault, retain until explicit deletion, cascade
+message deletion with its session, and never store credentials. A corrupted
+database must fail visibly; do not silently replace it or discard records.
 
 ## Implementation implications for Phase 4
 
 The Phase 4 skeleton kept temporary session messages in process memory. Phase
 9 adds local session history and separately managed explicit memory. Phase 12
-adds persistent desktop filesystem-root permissions. Test
-inspect/review/delete paths, migration, restart persistence, session isolation,
-permissions, and corruption handling. Do not claim application-level
-encryption or automatic backup.
+adds persistent desktop filesystem-root permissions; Phase 24 adds explicit
+manual backup creation; Phase 25 adds validated restore with a pre-restore
+safety snapshot. Test inspect/review/delete paths, migration, restart
+persistence, session isolation, permissions, backup integrity, and corruption
+handling. Do not claim application-level encryption or automatic backup.
 
 ## Evidence
 

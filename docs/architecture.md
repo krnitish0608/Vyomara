@@ -21,7 +21,11 @@ panel dismissal, and reduced-motion handling in the desktop shell. Phase 20
 adds explicit per-conversation JSON export to a new owner-only file, including
 the complete stored history. Phase 21 adds a repeatable Electron UI smoke
 check for keyboard navigation and reduced-motion behavior. Phase 22 adds
-explicit per-memory JSON export to new owner-only files. The diagram and
+explicit per-memory JSON export to new owner-only files. Phase 23 adds an
+exact-confirmation action to delete all saved conversations and memories
+without resetting provider settings or filesystem permissions. Phase 24 adds
+manual owner-only full-database backups. Phase 25 adds validated restore with
+an explicit confirmation and a pre-restore safety snapshot. The diagram and
 component boundaries also describe proposed or future components; their
 implementation status is called out below. Decisions labeled **Accepted** in
 the [ADR index](./adr/README.md) are supported by current project requirements
@@ -203,8 +207,12 @@ deletable but is not injected into model context.
 The accepted [ADR-0005](./adr/0005-persistence.md) selects the built-in Node
 SQLite API, local user-only permissions, retention until explicit deletion,
 and explicit-only memory. The database is not application-encrypted, and
-automatic backup/export is not provided. macOS FileVault is recommended;
-operating-system backups may include the database.
+automatic backup is not provided. Users can create manual full-database
+backups from History; these contain private history and settings, are
+unencrypted, and can be restored after schema/integrity validation and an
+explicit confirmation. Restore creates a safety copy of current data before
+replacing it. macOS FileVault is recommended; operating-system backups may
+include the database.
 
 ## Trust boundaries and failure handling
 

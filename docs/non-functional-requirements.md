@@ -39,8 +39,9 @@ and **P2** is important but may follow the first MVP.
   scripts, representative workloads, and a named Apple Silicon test machine.
 - Select the supported macOS baseline and benchmark model before setting
   release-level latency/resource budgets.
-- Decide the persistence format, encryption at rest, backup/export behavior,
-  retention defaults, and deletion semantics before storing user history.
+- Document that local persistence is unencrypted and retained until deletion;
+  manual backup and validated restore are available, but restore remains
+  destructive and requires a reviewed backup plus explicit confirmation.
 - Define diagnostic retention and redaction rules before enabling production
   logging.
 - Evaluate accessibility against the chosen text interface before the MVP

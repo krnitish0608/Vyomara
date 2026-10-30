@@ -130,6 +130,46 @@ export function parseDesktopMemoryDeleteRequest(value: unknown): { readonly id: 
   return { id: parseDesktopMemoryId(record.id), confirmation: record.confirmation };
 }
 
+export function parseDesktopDeleteAllRequest(value: unknown): { readonly confirmation: 'DELETE ALL' } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new DesktopValidationError('Delete-all request is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 1 ||
+    !Object.hasOwn(record, 'confirmation') ||
+    record.confirmation !== 'DELETE ALL'
+  ) {
+    throw new DesktopValidationError('Type DELETE ALL to remove all saved conversations and memories.');
+  }
+  return { confirmation: record.confirmation };
+}
+
+export function parseDesktopRestoreRequest(value: unknown): { readonly confirmation: 'RESTORE' } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new DesktopValidationError('Restore request is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 1 ||
+    !Object.hasOwn(record, 'confirmation') ||
+    record.confirmation !== 'RESTORE'
+  ) {
+    throw new DesktopValidationError('Review the selected backup and type RESTORE to replace local data.');
+  }
+  return { confirmation: record.confirmation };
+}
+
 export function parseDesktopFilesystemRoot(value: unknown): string {
   if (
     typeof value !== 'string' ||

@@ -73,6 +73,107 @@ test('session history survives reopening, stays isolated, and cascades on deleti
   reopened.close();
 });
 
+test('delete-all removes every session and memory atomically while preserving settings and folder grants', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(root);
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'saved conversation' });
+  store.saveSession(session);
+  store.saveMemory('saved memory');
+  store.initializeFilesystemRoots([root]);
+  store.setAppSettings({ provider: 'placeholder' });
+  const blocker = new DatabaseSync(store.databasePath);
+  blocker.exec(`
+    CREATE TRIGGER reject_memory_deletion
+    BEFORE DELETE ON memories
+    BEGIN
+      SELECT RAISE(ABORT, 'blocked by test');
+    END;
+  `);
+  blocker.close();
+
+  assert.throws(
+    () => store.deleteAllSessionsAndMemories(),
+    (error: unknown) => error instanceof PersistenceError && error.code === 'database-error',
+  );
+  assert.equal(store.listSessions().length, 1);
+  assert.equal(store.listMemories().length, 1);
+  const removeBlocker = new DatabaseSync(store.databasePath);
+  removeBlocker.exec('DROP TRIGGER reject_memory_deletion');
+  removeBlocker.close();
+
+  assert.deepEqual(store.deleteAllSessionsAndMemories(), {
+    sessionsDeleted: 1,
+    memoriesDeleted: 1,
+  });
+  assert.deepEqual(store.listSessions(), []);
+  assert.deepEqual(store.listMemories(), []);
+  assert.deepEqual(store.listFilesystemRoots(), [root]);
+  assert.equal(store.getAppSetting('provider'), 'placeholder');
+  assert.deepEqual(store.deleteAllSessionsAndMemories(), {
+    sessionsDeleted: 0,
+    memoriesDeleted: 0,
+  });
+  store.close();
+
+  const reopened = new SqliteStore(root);
+  assert.deepEqual(reopened.listSessions(), []);
+  assert.deepEqual(reopened.listMemories(), []);
+  assert.deepEqual(reopened.listFilesystemRoots(), [root]);
+  assert.equal(reopened.getAppSetting('provider'), 'placeholder');
+  reopened.close();
+});
+
+test('SQLite backups are consistent, owner-only, and never overwrite an existing file', t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new SqliteStore(join(root, 'data'));
+  const session = store.createSession();
+  session.add({ role: 'user', content: 'private conversation fixture' });
+  store.saveSession(session);
+  const memoryId = store.saveMemory('private memory fixture');
+  store.initializeFilesystemRoots([join(root, 'workspace')]);
+  store.setAppSettings({ provider: 'placeholder' });
+  const backupPath = join(root, 'vyomara-backup.sqlite');
+
+  store.exportBackup(backupPath);
+  assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+  const backup = new DatabaseSync(backupPath, { readOnly: true });
+  assert.equal(
+    (backup.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check,
+    'ok',
+  );
+  assert.equal((backup.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
+  assert.equal(
+    (backup.prepare('SELECT message_json FROM session_messages').get() as { message_json: string })
+      .message_json.includes('private conversation fixture'),
+    true,
+  );
+  assert.equal(
+    (backup.prepare('SELECT content FROM memories WHERE id = ?').get(memoryId) as { content: string }).content,
+    'private memory fixture',
+  );
+  assert.equal(
+    (backup.prepare('SELECT path FROM filesystem_roots').get() as { path: string }).path,
+    join(root, 'workspace'),
+  );
+  const providerSetting = backup.prepare(
+    'SELECT key, value FROM app_settings WHERE key = ?',
+  ).get('provider') as { key: string; value: string };
+  assert.equal(providerSetting.key, 'provider');
+  assert.equal(providerSetting.value, 'placeholder');
+  backup.close();
+
+  assert.throws(() => store.exportBackup(backupPath), /could not be created without replacing/);
+  assert.equal(statSync(backupPath).mode & 0o777, 0o600);
+  assert.throws(
+    () => store.exportBackup(store.databasePath),
+    (error: unknown) => error instanceof PersistenceError && error.code === 'invalid-path',
+  );
+  store.close();
+});
+
 test('filesystem roots initialize from config once and persist grants and revocations', t => {
   const root = temporaryDirectory();
   t.after(() => rmSync(root, { recursive: true, force: true }));
