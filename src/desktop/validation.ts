@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
-import type { DesktopChatRequest } from './contracts.ts';
+import { validateOllamaModel } from '../config/config.ts';
+import type { DesktopChatRequest, DesktopProviderSettings } from './contracts.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const maximumMemoryChars = 32_000;
@@ -11,11 +12,70 @@ export class DesktopValidationError extends Error {
   }
 }
 
+export function parseDesktopProviderSettings(value: unknown): DesktopProviderSettings {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new DesktopValidationError('Provider settings are invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !Object.hasOwn(record, 'provider') ||
+    !Object.hasOwn(record, 'model') ||
+    (record.provider !== 'ollama' && record.provider !== 'placeholder') ||
+    typeof record.model !== 'string'
+  ) {
+    throw new DesktopValidationError('Choose a supported provider and enter a valid Ollama model name.');
+  }
+  try {
+    return { provider: record.provider, model: validateOllamaModel(record.model) };
+  } catch {
+    throw new DesktopValidationError('Ollama model names must be 1–128 letters, numbers, dots, underscores, colons, slashes, or hyphens.');
+  }
+}
+
+export function parseDesktopOllamaModelName(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new DesktopValidationError('Ollama model name is invalid.');
+  }
+  try {
+    return validateOllamaModel(value);
+  } catch {
+    throw new DesktopValidationError('Ollama model names must be 1–128 letters, numbers, dots, underscores, colons, slashes, or hyphens.');
+  }
+}
+
 export function parseDesktopSessionId(value: unknown): string {
   if (typeof value !== 'string' || !uuidPattern.test(value)) {
     throw new Error('Session request is invalid.');
   }
   return value;
+}
+
+export function parseDesktopSessionDeleteRequest(value: unknown): { readonly id: string; readonly confirmation: string } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new DesktopValidationError('Session deletion request is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !Object.hasOwn(record, 'id') ||
+    !Object.hasOwn(record, 'confirmation') ||
+    record.confirmation !== 'DELETE'
+  ) {
+    throw new DesktopValidationError('Review the selected conversation and type DELETE to remove it.');
+  }
+  const id = parseDesktopSessionId(record.id);
+  return { id, confirmation: record.confirmation };
 }
 
 export function parseDesktopMemoryId(value: unknown): string {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readDesktopSession, readDesktopSessions } from '../src/app/application.ts';
+import { deleteDesktopSession, readDesktopSession, readDesktopSessions } from '../src/app/application.ts';
 import { loadConfig } from '../src/config/config.ts';
 import { SqliteStore } from '../src/storage/sqlite-store.ts';
 
@@ -42,5 +42,13 @@ test('desktop session history lists local chats and returns only user and final 
       { role: 'assistant', content: 'The folder contains two items.' },
     ],
   });
+  assert.equal(deleteDesktopSession(config, session.id), true);
+  assert.deepEqual(readDesktopSessions(config), []);
+  assert.throws(() => readDesktopSession(config, session.id), /not found/i);
+  assert.equal(deleteDesktopSession(config, session.id), false);
+  const reopened = new SqliteStore(root);
+  assert.deepEqual(reopened.listSessions(), []);
+  assert.throws(() => reopened.getSession(session.id), /not found/i);
+  reopened.close();
   assert.throws(() => readDesktopSession(config, 'not-a-uuid'), /invalid/i);
 });

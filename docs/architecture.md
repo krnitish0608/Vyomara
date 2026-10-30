@@ -10,7 +10,13 @@ local session history and separately managed explicit memory through SQLite.
 Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
 local session-history browser and continuation from the desktop UI. Phase 12
 added a local Ollama reachability check and persistent, revocable desktop
-filesystem roots. Phase 13 adds explicit desktop memory management. The diagram and component
+filesystem roots. Phase 13 adds explicit desktop memory management. Phase 14
+adds review-before-delete controls for desktop session history. Phase 15 adds
+desktop settings for the local provider and Ollama model tag. Phase 16 adds an
+explicit read-only check for the configured model's local availability.
+Phase 17 adds a reset for the saved provider/model overrides. Phase 18 groups
+provider identity, Ollama reachability, and selected-model availability in
+the desktop Settings status view. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -64,10 +70,20 @@ The CLI stores local session history, supports review, continuation, and
 deletion, and offers separate explicitly confirmed memory operations. The
 desktop shell uses the same application service and exposes chat, cancellation,
 provider configuration status, request-scoped activity, and filtered session
-history through a restricted preload bridge. Provider configuration status is
-separate from reachability. Memory is not currently injected into model
-context. The desktop can make an explicit, loopback-only Ollama reachability
-check; it does not verify model installation. Allowed filesystem roots are
+history through a restricted preload bridge. Desktop history entries can be
+reviewed and deleted only after a typed confirmation; deleting the active
+history entry also clears it from the current view. Provider configuration
+is editable between the local Ollama adapter and deterministic placeholder;
+the model tag and provider choice are stored in the local app settings table.
+The user can remove those two overrides to restore the current process
+environment defaults; unrelated app settings and filesystem permissions are
+preserved.
+The Ollama endpoint remains environment-configured and loopback-only. Provider
+configuration status is separate from reachability. The desktop can make
+explicit, loopback-only checks for service reachability and whether the
+selected model appears in Ollama's installed model list; both checks use a
+bounded GET to `/api/tags` and never download models. Memory is not currently
+injected into model context. Allowed filesystem roots are
 selected and revoked through the native folder picker, then persisted in the
 owner-only SQLite database. Memory content can be saved only after exact
 content review and typed confirmation, inspected, and deleted after review

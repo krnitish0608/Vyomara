@@ -1,6 +1,7 @@
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
+import { validateOllamaModel } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { runAgent } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
@@ -8,6 +9,8 @@ import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
   DesktopConversationMessage,
   DesktopMemorySummary,
+  DesktopProviderSettings,
+  DesktopProviderStatus,
   DesktopSessionHistory,
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
@@ -28,6 +31,67 @@ export function initializeDesktopFilesystemRoots(config: AppConfig): AppConfig {
   } finally {
     store.close();
   }
+}
+
+export function initializeDesktopProviderSettings(config: AppConfig): AppConfig {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    const provider = store.getAppSetting('provider');
+    const model = store.getAppSetting('ollama-model');
+    if (provider === undefined && model === undefined) return config;
+    if (
+      (provider !== 'ollama' && provider !== 'placeholder') ||
+      model === undefined
+    ) {
+      throw new Error('Saved provider settings are incomplete or invalid.');
+    }
+    try {
+      return { ...config, provider, ollamaModel: validateOllamaModel(model) };
+    } catch {
+      throw new Error('Saved provider settings are invalid.');
+    }
+  } finally {
+    store.close();
+  }
+}
+
+export function saveDesktopProviderSettings(
+  config: AppConfig,
+  settings: DesktopProviderSettings,
+): { readonly config: AppConfig; readonly status: DesktopProviderStatus } {
+  const model = validateOllamaModel(settings.model);
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.setAppSettings({ provider: settings.provider, 'ollama-model': model });
+  } finally {
+    store.close();
+  }
+  const updated = { ...config, provider: settings.provider, ollamaModel: model };
+  return {
+    config: updated,
+    status: { provider: updated.provider, model: updated.ollamaModel, connection: 'not-checked' },
+  };
+}
+
+export function resetDesktopProviderSettings(
+  config: AppConfig,
+  defaults: AppConfig,
+): { readonly config: AppConfig; readonly status: DesktopProviderStatus } {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.deleteAppSettings(['provider', 'ollama-model']);
+  } finally {
+    store.close();
+  }
+  const updated = {
+    ...config,
+    provider: defaults.provider,
+    ollamaModel: defaults.ollamaModel,
+  };
+  return {
+    config: updated,
+    status: { provider: updated.provider, model: updated.ollamaModel, connection: 'not-checked' },
+  };
 }
 
 export async function grantDesktopFilesystemRoot(config: AppConfig, selectedPath: string): Promise<AppConfig> {
@@ -107,6 +171,15 @@ export function readDesktopSessions(config: AppConfig): readonly DesktopSessionS
   const store = new SqliteStore(config.dataDirectory);
   try {
     return store.listSessions();
+  } finally {
+    store.close();
+  }
+}
+
+export function deleteDesktopSession(config: AppConfig, sessionId: string): boolean {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.deleteSession(sessionId);
   } finally {
     store.close();
   }

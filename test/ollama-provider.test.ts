@@ -85,6 +85,42 @@ test('Ollama connection check queries only the configured loopback tags endpoint
   assert.equal(redirectMode, 'error');
 });
 
+test('Ollama model availability check is read-only and matches the implicit latest tag', async () => {
+  let requestUrl = '';
+  let requestMethod = '';
+  let redirectMode: RequestInit['redirect'];
+  const fetchImplementation: FetchImplementation = async (input, init) => {
+    requestUrl = String(input);
+    requestMethod = init?.method ?? '';
+    redirectMode = init?.redirect;
+    return jsonResponse({
+      models: [
+        { name: 'qwen2.5-coder:latest' },
+        { name: 'other-model:latest' },
+      ],
+    });
+  };
+
+  assert.equal(await provider(fetchImplementation, { model: 'qwen2.5-coder' }).checkModelAvailability(), 'installed');
+  assert.equal(requestUrl, 'http://127.0.0.1:11434/api/tags');
+  assert.equal(requestMethod, 'GET');
+  assert.equal(redirectMode, 'error');
+  assert.equal(await provider(fetchImplementation, { model: 'missing-model' }).checkModelAvailability(), 'not-installed');
+});
+
+test('Ollama model availability check rejects malformed model lists', async () => {
+  for (const payload of [
+    { models: [{ name: '' }] },
+    { models: [{ name: 7 }] },
+    { models: 'llama3.2' },
+  ]) {
+    await assert.rejects(
+      provider(async () => jsonResponse(payload)).checkModelAvailability(),
+      (error: unknown) => error instanceof ProviderError && error.code === 'malformed-response',
+    );
+  }
+});
+
 test('Ollama connection check reports service and malformed-response failures', async () => {
   const httpFailure = provider(async () => jsonResponse({}, 503));
   await assert.rejects(httpFailure.checkConnection(), (error: unknown) =>

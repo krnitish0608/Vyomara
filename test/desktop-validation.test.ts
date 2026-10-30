@@ -6,6 +6,9 @@ import {
   parseDesktopMemoryDeleteRequest,
   parseDesktopMemoryId,
   parseDesktopMemorySaveRequest,
+  parseDesktopOllamaModelName,
+  parseDesktopProviderSettings,
+  parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../src/desktop/validation.ts';
 
@@ -37,6 +40,60 @@ test('desktop IPC accepts only UUID session identifiers', () => {
   assert.equal(parseDesktopSessionId(validSessionId), validSessionId);
   for (const invalid of [null, undefined, {}, '../session', '']) {
     assert.throws(() => parseDesktopSessionId(invalid), /Session request is invalid/);
+  }
+});
+
+test('desktop IPC accepts only local providers and bounded Ollama model names', () => {
+  assert.deepEqual(
+    parseDesktopProviderSettings({ provider: 'ollama', model: 'llama3.2:latest' }),
+    { provider: 'ollama', model: 'llama3.2:latest' },
+  );
+  assert.deepEqual(
+    parseDesktopProviderSettings({ provider: 'placeholder', model: 'qwen2.5-coder' }),
+    { provider: 'placeholder', model: 'qwen2.5-coder' },
+  );
+  for (const invalid of [
+    null,
+    {},
+    { provider: 'remote', model: 'model' },
+    { provider: 'ollama', model: 'model name' },
+    { provider: 'ollama', model: 'x'.repeat(129) },
+    { provider: 'ollama', model: 'model', extra: true },
+  ]) {
+    assert.throws(
+      () => parseDesktopProviderSettings(invalid),
+      /Provider settings|supported provider|Ollama model names/,
+    );
+  }
+});
+
+test('desktop IPC validates Ollama model availability check input', () => {
+  assert.equal(parseDesktopOllamaModelName(' qwen2.5-coder:latest '), 'qwen2.5-coder:latest');
+  for (const invalid of [null, {}, '', 'model name', 'https://example.com', 'x'.repeat(129)]) {
+    assert.throws(
+      () => parseDesktopOllamaModelName(invalid),
+      /Ollama model name|Ollama model names/,
+    );
+  }
+});
+
+test('desktop IPC requires an exact DELETE confirmation for reviewed session history', () => {
+  assert.deepEqual(
+    parseDesktopSessionDeleteRequest({ id: validSessionId, confirmation: 'DELETE' }),
+    { id: validSessionId, confirmation: 'DELETE' },
+  );
+  for (const invalid of [
+    null,
+    {},
+    { id: validSessionId },
+    { id: validSessionId, confirmation: 'delete' },
+    { id: '../outside', confirmation: 'DELETE' },
+    { id: validSessionId, confirmation: 'DELETE', extra: true },
+  ]) {
+    assert.throws(
+      () => parseDesktopSessionDeleteRequest(invalid),
+      /Session deletion request|Session request|type DELETE/,
+    );
   }
 });
 

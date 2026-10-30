@@ -406,6 +406,55 @@ export class SqliteStore {
     });
   }
 
+  getAppSetting(key: string): string | undefined {
+    this.assertOpen();
+    const row = this.#database.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+    if (row === undefined) return undefined;
+    if (!isRecord(row) || typeof row.value !== 'string') {
+      throw new PersistenceError('Stored application settings are invalid.', 'invalid-data');
+    }
+    return row.value;
+  }
+
+  setAppSettings(settings: Readonly<Record<string, string>>): void {
+    this.assertOpen();
+    const entries = Object.entries(settings);
+    if (
+      entries.length === 0 ||
+      entries.some(([key, value]) => !/^[a-z][a-z0-9-]{0,63}$/.test(key) || value.length > 256)
+    ) {
+      throw new PersistenceError('Application settings are invalid.', 'invalid-data');
+    }
+    this.#database.exec('BEGIN IMMEDIATE');
+    try {
+      const upsert = this.#database.prepare(`
+        INSERT INTO app_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `);
+      for (const [key, value] of entries) upsert.run(key, value);
+      this.#database.exec('COMMIT');
+    } catch {
+      this.#database.exec('ROLLBACK');
+      throw new PersistenceError('Application settings could not be saved safely.', 'database-error');
+    }
+  }
+
+  deleteAppSettings(keys: readonly string[]): void {
+    this.assertOpen();
+    if (keys.length === 0 || keys.some(key => !/^[a-z][a-z0-9-]{0,63}$/.test(key))) {
+      throw new PersistenceError('Application setting keys are invalid.', 'invalid-data');
+    }
+    this.#database.exec('BEGIN IMMEDIATE');
+    try {
+      const remove = this.#database.prepare('DELETE FROM app_settings WHERE key = ?');
+      for (const key of keys) remove.run(key);
+      this.#database.exec('COMMIT');
+    } catch {
+      this.#database.exec('ROLLBACK');
+      throw new PersistenceError('Application settings could not be reset safely.', 'database-error');
+    }
+  }
+
   addFilesystemRoot(path: string): readonly string[] {
     this.assertOpen();
     if (!this.validFilesystemRoot(path)) {

@@ -6,12 +6,16 @@ import {
   grantDesktopFilesystemRoot,
   initializeDesktopFilesystemRoots,
   deleteDesktopMemory,
+  deleteDesktopSession,
+  initializeDesktopProviderSettings,
   readDesktopSession,
   readDesktopMemories,
   readDesktopMemory,
   readDesktopSessions,
+  resetDesktopProviderSettings,
   revokeDesktopFilesystemRoot,
   saveDesktopMemory,
+  saveDesktopProviderSettings,
   runRequest,
 } from '../app/application.ts';
 import { loadConfig } from '../config/config.ts';
@@ -25,9 +29,12 @@ import {
   DesktopValidationError,
   parseDesktopChatRequest,
   parseDesktopFilesystemRoot,
+  parseDesktopOllamaModelName,
   parseDesktopMemoryDeleteRequest,
   parseDesktopMemoryId,
   parseDesktopMemorySaveRequest,
+  parseDesktopProviderSettings,
+  parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
 
@@ -35,6 +42,7 @@ let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
 let activePermissionChange = false;
 let config: AppConfig | undefined;
+let environmentConfig: AppConfig | undefined;
 
 function publicErrorMessage(error: unknown): string {
   if (
@@ -114,6 +122,36 @@ ipcMain.handle('vyomara:provider-status', () => {
   };
 });
 
+ipcMain.handle('vyomara:provider-settings-save', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before changing provider settings.');
+  }
+  try {
+    const settings = parseDesktopProviderSettings(input);
+    const result = saveDesktopProviderSettings(config, settings);
+    config = result.config;
+    return result.status;
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:provider-settings-reset', () => {
+  if (!config || !environmentConfig) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before resetting provider settings.');
+  }
+  try {
+    const result = resetDesktopProviderSettings(config, environmentConfig);
+    config = result.config;
+    return result.status;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
 ipcMain.handle('vyomara:provider-check', async () => {
   if (!config) throw new Error('Application configuration is unavailable.');
   if (config.provider !== 'ollama') {
@@ -130,6 +168,29 @@ ipcMain.handle('vyomara:provider-check', async () => {
     await provider.checkConnection();
     return { status: 'available' as const };
   } catch (error) {
+    if (error instanceof ProviderError) {
+      return { status: 'unavailable' as const, message: error.message };
+    }
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:provider-model-check', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    const model = parseDesktopOllamaModelName(input);
+    const provider = new OllamaProvider({
+      baseUrl: config.ollamaBaseUrl,
+      model,
+      maxResponseChars: config.maxResponseChars,
+      maxToolCallArgumentsChars: config.maxToolOutputChars,
+    });
+    const status = await provider.checkModelAvailability();
+    return status === 'installed'
+      ? { status }
+      : { status, message: `Model "${model}" is not installed in local Ollama. Vyomara did not download it.` };
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
     if (error instanceof ProviderError) {
       return { status: 'unavailable' as const, message: error.message };
     }
@@ -181,6 +242,20 @@ ipcMain.handle('vyomara:session-load', (_event, input: unknown) => {
     const sessionId = parseDesktopSessionId(input);
     return readDesktopSession(config, sessionId);
   } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before deleting a conversation.');
+  }
+  try {
+    const request = parseDesktopSessionDeleteRequest(input);
+    return deleteDesktopSession(config, request.id);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
     throw new Error(publicErrorMessage(error));
   }
 });
@@ -272,7 +347,8 @@ ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
 
 app.whenReady().then(() => {
   try {
-    config = initializeDesktopFilesystemRoots(loadConfig(process.env));
+    environmentConfig = loadConfig(process.env);
+    config = initializeDesktopProviderSettings(initializeDesktopFilesystemRoots(environmentConfig));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';
     dialog.showErrorBox('Vyomara configuration error', message);

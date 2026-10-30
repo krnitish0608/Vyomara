@@ -3,7 +3,10 @@ import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
   DesktopProviderConnectionResult,
+  DesktopProviderModelCheckResult,
+  DesktopProviderSettings,
   DesktopProviderStatus,
+  DesktopSessionHistory,
   DesktopMemorySummary,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
@@ -54,6 +57,14 @@ function activityLabel(event: DiagnosticEvent): string | undefined {
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [providerDraft, setProviderDraft] = useState<DesktopProviderSettings['provider']>('ollama');
+  const [modelDraft, setModelDraft] = useState('llama3.2');
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState<string>();
+  const [settingsNotice, setSettingsNotice] = useState<string>();
+  const [modelCheck, setModelCheck] = useState<DesktopProviderModelCheckResult>();
+  const [modelCheckLoading, setModelCheckLoading] = useState(false);
   const [connectionCheck, setConnectionCheck] = useState<'not-checked' | 'checking' | 'available' | 'unavailable'>('not-checked');
   const [connectionMessage, setConnectionMessage] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -63,6 +74,9 @@ export function App() {
   const [sessions, setSessions] = useState<readonly DesktopSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
+  const [selectedHistorySession, setSelectedHistorySession] = useState<DesktopSessionHistory>();
+  const [historyDeleteConfirmation, setHistoryDeleteConfirmation] = useState('');
+  const [historyNotice, setHistoryNotice] = useState<string>();
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [allowedRoots, setAllowedRoots] = useState<readonly string[]>([]);
   const [permissionsLoading, setPermissionsLoading] = useState(false);
@@ -149,6 +163,12 @@ export function App() {
   }
 
   async function checkProviderConnection(): Promise<void> {
+    if (
+      connectionCheck === 'checking' ||
+      settingsLoading ||
+      requestPending ||
+      provider?.provider !== 'ollama'
+    ) return;
     setConnectionCheck('checking');
     setConnectionMessage(undefined);
     try {
@@ -161,6 +181,85 @@ export function App() {
     }
   }
 
+  function toggleSettings(): void {
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setPermissionsOpen(false);
+    setMemoryOpen(false);
+    setProviderDraft(provider?.provider ?? 'ollama');
+    setModelDraft(provider?.model ?? 'llama3.2');
+    setSettingsError(undefined);
+    setSettingsNotice(undefined);
+    setModelCheck(undefined);
+    setSettingsOpen(true);
+  }
+
+  async function checkModelAvailability(): Promise<void> {
+    if (
+      modelCheckLoading ||
+      settingsLoading ||
+      requestPending ||
+      providerDraft !== 'ollama' ||
+      provider?.provider !== 'ollama'
+    ) return;
+    setModelCheckLoading(true);
+    setModelCheck(undefined);
+    setSettingsError(undefined);
+    try {
+      setModelCheck(await window.vyomara.checkProviderModel(modelDraft));
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'The local model check failed.');
+    } finally {
+      setModelCheckLoading(false);
+    }
+  }
+
+  async function saveSettings(): Promise<void> {
+    if (settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending) return;
+    setSettingsLoading(true);
+    setSettingsError(undefined);
+    setSettingsNotice(undefined);
+    try {
+      const saved = await window.vyomara.saveProviderSettings({
+        provider: providerDraft,
+        model: modelDraft,
+      });
+      setProvider(saved);
+      setConnectionCheck('not-checked');
+      setConnectionMessage(undefined);
+      setModelCheck(undefined);
+      setSettingsNotice('Provider settings saved locally. New requests use this provider.');
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Provider settings could not be saved.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function resetSettings(): Promise<void> {
+    if (settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending) return;
+    setSettingsLoading(true);
+    setSettingsError(undefined);
+    setSettingsNotice(undefined);
+    try {
+      const restored = await window.vyomara.resetProviderSettings();
+      setProvider(restored);
+      setProviderDraft(restored.provider);
+      setModelDraft(restored.model);
+      setConnectionCheck('not-checked');
+      setConnectionMessage(undefined);
+      setModelCheck(undefined);
+      setSettingsNotice('Saved provider overrides were removed. Environment defaults are active.');
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : 'Provider settings could not be reset.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
   function startNewChat(): void {
     if (requestPending) return;
     setSessionId(undefined);
@@ -168,6 +267,9 @@ export function App() {
     setActivity([]);
     setRequestError(undefined);
     setHistoryOpen(false);
+    setSettingsOpen(false);
+    setSelectedHistorySession(undefined);
+    setHistoryDeleteConfirmation('');
   }
 
   async function toggleHistory(): Promise<void> {
@@ -178,9 +280,13 @@ export function App() {
 
     setPermissionsOpen(false);
     setMemoryOpen(false);
+    setSettingsOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    setSelectedHistorySession(undefined);
+    setHistoryDeleteConfirmation('');
     try {
       setSessions(await window.vyomara.listSessions());
     } catch (error) {
@@ -204,8 +310,51 @@ export function App() {
       setActivity([]);
       setRequestError(undefined);
       setHistoryOpen(false);
+      setSelectedHistorySession(undefined);
+      setHistoryDeleteConfirmation('');
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The saved session could not be opened.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function reviewSessionForDeletion(id: string): Promise<void> {
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    setHistoryDeleteConfirmation('');
+    setSelectedHistorySession(undefined);
+    try {
+      setSelectedHistorySession(await window.vyomara.loadSession(id));
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The selected conversation could not be reviewed.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function deleteReviewedSession(): Promise<void> {
+    const selected = selectedHistorySession;
+    if (!selected || historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    try {
+      const deleted = await window.vyomara.deleteSession(selected.sessionId, historyDeleteConfirmation);
+      if (!deleted) throw new Error('The selected conversation no longer exists.');
+      setSessions(await window.vyomara.listSessions());
+      setSelectedHistorySession(undefined);
+      setHistoryDeleteConfirmation('');
+      if (sessionId === selected.sessionId) {
+        setSessionId(undefined);
+        setMessages([]);
+        setActivity([]);
+        setRequestError(undefined);
+      }
+      setHistoryNotice('Conversation deleted from this Mac.');
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The conversation could not be deleted.');
     } finally {
       setHistoryLoading(false);
     }
@@ -219,6 +368,7 @@ export function App() {
 
     setHistoryOpen(false);
     setMemoryOpen(false);
+    setSettingsOpen(false);
     setPermissionsOpen(true);
     setPermissionsLoading(true);
     setPermissionsError(undefined);
@@ -264,6 +414,7 @@ export function App() {
 
     setHistoryOpen(false);
     setPermissionsOpen(false);
+    setSettingsOpen(false);
     setMemoryOpen(true);
     setMemoryLoading(true);
     setMemoryError(undefined);
@@ -355,16 +506,15 @@ export function App() {
             </span>
           )}
         </div>
-        {provider?.provider === 'ollama' && (
-          <button
-            className="new-chat-button"
-            type="button"
-            onClick={() => void checkProviderConnection()}
-            disabled={connectionCheck === 'checking' || requestPending}
-          >
-            {connectionCheck === 'checking' ? 'Checking…' : 'Check Ollama'}
-          </button>
-        )}
+        <button
+          className="new-chat-button"
+          type="button"
+          onClick={toggleSettings}
+          disabled={requestPending}
+          aria-expanded={settingsOpen}
+        >
+          Settings
+        </button>
         <button
           className="new-chat-button"
           type="button"
@@ -685,21 +835,206 @@ export function App() {
               <ol className="history-list">
                 {sessions.map(session => (
                   <li key={session.id}>
-                    <button
-                      className={`history-item${session.id === sessionId ? ' history-item-current' : ''}`}
-                      type="button"
-                      onClick={() => void openSession(session.id)}
-                      disabled={historyLoading}
-                    >
-                      <span>{new Date(session.updatedAt).toLocaleString()}</span>
-                      <span>{session.messageCount} messages</span>
-                    </button>
+                    <div className="history-row">
+                      <button
+                        className={`history-item${session.id === sessionId ? ' history-item-current' : ''}`}
+                        type="button"
+                        onClick={() => void openSession(session.id)}
+                        disabled={historyLoading || requestPending}
+                      >
+                        <span>{new Date(session.updatedAt).toLocaleString()}</span>
+                        <span>{session.messageCount} messages · Open conversation</span>
+                      </button>
+                      <button
+                        className="history-delete"
+                        type="button"
+                        onClick={() => void reviewSessionForDeletion(session.id)}
+                        disabled={historyLoading || requestPending}
+                      >
+                        Review to delete
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ol>
             )}
+            {selectedHistorySession && (
+              <section className="session-review" aria-label="Review conversation before deletion">
+                <p className="memory-review-title">Review conversation before deleting</p>
+                <ol className="session-review-messages">
+                  {selectedHistorySession.messages.length === 0 ? (
+                    <li>No user or assistant messages are available to review.</li>
+                  ) : selectedHistorySession.messages.map((message, index) => (
+                    <li key={`${index}-${message.role}`}>
+                      <strong>{message.role === 'user' ? 'You' : 'Vyom'}</strong>
+                      <pre className="memory-content">{message.content}</pre>
+                    </li>
+                  ))}
+                </ol>
+                <label className="memory-label" htmlFor="history-delete-confirm">
+                  Type DELETE to permanently remove this conversation
+                </label>
+                <input
+                  id="history-delete-confirm"
+                  className="memory-confirm-input"
+                  value={historyDeleteConfirmation}
+                  onChange={event => setHistoryDeleteConfirmation(event.target.value)}
+                  autoComplete="off"
+                  disabled={historyLoading || requestPending}
+                />
+                <button
+                  className="permission-revoke"
+                  type="button"
+                  onClick={() => void deleteReviewedSession()}
+                  disabled={historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending}
+                >
+                  Delete this conversation
+                </button>
+              </section>
+            )}
+            {historyNotice && <p className="memory-notice" role="status">{historyNotice}</p>}
           </div>
-          <p className="history-privacy">Saved locally. Tool results are not shown in this history view.</p>
+          <p className="history-privacy">
+            Saved locally until deleted. Review shows user and final assistant messages; raw tool calls and results are also stored and removed with the session.
+          </p>
+        </aside>
+        ) : settingsOpen ? (
+        <aside className="activity-panel history-panel settings-panel" aria-label="Provider settings">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">LOCAL CONFIGURATION</p>
+              <h2>Settings</h2>
+            </div>
+            <button className="history-close" type="button" onClick={() => setSettingsOpen(false)}>
+              Close
+            </button>
+          </div>
+          <p className="permissions-disclosure">
+            Vyomara supports local Ollama or a deterministic placeholder. There is no cloud provider or silent fallback.
+            Ollama connections are limited to the configured loopback endpoint.
+          </p>
+          <section className="settings-status" aria-label="Current provider status">
+            <p className="memory-review-title">Current provider</p>
+            <strong>{providerError ?? providerTitle}</strong>
+            {provider?.provider === 'ollama' ? (
+              <>
+                <div className="settings-status-row">
+                  <span>Local Ollama service</span>
+                  <span role={connectionCheck === 'unavailable' ? 'alert' : 'status'}>
+                    {connectionCheck === 'available'
+                      ? 'Reachable'
+                      : connectionCheck === 'checking'
+                        ? 'Checking…'
+                        : connectionCheck === 'unavailable'
+                          ? 'Unavailable'
+                          : 'Not checked'}
+                  </span>
+                </div>
+                {connectionCheck === 'unavailable' && connectionMessage && (
+                  <p className="history-message history-error" role="alert">{connectionMessage}</p>
+                )}
+                <button
+                  className="history-close"
+                  type="button"
+                  onClick={() => void checkProviderConnection()}
+                  disabled={connectionCheck === 'checking' || settingsLoading || requestPending}
+                >
+                  {connectionCheck === 'checking' ? 'Checking local service…' : 'Check local Ollama connection'}
+                </button>
+                <div className="settings-status-row">
+                  <span>Model availability · {modelDraft}</span>
+                  <span role={modelCheck?.status === 'unavailable' ? 'alert' : 'status'}>
+                    {modelCheckLoading
+                      ? 'Checking…'
+                      : modelCheck?.status === 'installed'
+                        ? 'Installed'
+                        : modelCheck?.status === 'not-installed'
+                          ? 'Not installed'
+                          : modelCheck?.status === 'unavailable'
+                            ? 'Check unavailable'
+                            : 'Not checked'}
+                  </span>
+                </div>
+                {modelCheck?.status === 'not-installed' && (
+                  <p className="history-message" role="status">{modelCheck.message}</p>
+                )}
+                {modelCheck?.status === 'unavailable' && (
+                  <p className="history-message history-error" role="alert">{modelCheck.message}</p>
+                )}
+                <p className="history-privacy">
+                  Connection reachability and model installation are checked separately. Both checks use local Ollama only.
+                </p>
+              </>
+            ) : provider?.provider === 'placeholder' ? (
+              <p className="history-privacy">The deterministic placeholder uses no model or Ollama connection.</p>
+            ) : (
+              <p className="history-message history-error" role="alert">Provider status could not be loaded.</p>
+            )}
+          </section>
+          <label className="memory-label" htmlFor="provider-select">Provider</label>
+          <select
+            id="provider-select"
+            className="settings-input"
+            value={providerDraft}
+            onChange={event => {
+              setProviderDraft(event.target.value === 'placeholder' ? 'placeholder' : 'ollama');
+              setModelCheck(undefined);
+            }}
+            disabled={settingsLoading || requestPending}
+          >
+            <option value="ollama">Local Ollama</option>
+            <option value="placeholder">Deterministic placeholder</option>
+          </select>
+          <label className="memory-label" htmlFor="model-name">Ollama model name</label>
+          <input
+            id="model-name"
+            className="settings-input"
+            value={modelDraft}
+            onChange={event => {
+              setModelDraft(event.target.value);
+              setModelCheck(undefined);
+            }}
+            maxLength={128}
+            autoComplete="off"
+            disabled={settingsLoading || requestPending}
+          />
+          <p className="history-privacy">
+            Model names must use letters, numbers, `.`, `_`, `:`, `/`, or `-`. The model is not downloaded or checked when settings are saved.
+            {providerDraft === 'placeholder' ? ' The placeholder does not use a model.' : ''}
+          </p>
+          {providerDraft === 'ollama' && (
+            <>
+              <button
+                className="history-close"
+                type="button"
+                onClick={() => void checkModelAvailability()}
+                disabled={modelCheckLoading || settingsLoading || requestPending || provider?.provider !== 'ollama' || modelDraft.trim() === ''}
+              >
+                {modelCheckLoading ? 'Checking local model…' : 'Check model availability'}
+              </button>
+              {provider?.provider !== 'ollama' && (
+                <p className="history-privacy">Save Local Ollama as the current provider before checking model availability.</p>
+              )}
+            </>
+          )}
+          <button
+            className="permission-add"
+            type="button"
+            onClick={() => void saveSettings()}
+            disabled={settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending || modelDraft.trim() === ''}
+          >
+            {settingsLoading ? 'Saving…' : 'Save settings'}
+          </button>
+          <button
+            className="history-close"
+            type="button"
+            onClick={() => void resetSettings()}
+            disabled={settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending}
+          >
+            Reset to environment defaults
+          </button>
+          {settingsError && <p className="history-message history-error" role="alert">{settingsError}</p>}
+          {settingsNotice && <p className="memory-notice" role="status">{settingsNotice}</p>}
         </aside>
         ) : (
         <aside className="activity-panel" aria-label="Task activity">

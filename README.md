@@ -75,11 +75,26 @@ load `.env` files. Use **Folders** to grant and revoke read-only access to
 specific directories; permissions are stored locally. `VYOM_ALLOWED_ROOTS`
 seeds the desktop permissions on first launch. Filesystem tools remain
 unavailable until a folder is allowed. App signing, `.app`/`.dmg` distribution,
-settings, and voice are not implemented. Saved sessions can be reviewed and
+voice, and remote providers are not implemented. The desktop Settings panel
+lets you switch between local Ollama and a deterministic placeholder and set
+the Ollama model tag. These choices are stored locally and override
+`VYOM_PROVIDER` and `VYOM_OLLAMA_MODEL` after you save them; the Ollama
+endpoint remains configured through `VYOM_OLLAMA_BASE_URL` and must be
+loopback-only. Saving a model tag does not download it or check its
+availability. **Check model availability** performs a read-only request to
+Ollama's local tags endpoint and reports whether the selected model is already
+installed; it never downloads a model. **Reset to environment defaults**
+removes the saved provider/model overrides and restores the current process
+environment configuration without changing filesystem permissions or other
+local data. Provider identity, local Ollama reachability, and selected-model
+availability are shown together in Settings; reachability and model checks are
+separate. Saved sessions can be reviewed and
 continued from History; the desktop view displays user and final assistant
 messages, not raw tool calls or tool results. The Memory panel supports
 explicit review, save, inspection, and typed-confirmation deletion; saved
-memory is not automatically inserted into model context.
+memory is not automatically inserted into model context. History entries can
+be reviewed and deleted from the desktop after typing `DELETE`;
+deleting the active conversation also clears it from the current view.
 
 ## Local history and memory
 

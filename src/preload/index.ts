@@ -6,8 +6,17 @@ const api: VyomaraDesktopApi = {
   getProviderStatus() {
     return ipcRenderer.invoke('vyomara:provider-status');
   },
+  saveProviderSettings(settings) {
+    return ipcRenderer.invoke('vyomara:provider-settings-save', settings);
+  },
+  resetProviderSettings() {
+    return ipcRenderer.invoke('vyomara:provider-settings-reset');
+  },
   checkProviderConnection() {
     return ipcRenderer.invoke('vyomara:provider-check');
+  },
+  checkProviderModel(model: string) {
+    return ipcRenderer.invoke('vyomara:provider-model-check', model);
   },
   sendMessage(request: DesktopChatRequest) {
     return ipcRenderer.invoke('vyomara:chat-send', request);
@@ -20,6 +29,9 @@ const api: VyomaraDesktopApi = {
   },
   loadSession(sessionId: string) {
     return ipcRenderer.invoke('vyomara:session-load', sessionId);
+  },
+  deleteSession(sessionId: string, confirmation: string) {
+    return ipcRenderer.invoke('vyomara:session-delete', { id: sessionId, confirmation });
   },
   listFilesystemRoots() {
     return ipcRenderer.invoke('vyomara:filesystem-roots-list');

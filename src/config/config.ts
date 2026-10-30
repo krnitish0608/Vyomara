@@ -65,12 +65,16 @@ function localOllamaBaseUrl(raw: string | undefined): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
-function modelName(raw: string | undefined): string {
-  const value = raw === undefined ? 'llama3.2' : raw.trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(value)) {
+export function validateOllamaModel(value: string): string {
+  const model = value.trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model) || model.includes('://')) {
     throw new Error('VYOM_OLLAMA_MODEL must be a non-empty model name of at most 128 valid characters.');
   }
-  return value;
+  return model;
+}
+
+function modelName(raw: string | undefined): string {
+  return validateOllamaModel(raw === undefined ? 'llama3.2' : raw);
 }
 
 function allowedRoots(raw: string | undefined): readonly string[] {

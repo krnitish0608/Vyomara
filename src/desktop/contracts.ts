@@ -16,8 +16,18 @@ export interface DesktopProviderStatus {
   readonly connection: 'not-checked';
 }
 
+export interface DesktopProviderSettings {
+  readonly provider: 'ollama' | 'placeholder';
+  readonly model: string;
+}
+
 export type DesktopProviderConnectionResult =
   | { readonly status: 'available' }
+  | { readonly status: 'unavailable'; readonly message: string };
+
+export type DesktopProviderModelCheckResult =
+  | { readonly status: 'installed' }
+  | { readonly status: 'not-installed'; readonly message: string }
   | { readonly status: 'unavailable'; readonly message: string };
 
 export interface DesktopSessionSummary {
@@ -49,11 +59,15 @@ export type DesktopFilesystemRootGrant =
 
 export interface VyomaraDesktopApi {
   getProviderStatus(): Promise<DesktopProviderStatus>;
+  saveProviderSettings(settings: DesktopProviderSettings): Promise<DesktopProviderStatus>;
+  resetProviderSettings(): Promise<DesktopProviderStatus>;
   checkProviderConnection(): Promise<DesktopProviderConnectionResult>;
+  checkProviderModel(model: string): Promise<DesktopProviderModelCheckResult>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;
+  deleteSession(sessionId: string, confirmation: string): Promise<boolean>;
   listFilesystemRoots(): Promise<readonly string[]>;
   grantFilesystemRoot(): Promise<DesktopFilesystemRootGrant>;
   revokeFilesystemRoot(root: string): Promise<readonly string[]>;

@@ -232,6 +232,24 @@ export class OllamaProvider implements ModelProvider {
   private readonly model: string;
 
   async checkConnection(): Promise<void> {
+    await this.readInstalledModels();
+  }
+
+  async checkModelAvailability(): Promise<'installed' | 'not-installed'> {
+    const models = await this.readInstalledModels();
+    const withoutDefaultTag = (model: string): string => {
+      const normalized = model.toLowerCase();
+      return normalized.endsWith(':latest')
+        ? normalized.slice(0, -':latest'.length)
+        : normalized;
+    };
+    const configuredModel = withoutDefaultTag(this.model);
+    return models.some(model => withoutDefaultTag(model) === configuredModel)
+      ? 'installed'
+      : 'not-installed';
+  }
+
+  private async readInstalledModels(): Promise<readonly string[]> {
     const signal = AbortSignal.timeout(3_000);
     let response: Response;
     try {
@@ -260,9 +278,22 @@ export class OllamaProvider implements ModelProvider {
     } catch {
       throw new ProviderError('malformed-response');
     }
-    if (!isRecord(payload) || !Array.isArray(payload.models)) {
+    if (!isRecord(payload) || !Array.isArray(payload.models) || payload.models.length > 10_000) {
       throw new ProviderError('malformed-response');
     }
+    const models: string[] = [];
+    for (const model of payload.models) {
+      if (
+        !isRecord(model) ||
+        typeof model.name !== 'string' ||
+        model.name.trim() === '' ||
+        model.name.length > 512
+      ) {
+        throw new ProviderError('malformed-response');
+      }
+      models.push(model.name);
+    }
+    return models;
   }
 
   async complete(
