@@ -206,6 +206,10 @@ try {
     'receiving Vyom’s greeting before continuing a new conversation',
   );
   assert(
+    await evaluate('document.activeElement?.id === "prompt"'),
+    'composer focus returns after sending the greeting with Enter',
+  );
+  assert(
     await evaluate(`document.querySelector('.message-user')?.classList.contains('message-user') &&
       document.querySelector('.message-assistant')?.classList.contains('message-assistant')`),
     'chat messages distinguish the user and Vyom in the conversation layout',
@@ -218,6 +222,37 @@ try {
       document.querySelectorAll('.message-assistant').length === 2 &&
       !document.querySelector('.pending-state')`),
     'continuing the same chat with a normal follow-up message',
+  );
+  assert(
+    await evaluate('document.activeElement?.id === "prompt"'),
+    'composer stays focused after an Enter-submitted follow-up',
+  );
+  await typeText('Tell me one more thing.');
+  await evaluate('document.querySelector(".send-button").click()');
+  await waitFor(
+    () => evaluate(`document.querySelectorAll('.message-user').length === 3 &&
+      document.querySelectorAll('.message-assistant').length === 3 &&
+      !document.querySelector('.pending-state')`),
+    'sending another chat message with the send button',
+  );
+  assert(
+    await evaluate('document.activeElement?.id === "prompt"'),
+    'composer focus returns after clicking Send',
+  );
+  const composerFocusStyle = await evaluate(`(() => {
+    const textarea = document.querySelector('.composer textarea');
+    const composer = document.querySelector('.composer');
+    return {
+      textareaOutline: getComputedStyle(textarea).outlineStyle,
+      textareaResize: getComputedStyle(textarea).resize,
+      composerBorder: getComputedStyle(composer).borderTopColor,
+    };
+  })()`);
+  assert(
+    composerFocusStyle.textareaOutline === 'none' &&
+      composerFocusStyle.textareaResize === 'none' &&
+      composerFocusStyle.composerBorder !== 'rgb(48, 56, 70)',
+    'composer uses one subtle focus treatment without the textarea box or resize handle',
   );
   assert(
     await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&

@@ -116,6 +116,7 @@ export function App() {
   const [editProposalErrors, setEditProposalErrors] = useState<Record<string, string>>({});
   const [editProposalNotice, setEditProposalNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [sessionStartError, setSessionStartError] = useState<string>();
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
@@ -134,6 +135,8 @@ export function App() {
   const [speakingMessageId, setSpeakingMessageId] = useState<number>();
   const [speechError, setSpeechError] = useState<string>();
   const messageList = useRef<HTMLDivElement>(null);
+  const promptInput = useRef<HTMLTextAreaElement>(null);
+  const shouldRestoreComposerFocus = useRef(false);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const permissionsTrigger = useRef<HTMLButtonElement>(null);
@@ -224,6 +227,12 @@ export function App() {
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
     });
   }, [messages, requestPending]);
+
+  useEffect(() => {
+    if (requestPending || !shouldRestoreComposerFocus.current) return;
+    shouldRestoreComposerFocus.current = false;
+    promptInput.current?.focus();
+  }, [composerFocusRequest, requestPending]);
 
   useEffect(() => {
     if (settingsOpen) settingsHeading.current?.focus();
@@ -389,6 +398,10 @@ export function App() {
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    const trimmed = prompt.trim();
+    shouldRestoreComposerFocus.current = Boolean(trimmed) && !detectDesktopAppAction(trimmed) &&
+      !(isCodeEditRequest(trimmed) && !checkProjectDirectory);
+    setComposerFocusRequest(current => current + 1);
     await submitPrompt(prompt);
   }
 
@@ -1193,7 +1206,6 @@ export function App() {
                   {message.role === 'user' ? 'Y' : 'V'}
                 </div>
                 <div className="message-content">
-                  <p className="message-author">{message.role === 'user' ? 'You' : 'Vyom'}</p>
                   <p className="message-text">{message.content}</p>
                   {message.role === 'assistant' && !message.failed && (
                     <button
@@ -1302,6 +1314,7 @@ export function App() {
           <form className="composer" onSubmit={event => void submit(event)}>
             <label className="visually-hidden" htmlFor="prompt">Message Vyom</label>
             <textarea
+              ref={promptInput}
               id="prompt"
               value={prompt}
               onChange={event => {
