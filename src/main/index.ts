@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { AgentError } from '../agent/agent.ts';
@@ -47,10 +47,17 @@ import {
 } from '../desktop/validation.ts';
 import { exportToSelectedFile } from '../desktop/session-export.ts';
 import { runApprovedCheck, validateCheckDirectory } from '../desktop/check-runner.ts';
+import { DesktopAppActionError, parseDesktopAppAction, runDesktopAppAction } from '../desktop/app-actions.ts';
+import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
+import { EditProposalError, EditProposalManager } from '../desktop/edit-proposals.ts';
+import { isCodeEditRequest } from '../desktop/action-intent.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
 let activeCheck: AbortController | undefined;
+let activeApplicationAction = false;
+let pendingEditProposals: EditProposalManager | undefined;
+const macSpeechRunner = new MacSpeechRunner();
 let activePermissionChange = false;
 let checkProjectDirectory: string | undefined;
 let pendingRestoreBackupPath: string | undefined;
@@ -62,7 +69,10 @@ function publicErrorMessage(error: unknown): string {
     error instanceof AgentError ||
     error instanceof ProviderError ||
     error instanceof ToolExecutionError ||
-    error instanceof PersistenceError
+    error instanceof PersistenceError ||
+    error instanceof DesktopAppActionError ||
+    error instanceof MacSpeechError ||
+    error instanceof EditProposalError
   ) {
     return error.message;
   }
@@ -214,25 +224,73 @@ ipcMain.handle('vyomara:provider-model-check', async (_event, input: unknown) =>
 ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
   const request = parseDesktopChatRequest(input, config.maxInputChars);
+  const isProjectEdit = isCodeEditRequest(request.prompt);
+  const selectedProjectDirectory = checkProjectDirectory;
+  if (isProjectEdit && !selectedProjectDirectory) {
+    throw new Error('Select a project folder in Project workspace before asking Vyom to edit code. No files were changed.');
+  }
+  if (pendingEditProposals) {
+    throw new Error('Review, apply, or reject the pending project diff before starting another request.');
+  }
   if (activePermissionChange) throw new Error('Wait for filesystem permissions to finish changing before starting a request.');
   if (activeRequest) throw new Error('A request is already in progress.');
   if (activeCheck) throw new Error('Wait for the approved project check to finish before starting a request.');
+  if (activeApplicationAction) throw new Error('Wait for the application action to finish before starting a request.');
 
   const controller = new AbortController();
+  const editProposals = isProjectEdit && selectedProjectDirectory
+    ? new EditProposalManager(selectedProjectDirectory)
+    : undefined;
+  const requestConfig = editProposals && selectedProjectDirectory
+    ? {
+      ...config,
+      filesystemAllowedRoots: [selectedProjectDirectory],
+      maxToolOutputChars: Math.max(config.maxToolOutputChars, 20_000),
+      maxAgentIterations: Math.max(config.maxAgentIterations, 10),
+      maxToolCalls: Math.max(config.maxToolCalls, 10),
+    }
+    : config;
   activeRequest = controller;
   try {
-    return await runRequest(
+    const result = await runRequest(
       request.prompt,
       controller.signal,
-      config,
+      requestConfig,
       createDesktopLogger(),
       request.sessionId,
+      editProposals,
     );
+    if (editProposals && editProposals.list().length > 0) pendingEditProposals = editProposals;
+    return result;
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
     activeRequest = undefined;
   }
+});
+
+ipcMain.handle('vyomara:edit-apply', async (_event, input: unknown) => {
+  if (activeRequest || activeCheck || activeApplicationAction || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before applying a project edit.');
+  }
+  if (!pendingEditProposals) throw new Error('There is no pending project edit to apply.');
+  try {
+    const result = await pendingEditProposals.apply(input);
+    if (pendingEditProposals.list().length === 0) pendingEditProposals = undefined;
+    return result;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:edit-reject', (_event, input: unknown) => {
+  if (activeRequest || activeCheck || activeApplicationAction || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before rejecting a project edit.');
+  }
+  if (!pendingEditProposals) throw new Error('There is no pending project edit to reject.');
+  const rejected = pendingEditProposals.reject(input);
+  if (pendingEditProposals.list().length === 0) pendingEditProposals = undefined;
+  return rejected;
 });
 
 ipcMain.handle('vyomara:chat-cancel', () => {
@@ -390,7 +448,7 @@ ipcMain.handle('vyomara:data-restore', (_event, input: unknown) => {
 });
 
 ipcMain.handle('vyomara:checks-project-select', async () => {
-  if (activeRequest || activeCheck || activePermissionChange) {
+  if (activeRequest || activeCheck || activePermissionChange || pendingEditProposals) {
     throw new Error('Wait for the active operation to finish before selecting a project.');
   }
   const options: OpenDialogOptions = {
@@ -412,7 +470,7 @@ ipcMain.handle('vyomara:checks-project-select', async () => {
 
 ipcMain.handle('vyomara:checks-run', async (_event, checkId: unknown) => {
   if (!checkProjectDirectory) throw new Error('Choose a project directory before running a check.');
-  if (activeRequest || activeCheck || activePermissionChange) {
+  if (activeRequest || activeCheck || activeApplicationAction || activePermissionChange || pendingEditProposals) {
     throw new Error('Wait for the active operation to finish before running a check.');
   }
   const controller = new AbortController();
@@ -431,6 +489,47 @@ ipcMain.handle('vyomara:checks-cancel', () => {
   activeCheck.abort();
   return true;
 });
+
+ipcMain.handle('vyomara:app-action', async (_event, input: unknown) => {
+  if (activeRequest || activeCheck || activeApplicationAction || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before opening another application.');
+  }
+  activeApplicationAction = true;
+  try {
+    const action = parseDesktopAppAction(input);
+    if (action.type === 'open-vscode' && action.projectDirectory !== undefined) {
+      if (!checkProjectDirectory || await validateCheckDirectory(action.projectDirectory) !== checkProjectDirectory) {
+        throw new Error('VS Code can only open the project folder currently selected in Project workspace.');
+      }
+    }
+    return await runDesktopAppAction(action);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  } finally {
+    activeApplicationAction = false;
+  }
+});
+
+ipcMain.handle('vyomara:microphone-request', async () => {
+  if (process.platform !== 'darwin') {
+    throw new Error('On-device microphone input is currently supported only on macOS.');
+  }
+  try {
+    return await systemPreferences.askForMediaAccess('microphone');
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
+  try {
+    return await macSpeechRunner.speak(input);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:speech-stop', () => macSpeechRunner.stop());
 
 ipcMain.handle('vyomara:filesystem-roots-list', () => {
   if (!config) throw new Error('Application configuration is unavailable.');
@@ -553,6 +652,29 @@ ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
 });
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const audioOnlyRequest = 'mediaTypes' in details &&
+      details.mediaTypes?.includes('audio') === true &&
+      details.mediaTypes.every(mediaType => mediaType === 'audio');
+    let trustedOrigin = false;
+    if ('securityOrigin' in details && details.securityOrigin) {
+      trustedOrigin = details.securityOrigin === 'file://';
+      if (!trustedOrigin && process.env.ELECTRON_RENDERER_URL) {
+        try {
+          trustedOrigin = new URL(details.securityOrigin).origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
+        } catch {
+          trustedOrigin = false;
+        }
+      }
+    }
+    callback(
+      webContents === mainWindow?.webContents &&
+      permission === 'media' &&
+      audioOnlyRequest &&
+      trustedOrigin,
+    );
+  });
   try {
     environmentConfig = loadConfig(process.env);
     config = initializeDesktopProviderSettings(initializeDesktopFilesystemRoots(environmentConfig));
@@ -572,6 +694,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   activeRequest?.abort();
   activeCheck?.abort();
+  macSpeechRunner.stop();
 });
 
 app.on('window-all-closed', () => {

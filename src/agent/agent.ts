@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -21,7 +22,13 @@ export class AgentError extends Error {
   }
 }
 
-function unsupportedCapability(prompt: string): string | undefined {
+function unsupportedCapability(prompt: string, canProposeEdits: boolean): string | undefined {
+  if (!canProposeEdits && /\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b[\s\S]{0,80}\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b|\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b[\s\S]{0,80}\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b/i.test(prompt)) {
+    return 'File creation, editing, and deletion are not available without an approved edit workflow. Select a project folder in Project workspace to request a reviewable change to an existing file; no files were changed.';
+  }
+  if (!canProposeEdits && (
+    /\b(?:open|launch)\s+(?:vs\s*code|vscode|visual studio code)\b[\s\S]{0,96}\b(?:fix|edit|modify|change|implement|refactor|debug)\b|\b(?:fix|edit|modify|change|implement|refactor|debug)\b[\s\S]{0,96}\b(?:in|using|through)\s+(?:vs\s*code|vscode|visual studio code)\b/i.test(prompt)
+  )) return 'Select a project folder in Project workspace before requesting an approved code edit. No files were changed.';
   if (
     /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?(?:echo|pwd|ls|cat|grep|find|cd|whoami|uname|curl|wget|git|pnpm|npm|ollama)\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
   ) {
@@ -32,11 +39,9 @@ function unsupportedCapability(prompt: string): string | undefined {
   ) {
     return 'Web browsing and web search are not available. No search was performed.';
   }
-  if (
+  if (!canProposeEdits && (
     /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदल(?:ो| दो)|हटा(?:ओ| दो)|मिटा(?:ओ| दो)|डिलीट)/iu.test(prompt)
-  ) {
-    return 'File creation, editing, and deletion are not available. No filesystem change was made.';
-  }
+  )) return 'File creation, editing, and deletion are not available without an approved project-edit proposal. No filesystem change was made.';
   if (
     /\b(?:install|uninstall|update|upgrade)\b[\s\S]{0,48}\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b|\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b[\s\S]{0,40}\b(?:install|uninstall|update|upgrade)\b|(?:पैकेज|ऐप|एप्लिकेशन|सॉफ़्टवेयर).{0,40}(?:इंस्टॉल|अपडेट|हटाओ)/iu.test(prompt)
   ) {
@@ -287,7 +292,8 @@ async function runAgentTask(
   options.session.add({ role: 'user', content: prompt });
   const start = Date.now();
   task.transition('planning');
-  const unsupportedResponse = unsupportedCapability(prompt);
+  const canProposeEdits = options.tools.modelTools().some(tool => tool.id === 'filesystem.propose-edit');
+  const unsupportedResponse = unsupportedCapability(prompt, canProposeEdits);
   if (unsupportedResponse) {
     options.session.add({ role: 'assistant', content: unsupportedResponse });
     options.logger.emit({
@@ -306,6 +312,8 @@ async function runAgentTask(
   const successfulToolIds = new Set<string>();
   const filesystemToolResults: string[] = [];
   const toolAttempts = new Map<string, number>();
+  const inspectedProjectFiles = new Set<string>();
+  let selectedProjectRoot: string | undefined;
   const returnPartialFilesystemResult = (
     error: { readonly code: string; readonly message: string },
     iteration: number,
@@ -426,7 +434,7 @@ async function runAgentTask(
         });
         return safeResponse;
       }
-      if (filesystemToolResults.length > 0) {
+      if (filesystemToolResults.length > 0 && !successfulToolIds.has('filesystem.propose-edit')) {
         const finalResponse = filesystemResultResponse(
           filesystemToolResults,
           options.config.maxResponseChars,
@@ -498,6 +506,20 @@ async function runAgentTask(
       });
       try {
         const args = executionArguments(prompt, call.toolId, call.arguments, response.calls.length);
+        if (call.toolId === 'filesystem.propose-edit') {
+          const proposedPath = args.path;
+          const absolutePath = typeof proposedPath === 'string' &&
+            selectedProjectRoot !== undefined &&
+            !isAbsolute(proposedPath)
+            ? resolve(selectedProjectRoot, proposedPath)
+            : undefined;
+          if (!absolutePath || !inspectedProjectFiles.has(absolutePath)) {
+            throw new ToolExecutionError(
+              'Read this exact file from the selected project during this request before proposing a replacement.',
+              'invalid-input',
+            );
+          }
+        }
         const result = await options.tools.execute(call.toolId, args, signal, context);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
@@ -508,7 +530,33 @@ async function runAgentTask(
         }
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
         successfulToolIds.add(call.toolId);
-        if (call.toolId.startsWith('filesystem.')) {
+        if (
+          call.toolId === 'assistant.project-root' &&
+          typeof result === 'object' &&
+          result !== null &&
+          'path' in result &&
+          typeof result.path === 'string' &&
+          isAbsolute(result.path)
+        ) {
+          selectedProjectRoot = result.path;
+        }
+        if (
+          call.toolId === 'filesystem.read-file' &&
+          typeof args.path === 'string' &&
+          selectedProjectRoot !== undefined
+        ) {
+          const filePath = resolve(args.path);
+          const relativePath = relative(selectedProjectRoot, filePath);
+          if (
+            relativePath !== '' &&
+            !isAbsolute(relativePath) &&
+            relativePath !== '..' &&
+            !relativePath.startsWith(`..${sep}`)
+          ) {
+            inspectedProjectFiles.add(filePath);
+          }
+        }
+        if (call.toolId.startsWith('filesystem.') && call.toolId !== 'filesystem.propose-edit') {
           filesystemToolResults.push(`${call.toolId}: ${serialized}`);
         }
         if (failedToolId === call.toolId) {

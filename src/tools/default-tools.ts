@@ -2,6 +2,8 @@ import type { Tool } from './contracts.ts';
 import { ToolRegistry } from './contracts.ts';
 import type { AppConfig } from '../config/config.ts';
 import { registerFilesystemTools } from './filesystem-tools.ts';
+import type { EditProposalManager } from '../desktop/edit-proposals.ts';
+import { registerEditProposalTools } from './edit-proposal-tool.ts';
 
 interface EmptyInput {
   readonly [key: string]: never;
@@ -24,7 +26,10 @@ const isAppInfo = (value: unknown): value is AppInfo =>
   'provider' in value &&
   (value.provider === 'ollama' || value.provider === 'deterministic-placeholder');
 
-export function createDefaultToolRegistry(config: AppConfig): ToolRegistry {
+export function createDefaultToolRegistry(
+  config: AppConfig,
+  editProposals?: EditProposalManager,
+): ToolRegistry {
   const registry = new ToolRegistry();
   const appInfoTool: Tool<EmptyInput, AppInfo> = {
     id: 'assistant.info',
@@ -46,6 +51,7 @@ export function createDefaultToolRegistry(config: AppConfig): ToolRegistry {
     },
   };
   registry.register(appInfoTool);
+  if (editProposals) registerEditProposalTools(registry, config, editProposals);
   registerFilesystemTools(registry, config);
   return registry;
 }

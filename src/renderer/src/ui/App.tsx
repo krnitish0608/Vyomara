@@ -2,9 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
+  DesktopAppAction,
+  DesktopAppActionResult,
   DesktopApprovedCheckId,
   DesktopApprovedCheckResult,
   DesktopBackupRestorePreview,
+  DesktopEditProposal,
   DesktopProviderConnectionResult,
   DesktopProviderModelCheckResult,
   DesktopProviderSettings,
@@ -13,6 +16,17 @@ import type {
   DesktopMemorySummary,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
+import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
+import {
+  getLocalSpeechRecognition,
+  isLocalVoiceLanguage,
+  localVoiceLanguages,
+} from './local-voice.ts';
+import type {
+  LocalSpeechAvailability,
+  LocalSpeechRecognition,
+  LocalVoiceLanguage,
+} from './local-voice.ts';
 
 interface ChatMessage {
   readonly id: number;
@@ -102,20 +116,43 @@ export function App() {
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkResult, setCheckResult] = useState<DesktopApprovedCheckResult>();
   const [checkError, setCheckError] = useState<string>();
+  const [editProposals, setEditProposals] = useState<readonly DesktopEditProposal[]>([]);
+  const [editProposalBusy, setEditProposalBusy] = useState<string>();
+  const [editProposalErrors, setEditProposalErrors] = useState<Record<string, string>>({});
+  const [editProposalNotice, setEditProposalNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
+  const [appActionProposal, setAppActionProposal] = useState<DesktopAppAction>();
+  const [appActionRunning, setAppActionRunning] = useState(false);
+  const [appActionError, setAppActionError] = useState<string>();
+  const [appActionResult, setAppActionResult] = useState<DesktopAppActionResult>();
+  const [voiceLanguage, setVoiceLanguage] = useState<LocalVoiceLanguage>('en-US');
+  const [voiceAvailability, setVoiceAvailability] = useState<LocalSpeechAvailability | 'not-checked' | 'checking'>('not-checked');
+  const [voiceInstalling, setVoiceInstalling] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceError, setVoiceError] = useState<string>();
+  const [speakingMessageId, setSpeakingMessageId] = useState<number>();
+  const [speechError, setSpeechError] = useState<string>();
+  const localRecognition = useRef<LocalSpeechRecognition | undefined>(undefined);
+  const finalTranscript = useRef('');
   const endOfMessages = useRef<HTMLDivElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const permissionsTrigger = useRef<HTMLButtonElement>(null);
   const memoryTrigger = useRef<HTMLButtonElement>(null);
   const checksTrigger = useRef<HTMLButtonElement>(null);
+  const activityHeading = useRef<HTMLHeadingElement>(null);
   const settingsHeading = useRef<HTMLHeadingElement>(null);
   const historyHeading = useRef<HTMLHeadingElement>(null);
   const permissionsHeading = useRef<HTMLHeadingElement>(null);
   const memoryHeading = useRef<HTMLHeadingElement>(null);
   const checksHeading = useRef<HTMLHeadingElement>(null);
+
+  function recordActivity(label: string): void {
+    setActivity(current => [...current, label].slice(-12));
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -131,6 +168,7 @@ export function App() {
     return () => {
       mounted = false;
       unsubscribe();
+      localRecognition.current?.abort();
     };
   }, []);
 
@@ -174,23 +212,89 @@ export function App() {
     return () => window.removeEventListener('keydown', handleEscape);
   }, [checksOpen, historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
 
-  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    const value = prompt.trim();
-    if (!value || requestPending || checkLoading) return;
+  async function applyEditProposal(proposal: DesktopEditProposal): Promise<void> {
+    if (editProposalBusy) return;
+    setEditProposalBusy(proposal.id);
+    recordActivity(`Applying approved diff: ${proposal.path}`);
+    setEditProposalErrors(current => ({ ...current, [proposal.id]: '' }));
+    setEditProposalNotice(undefined);
+    try {
+      const result = await window.vyomara.applyEditProposal(proposal.id);
+      setEditProposals(current => current.filter(item => item.id !== proposal.id));
+      setEditProposalNotice(`Applied the approved edit to ${result.path}.`);
+      recordActivity(`Applied approved diff: ${result.path}`);
+    } catch (error) {
+      recordActivity(`Edit failed: ${proposal.path}`);
+      setEditProposalErrors(current => ({
+        ...current,
+        [proposal.id]: error instanceof Error ? error.message : 'The approved edit could not be applied.',
+      }));
+    } finally {
+      setEditProposalBusy(undefined);
+    }
+  }
 
+  async function rejectEditProposal(proposal: DesktopEditProposal): Promise<void> {
+    if (editProposalBusy) return;
+    setEditProposalBusy(proposal.id);
+    recordActivity(`Rejecting diff: ${proposal.path}`);
+    setEditProposalErrors(current => ({ ...current, [proposal.id]: '' }));
+    setEditProposalNotice(undefined);
+    try {
+      const rejected = await window.vyomara.rejectEditProposal(proposal.id);
+      if (!rejected) throw new Error('This project diff is no longer pending.');
+      setEditProposals(current => current.filter(item => item.id !== proposal.id));
+      setEditProposalNotice(`Rejected the diff for ${proposal.path}. No file was changed.`);
+      recordActivity(`Rejected diff: ${proposal.path}; file unchanged`);
+    } catch (error) {
+      setEditProposalErrors(current => ({
+        ...current,
+        [proposal.id]: error instanceof Error ? error.message : 'The project diff could not be rejected.',
+      }));
+    } finally {
+      setEditProposalBusy(undefined);
+    }
+  }
+
+  async function submitPrompt(value: string): Promise<void> {
+    const trimmed = value.trim();
+    if (!trimmed || requestPending || checkLoading || appActionRunning || appActionProposal || editProposals.length > 0) return;
     setPrompt('');
     setRequestError(undefined);
-    setRequestPending(true);
+    setAppActionProposal(undefined);
+    setAppActionError(undefined);
+    setAppActionResult(undefined);
     setMessages(current => [...current, {
       id: Date.now(),
       role: 'user',
-      content: value,
+      content: trimmed,
     }]);
 
+    const appAction = detectDesktopAppAction(trimmed);
+    if (appAction) {
+      setAppActionProposal(appAction);
+      setAppActionError(undefined);
+      setAppActionResult(undefined);
+      return;
+    }
+
+    if (isCodeEditRequest(trimmed) && !checkProjectDirectory) {
+      const message = 'Choose a project folder in Project workspace before asking Vyom to edit code. No files were changed.';
+      setRequestError(message);
+      setMessages(current => [...current, {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: message,
+        failed: true,
+      }]);
+      return;
+    }
+
+    setRequestPending(true);
+    setEditProposalNotice(undefined);
     try {
       const result = await window.vyomara.sendMessage({
-        prompt: value,
+        prompt: trimmed,
         ...(sessionId ? { sessionId } : {}),
       });
       setSessionId(result.sessionId);
@@ -199,6 +303,17 @@ export function App() {
         role: 'assistant',
         content: result.response,
       }]);
+      setEditProposals(result.editProposals ?? []);
+      setEditProposalErrors({});
+      if (result.editProposals?.length) {
+        recordActivity(`Diff awaiting approval: ${result.editProposals.map(proposal => proposal.path).join(', ')}`);
+      }
+      if (requestsVSCode(trimmed) && checkProjectDirectory) {
+        setAppActionProposal({
+          type: 'open-vscode',
+          projectDirectory: checkProjectDirectory,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -213,10 +328,220 @@ export function App() {
     } finally {
       setRequestPending(false);
     }
+
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    await submitPrompt(prompt);
+  }
+
+  async function checkLocalVoiceAvailability(): Promise<LocalSpeechAvailability | undefined> {
+    const SpeechRecognition = getLocalSpeechRecognition();
+    if (!SpeechRecognition) {
+      setVoiceAvailability('unavailable');
+      setVoiceError('This Electron runtime does not support on-device speech recognition.');
+      return undefined;
+    }
+    setVoiceAvailability('checking');
+    setVoiceError(undefined);
+    try {
+      const availability = await SpeechRecognition.available({
+        langs: [voiceLanguage],
+        processLocally: true,
+      });
+      setVoiceAvailability(availability);
+      if (availability === 'unavailable') {
+        setVoiceError(`On-device speech recognition is unavailable for ${voiceLanguage}. Vyom will not send microphone audio to an online service.`);
+      } else if (availability === 'downloadable') {
+        setVoiceError(`An on-device ${voiceLanguage} language pack can be installed from Settings. The pack download uses the browser vendor's service; microphone audio is not uploaded.`);
+      }
+      return availability;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Local speech availability could not be checked.';
+      setVoiceAvailability('unavailable');
+      setVoiceError(message);
+      return undefined;
+    }
+  }
+
+  async function installLocalVoiceLanguage(): Promise<void> {
+    const SpeechRecognition = getLocalSpeechRecognition();
+    if (!SpeechRecognition || voiceInstalling || voiceListening) return;
+    setVoiceInstalling(true);
+    setVoiceError(undefined);
+    try {
+      const availability = await SpeechRecognition.available({
+        langs: [voiceLanguage],
+        processLocally: true,
+      });
+      setVoiceAvailability(availability);
+      if (availability === 'unavailable') {
+        throw new Error(`The browser's on-device speech service does not support ${voiceLanguage}.`);
+      }
+      if (availability === 'available') {
+        setVoiceError(undefined);
+        return;
+      }
+      const installed = await SpeechRecognition.install({ langs: [voiceLanguage] });
+      if (!installed) throw new Error(`The ${voiceLanguage} on-device language pack was not installed.`);
+      const updatedAvailability = await SpeechRecognition.available({
+        langs: [voiceLanguage],
+        processLocally: true,
+      });
+      setVoiceAvailability(updatedAvailability);
+      if (updatedAvailability !== 'available') {
+        throw new Error(`The ${voiceLanguage} language pack installed but is not available for local recognition.`);
+      }
+      setVoiceError(undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The on-device language pack could not be installed.';
+      setVoiceAvailability('unavailable');
+      setVoiceError(message);
+    } finally {
+      setVoiceInstalling(false);
+    }
+  }
+
+  async function startLocalListening(): Promise<void> {
+    if (voiceListening || requestPending || appActionProposal) return;
+    setVoiceError(undefined);
+    setVoiceTranscript('');
+    finalTranscript.current = '';
+    const availability = await checkLocalVoiceAvailability();
+    if (availability !== 'available') return;
+    const SpeechRecognition = getLocalSpeechRecognition();
+    if (!SpeechRecognition) return;
+    try {
+      const microphoneGranted = await window.vyomara.requestMicrophoneAccess();
+      if (!microphoneGranted) {
+        setVoiceError('Microphone access was not granted. No recording was started.');
+        return;
+      }
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : 'Microphone access could not be requested.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = voiceLanguage;
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    recognition.processLocally = true;
+    recognition.onresult = event => {
+      let transcript = '';
+      let completed = '';
+      for (let index = 0; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (!result) continue;
+        const text = result[0]?.transcript ?? '';
+        transcript += text;
+        if (result.isFinal) completed += text;
+      }
+      finalTranscript.current = completed;
+      setVoiceTranscript(transcript.trim());
+    };
+    recognition.onerror = event => {
+      setVoiceError(`On-device speech recognition failed: ${event.error}. No online recognition fallback was used.`);
+      finalTranscript.current = '';
+    };
+    recognition.onend = () => {
+      setVoiceListening(false);
+      localRecognition.current = undefined;
+      const transcript = finalTranscript.current.trim();
+      if (!transcript) return;
+      setPrompt(transcript);
+      setVoiceTranscript('');
+      void submitPrompt(transcript);
+    };
+    localRecognition.current = recognition;
+    setVoiceListening(true);
+    try {
+      recognition.start();
+    } catch (error) {
+      localRecognition.current = undefined;
+      setVoiceListening(false);
+      setVoiceError(error instanceof Error ? error.message : 'The microphone could not be started.');
+    }
+  }
+
+  function stopLocalListening(): void {
+    localRecognition.current?.stop();
+  }
+
+  async function speakMessage(message: ChatMessage): Promise<void> {
+    if (speakingMessageId === message.id) {
+      await stopSpeaking();
+      return;
+    }
+    if (speakingMessageId !== undefined || message.failed) return;
+    setSpeechError(undefined);
+    setSpeakingMessageId(message.id);
+    try {
+      const result = await window.vyomara.speakText(message.content);
+      if (result.status === 'cancelled') setSpeechError('Speech stopped.');
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
+    } finally {
+      setSpeakingMessageId(undefined);
+    }
+  }
+
+  async function stopSpeaking(): Promise<void> {
+    try {
+      const stopped = await window.vyomara.stopSpeaking();
+      if (!stopped) setSpeechError('There is no active speech to stop.');
+    } catch (error) {
+      setSpeechError(error instanceof Error ? error.message : 'Local speech could not be stopped.');
+    }
   }
 
   async function cancel(): Promise<void> {
     await window.vyomara.cancelRequest();
+  }
+
+  async function approveAppAction(): Promise<void> {
+    if (!appActionProposal || appActionRunning || requestPending) return;
+    const action = appActionProposal;
+    setAppActionRunning(true);
+    recordActivity(action.type === 'search-chrome'
+      ? 'Opening approved Chrome search'
+      : `Opening ${action.type === 'open-vscode' ? 'VS Code' : 'Chrome'}`);
+    setAppActionError(undefined);
+    setAppActionResult(undefined);
+    try {
+      const result = await window.vyomara.runDesktopAppAction(action);
+      setAppActionResult(result);
+      recordActivity(result.action === 'search-opened'
+        ? 'Chrome opened the approved search'
+        : `${result.application} opened`);
+      setAppActionProposal(undefined);
+      const response = result.action === 'search-opened'
+        ? `Opened Google Chrome with the requested Google search: “${action.type === 'search-chrome' ? action.query : ''}”.`
+        : `Opened ${result.application}. No files were changed.`;
+      setMessages(current => [...current, {
+        id: Date.now(),
+        role: 'assistant',
+        content: response,
+      }]);
+    } catch (error) {
+      recordActivity('Application action failed');
+      setAppActionError(error instanceof Error ? error.message : 'The application could not be opened.');
+    } finally {
+      setAppActionRunning(false);
+    }
+  }
+
+  function rejectAppAction(): void {
+    if (appActionRunning) return;
+    setAppActionProposal(undefined);
+    setAppActionError(undefined);
+    setMessages(current => [...current, {
+      id: Date.now(),
+      role: 'assistant',
+      content: 'Cancelled. No application was opened.',
+    }]);
+    recordActivity('Application action rejected; nothing opened');
   }
 
   async function selectCheckProject(): Promise<void> {
@@ -230,14 +555,25 @@ export function App() {
     }
   }
 
+  function requestOpenProjectInVSCode(): void {
+    if (!checkProjectDirectory || appActionRunning || requestPending || editProposals.length > 0) return;
+    setAppActionProposal({ type: 'open-vscode', projectDirectory: checkProjectDirectory });
+    setAppActionError(undefined);
+    setAppActionResult(undefined);
+  }
+
   async function runCheck(checkId: DesktopApprovedCheckId): Promise<void> {
     if (!checkProjectDirectory || checkLoading || requestPending) return;
     setCheckLoading(true);
+    recordActivity(`Running ${checkId} in ${checkProjectDirectory}`);
     setCheckError(undefined);
     setCheckResult(undefined);
     try {
-      setCheckResult(await window.vyomara.runApprovedCheck(checkId));
+      const result = await window.vyomara.runApprovedCheck(checkId);
+      setCheckResult(result);
+      recordActivity(`${result.command}: ${result.status}`);
     } catch (error) {
+      recordActivity(`Project check failed: ${checkId}`);
       setCheckError(error instanceof Error ? error.message : 'The approved check failed safely.');
     } finally {
       setCheckLoading(false);
@@ -384,7 +720,7 @@ export function App() {
   }
 
   function startNewChat(): void {
-    if (requestPending) return;
+    if (requestPending || editProposals.length > 0) return;
     setSessionId(undefined);
     setMessages([]);
     setActivity([]);
@@ -422,6 +758,7 @@ export function App() {
   }
 
   async function openSession(id: string): Promise<void> {
+    if (editProposals.length > 0) return;
     setHistoryLoading(true);
     setHistoryError(undefined);
     try {
@@ -730,14 +1067,33 @@ export function App() {
       ? `Local Ollama · ${provider.model}`
       : 'Deterministic placeholder'
     : 'Loading provider…';
+  const taskIsRunning = requestPending || checkLoading || appActionRunning || editProposalBusy !== undefined;
+  const currentTaskState = requestPending
+    ? 'Vyom is working on your request'
+    : checkLoading
+      ? 'A project check is running'
+      : appActionRunning
+        ? 'Opening the approved application'
+        : editProposalBusy
+          ? 'Resolving the approved project diff'
+          : editProposals.length > 0
+            ? 'Waiting for your project diff approval'
+            : appActionProposal
+              ? 'Waiting for your application approval'
+              : 'No task running';
+  const currentTaskDetail = taskIsRunning
+    ? 'Progress updates appear above. Stop is available for cancellable tasks.'
+    : editProposals.length > 0
+      ? 'Review the complete diff, then apply or reject it. No file has changed yet.'
+      : appActionProposal
+        ? 'Review the exact application action before Vyom continues.'
+        : 'When a task starts, its actual progress and results will appear here.';
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#" aria-label="Vyomara home">
-          <span className="brand-mark" aria-hidden="true">V</span>
-          <span>Vyomara</span>
-        </a>
+        <div className="window-lights" aria-hidden="true"><i /><i /><i /></div>
+        <span className="window-title">Vyomara · Personal AI assistant</span>
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
@@ -753,73 +1109,105 @@ export function App() {
             </span>
           )}
         </div>
-        <button
-          ref={settingsTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={toggleSettings}
-          disabled={requestPending}
-          aria-expanded={settingsOpen}
-          aria-controls={settingsOpen ? 'settings-panel' : undefined}
-        >
-          Settings
-        </button>
-        <button
-          ref={historyTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void toggleHistory()}
-          disabled={requestPending}
-          aria-expanded={historyOpen}
-          aria-controls={historyOpen ? 'history-panel' : undefined}
-        >
-          History
-        </button>
-        <button
-          ref={permissionsTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void togglePermissions()}
-          disabled={requestPending}
-          aria-expanded={permissionsOpen}
-          aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
-        >
-          Folders
-        </button>
-        <button
-          ref={memoryTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void toggleMemory()}
-          disabled={requestPending}
-          aria-expanded={memoryOpen}
-          aria-controls={memoryOpen ? 'memory-panel' : undefined}
-        >
-          Memory
-        </button>
-        <button
-          ref={checksTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={toggleChecks}
-          disabled={requestPending}
-          aria-expanded={checksOpen}
-          aria-controls={checksOpen ? 'checks-panel' : undefined}
-        >
-          Checks
-        </button>
-        <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
-          <span aria-hidden="true">＋</span> New chat
-        </button>
       </header>
 
       <div className="workspace">
+        <nav className="side-nav" aria-label="Main navigation">
+          <a className="brand" href="#" aria-label="Vyomara home">
+            <span className="brand-mark" aria-hidden="true">V</span>
+            <span><strong>Vyomara</strong><small>Your Personal AI Agent</small></span>
+          </a>
+          <div className="side-nav-group">
+            <p className="side-nav-label">ASSISTANT</p>
+            <button className="side-nav-item side-nav-item-active" type="button" aria-current="page">
+              <span aria-hidden="true">♩</span> Assistant
+            </button>
+            <button className="side-nav-item" type="button" onClick={() => activityHeading.current?.focus()}>
+              <span aria-hidden="true">▤</span> Tasks &amp; Activity
+              {requestPending && <span className="nav-indicator" aria-label="Task running">●</span>}
+            </button>
+            <button className="side-nav-item side-nav-item-disabled" type="button" disabled title="Approvals are not implemented yet">
+              <span aria-hidden="true">◇</span> Approvals
+              <span className="planned-label">Planned</span>
+            </button>
+          </div>
+          <div className="side-nav-group">
+            <p className="side-nav-label">YOUR DATA</p>
+            <button
+              ref={historyTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={() => void toggleHistory()}
+              disabled={requestPending}
+              aria-expanded={historyOpen}
+              aria-controls={historyOpen ? 'history-panel' : undefined}
+            >
+              <span aria-hidden="true">◷</span> History
+            </button>
+            <button
+              ref={memoryTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={() => void toggleMemory()}
+              disabled={requestPending}
+              aria-expanded={memoryOpen}
+              aria-controls={memoryOpen ? 'memory-panel' : undefined}
+            >
+              <span aria-hidden="true">◇</span> Memory
+            </button>
+            <button
+              ref={permissionsTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={() => void togglePermissions()}
+              disabled={requestPending}
+              aria-expanded={permissionsOpen}
+              aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
+            >
+              <span aria-hidden="true">⬡</span> Permissions
+            </button>
+            <button
+              ref={checksTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={toggleChecks}
+              disabled={requestPending}
+              aria-expanded={checksOpen}
+              aria-controls={checksOpen ? 'checks-panel' : undefined}
+            >
+              <span aria-hidden="true">✓</span> Project workspace
+            </button>
+            <button
+              ref={settingsTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={toggleSettings}
+              disabled={requestPending}
+              aria-expanded={settingsOpen}
+              aria-controls={settingsOpen ? 'settings-panel' : undefined}
+            >
+              <span aria-hidden="true">⚙</span> Settings
+            </button>
+          </div>
+          <button className="new-chat-button side-nav-new-chat" type="button" onClick={startNewChat} disabled={requestPending || editProposals.length > 0}>
+            <span aria-hidden="true">＋</span> New conversation
+          </button>
+          <div className="sidebar-provider" aria-label="Configured model">
+            <span className="sidebar-provider-icon" aria-hidden="true">✧</span>
+            <span>
+              <strong>{provider?.provider === 'ollama' ? `Ollama · ${provider.model}` : provider?.provider === 'placeholder' ? 'Placeholder model' : 'Loading model…'}</strong>
+              <small><i /> Local configuration</small>
+            </span>
+            <span className="sidebar-provider-menu" aria-hidden="true">⋮</span>
+          </div>
+        </nav>
+
         <section className="conversation" aria-label="Conversation">
           <div className="conversation-heading">
             <div>
-              <p className="eyebrow">PERSONAL AI ASSISTANT</p>
-              <h1>What can I help with?</h1>
-              <p className="intro">Ask Vyom about your project or request a read-only workspace check.</p>
+              <p className="eyebrow">YOUR PERSONAL AI ASSISTANT</p>
+              <h1>Good to see you</h1>
+              <p className="intro">I&apos;m Vyom. What would you like to do today?</p>
             </div>
             {sessionId && <span className="session-badge">Session saved locally</span>}
           </div>
@@ -827,9 +1215,33 @@ export function App() {
           <div className="message-list" aria-live="polite">
             {messages.length === 0 ? (
               <div className="welcome-card">
-                <div className="welcome-icon" aria-hidden="true">✦</div>
-                <h2>Start with a question</h2>
-                <p>Vyom can answer and use configured read-only filesystem tools. Unsupported actions stay unavailable.</p>
+                <div className="voice-visual" aria-hidden="true">
+                  <span className="voice-wave voice-wave-left">▂ ▄ ▆ ▃ ▇ ▄ ▂</span>
+                  <span className="voice-orb"><span>♩</span></span>
+                  <span className="voice-wave voice-wave-right">▂ ▄ ▇ ▃ ▆ ▄ ▂</span>
+                </div>
+                <h2>Talk to Vyom</h2>
+                <p>Voice input requires a supported on-device language pack. Microphone audio is never sent to an online recognition service; typing always works.</p>
+                <button
+                  className={voiceListening ? 'voice-unavailable voice-listening' : 'voice-unavailable'}
+                  type="button"
+                  onClick={() => voiceListening ? stopLocalListening() : void startLocalListening()}
+                  disabled={requestPending || appActionRunning || voiceAvailability === 'checking'}
+                  aria-label={voiceListening ? 'Stop listening' : 'Use on-device voice input'}
+                  aria-pressed={voiceListening}
+                  data-state={voiceAvailability}
+                >
+                  <span aria-hidden="true">{voiceListening ? '■' : '♩'}</span>
+                  {voiceListening
+                    ? 'Listening on this device · Stop'
+                    : voiceAvailability === 'available'
+                      ? 'Speak to Vyom'
+                      : voiceAvailability === 'checking'
+                        ? 'Checking local voice…'
+                        : 'Check local voice'}
+                </button>
+                {voiceTranscript && <p className="voice-transcript" role="status">{voiceTranscript}</p>}
+                {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
                 <div className="suggestions" aria-label="Example prompts">
                   <button type="button" onClick={() => setPrompt('Explain what Vyomara can do.')}>
                     What can Vyom do?
@@ -850,9 +1262,101 @@ export function App() {
                 <div className="message-content">
                   <p className="message-author">{message.role === 'user' ? 'You' : 'Vyom'}</p>
                   <p className="message-text">{message.content}</p>
+                  {message.role === 'assistant' && !message.failed && (
+                    <button
+                      className="message-speak"
+                      type="button"
+                      onClick={() => void speakMessage(message)}
+                      disabled={speakingMessageId !== undefined && speakingMessageId !== message.id}
+                    >
+                      {speakingMessageId === message.id ? '■ Stop speaking' : '♩ Speak aloud'}
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
+            {appActionProposal && (
+              <section className="app-action-approval" aria-label="Review application action">
+                <p className="eyebrow">CONFIRM BEFORE CONTINUING</p>
+                <h2>Open {appActionProposal.type === 'open-vscode' ? 'Visual Studio Code' : 'Google Chrome'}?</h2>
+                {appActionProposal.type === 'search-chrome' ? (
+                  <p>
+                    This will open Chrome and send this search query to Google over the internet:
+                    <strong className="app-action-query"> {appActionProposal.query}</strong>
+                  </p>
+                ) : (
+                  <p>
+                    This will open or focus the existing {appActionProposal.type === 'open-vscode' ? 'VS Code' : 'Chrome'} app.
+                    {appActionProposal.type === 'open-vscode' && appActionProposal.projectDirectory
+                      ? <> It will open the selected project: <strong className="app-action-query">{appActionProposal.projectDirectory}</strong>. No files will be changed.</>
+                      : ' No files will be changed.'}
+                  </p>
+                )}
+                {appActionError && <p className="history-error" role="alert">{appActionError}</p>}
+                <div className="app-action-buttons">
+                  <button
+                    className="app-action-confirm"
+                    type="button"
+                    onClick={() => void approveAppAction()}
+                    disabled={appActionRunning}
+                  >
+                    {appActionRunning
+                      ? 'Opening…'
+                      : appActionProposal.type === 'search-chrome'
+                        ? 'Search in Chrome'
+                        : 'Open app'}
+                  </button>
+                  <button
+                    className="history-close"
+                    type="button"
+                    onClick={rejectAppAction}
+                    disabled={appActionRunning}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </section>
+            )}
+            {editProposals.map(proposal => (
+              <section className="edit-proposal-card" key={proposal.id} aria-label={`Review code edit for ${proposal.path}`}>
+                <p className="eyebrow">PROJECT DIFF · AWAITING YOUR APPROVAL</p>
+                <h2>{proposal.path}</h2>
+                <p className="history-privacy">
+                  Vyom has not changed this file. Review the complete before/after diff. Applying it replaces only this
+                  existing file, and only after you approve this exact proposal.
+                </p>
+                <pre className="edit-proposal-diff">{proposal.diff}</pre>
+                {editProposalErrors[proposal.id] && (
+                  <p className="history-message history-error" role="alert">{editProposalErrors[proposal.id]}</p>
+                )}
+                <div className="app-action-buttons">
+                  <button
+                    className="app-action-confirm"
+                    type="button"
+                    onClick={() => void applyEditProposal(proposal)}
+                    disabled={editProposalBusy !== undefined}
+                  >
+                    {editProposalBusy === proposal.id ? 'Applying approved diff…' : 'Apply this diff'}
+                  </button>
+                  <button
+                    className="history-close"
+                    type="button"
+                    onClick={() => void rejectEditProposal(proposal)}
+                    disabled={editProposalBusy !== undefined}
+                  >
+                    {editProposalBusy === proposal.id ? 'Please wait…' : 'Reject diff'}
+                  </button>
+                </div>
+              </section>
+            ))}
+            {editProposalNotice && <p className="app-action-result" role="status">{editProposalNotice}</p>}
+            {appActionResult && (
+              <p className="app-action-result" role="status">
+                {appActionResult.action === 'search-opened'
+                  ? 'Chrome opened with the approved Google search.'
+                  : `${appActionResult.application} opened successfully.`}
+              </p>
+            )}
             {requestPending && (
               <div className="pending-state" role="status">
                 <span className="thinking-indicator"><i /><i /><i /></span>
@@ -872,7 +1376,7 @@ export function App() {
               placeholder="Message Vyom…"
               rows={2}
               maxLength={8000}
-              disabled={requestPending}
+              disabled={requestPending || editProposals.length > 0}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
@@ -885,33 +1389,36 @@ export function App() {
               <button
                 className="send-button"
                 type="submit"
-                disabled={requestPending || prompt.trim() === ''}
+                disabled={requestPending || prompt.trim() === '' || editProposals.length > 0}
                 aria-label="Send message"
               >
                 <span aria-hidden="true">↑</span>
               </button>
             </div>
           </form>
-          <p className="privacy-note">
-            {requestError ? 'Request failed; no success is implied.' : 'Your conversation is stored locally on this Mac.'}
+          <p className="privacy-note" role={requestError || speechError ? 'alert' : 'status'}>
+            {requestError
+              ? 'Request failed; no success is implied.'
+              : speechError ?? 'Your conversation is stored locally on this Mac. Speech output uses the on-device macOS voice.'}
           </p>
         </section>
 
         {checksOpen ? (
-        <aside id="checks-panel" className="activity-panel history-panel checks-panel" aria-label="Approved project checks">
+        <aside id="checks-panel" className="activity-panel history-panel checks-panel" aria-label="Project workspace and approved checks">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">FIXED COMMANDS ONLY</p>
-              <h2 ref={checksHeading} tabIndex={-1}>Project checks</h2>
+              <p className="eyebrow">PROJECT SCOPE &amp; CHECKS</p>
+              <h2 ref={checksHeading} tabIndex={-1}>Project workspace</h2>
             </div>
             <button className="history-close" type="button" onClick={() => closePanel('checks')}>
               Close
             </button>
           </div>
           <p className="permissions-disclosure">
-            Choose a project you trust. Its pnpm scripts may execute code.
-            Vyomara invokes only the listed commands without a shell; pnpm may run project-defined lifecycle scripts.
-            Runs have a five-minute timeout and bounded output.
+            Choose a project you trust. Code requests can read only this selected folder and stage changes to existing
+            UTF-8 files up to 16 KB. Every full diff needs your explicit approval; files are never created or deleted.
+            Listed pnpm checks may execute project-defined scripts and are bounded to five minutes. Checks receive a
+            limited environment but are not sandboxed and may access your user files or network.
           </p>
           <button
             className="permission-add"
@@ -922,6 +1429,19 @@ export function App() {
             Choose project folder…
           </button>
           {checkProjectDirectory && <p className="permission-path">Project: {checkProjectDirectory}</p>}
+          <button
+            className="history-close"
+            type="button"
+            onClick={requestOpenProjectInVSCode}
+            disabled={!checkProjectDirectory || checkLoading || requestPending || editProposals.length > 0}
+          >
+            Open selected project in VS Code…
+          </button>
+          <p className="history-privacy">
+            Code proposals use read-only inspection tools and cannot run commands. Apply or reject each diff in the conversation.
+            Open this exact workspace in your existing VS Code app when you choose.
+          </p>
+          <h3 className="memory-review-title">Approved project checks</h3>
           <div className="check-actions" aria-label="Available project checks">
             {([
               ['test', 'Run pnpm test'],
@@ -1107,7 +1627,7 @@ export function App() {
           <div className="panel-heading">
             <div>
               <p className="eyebrow">READ ONLY</p>
-              <h2 ref={permissionsHeading} tabIndex={-1}>Folders</h2>
+              <h2 ref={permissionsHeading} tabIndex={-1}>Permissions</h2>
             </div>
             <button className="history-close" type="button" onClick={() => closePanel('permissions')}>
               Close
@@ -1349,6 +1869,66 @@ export function App() {
             Vyomara supports local Ollama or a deterministic placeholder. There is no cloud provider or silent fallback.
             Ollama connections are limited to the configured loopback endpoint.
           </p>
+          <section className="settings-status" aria-label="On-device voice input">
+            <p className="memory-review-title">Voice &amp; language</p>
+            <label className="memory-label" htmlFor="voice-language">Speech recognition language</label>
+            <select
+              id="voice-language"
+              className="settings-input"
+              value={voiceLanguage}
+              onChange={event => {
+                if (!isLocalVoiceLanguage(event.target.value)) return;
+                setVoiceLanguage(event.target.value);
+                setVoiceAvailability('not-checked');
+                setVoiceError(undefined);
+              }}
+              disabled={voiceInstalling || voiceListening}
+            >
+              {localVoiceLanguages.map(language => (
+                <option key={language.code} value={language.code}>{language.label}</option>
+              ))}
+            </select>
+            <div className="settings-status-row">
+              <span>On-device language pack</span>
+              <span role={voiceError ? 'alert' : 'status'}>
+                {voiceInstalling
+                  ? 'Installing…'
+                  : voiceAvailability === 'available'
+                    ? 'Available locally'
+                    : voiceAvailability === 'downloadable'
+                      ? 'Download available'
+                      : voiceAvailability === 'downloading'
+                        ? 'Downloading…'
+                        : voiceAvailability === 'checking'
+                          ? 'Checking…'
+                          : voiceAvailability === 'unavailable'
+                            ? 'Unavailable'
+                            : 'Not checked'}
+              </span>
+            </div>
+            <button
+              className="history-close"
+              type="button"
+              onClick={() => void checkLocalVoiceAvailability()}
+              disabled={voiceInstalling || voiceListening || voiceAvailability === 'checking'}
+            >
+              Check on-device language
+            </button>
+            {voiceAvailability === 'downloadable' && (
+              <button
+                className="permission-add"
+                type="button"
+                onClick={() => void installLocalVoiceLanguage()}
+                disabled={voiceInstalling || voiceListening}
+              >
+                {voiceInstalling ? 'Installing local language…' : `Download ${voiceLanguage} language pack`}
+              </button>
+            )}
+            {voiceError && <p className="history-message history-error" role="alert">{voiceError}</p>}
+            <p className="history-privacy">
+              Microphone access starts only when you press the voice button. Recognition is required to run on-device; Vyomara never falls back to sending microphone audio online. Installing a language pack may contact the browser vendor.
+            </p>
+          </section>
           <section className="settings-status" aria-label="Current provider status">
             <p className="memory-review-title">Current provider</p>
             <strong>{providerError ?? providerTitle}</strong>
@@ -1476,11 +2056,11 @@ export function App() {
         <aside className="activity-panel" aria-label="Task activity">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">LIVE</p>
-              <h2>Activity</h2>
+              <p className="eyebrow">TASK STATUS</p>
+              <h2 ref={activityHeading} tabIndex={-1}>Recent Activity</h2>
             </div>
-            <span className={requestPending ? 'activity-state activity-running' : 'activity-state'}>
-              {requestPending ? 'Working' : 'Ready'}
+            <span className={`activity-state${taskIsRunning ? ' activity-running' : editProposals.length > 0 || appActionProposal ? ' activity-waiting' : ''}`}>
+              {taskIsRunning ? 'Working' : editProposals.length > 0 || appActionProposal ? 'Approval' : 'Ready'}
             </span>
           </div>
           <div className="activity-content" aria-live="polite">
@@ -1500,6 +2080,15 @@ export function App() {
               </ol>
             )}
           </div>
+          <section className="tool-execution-card" aria-label="Current task status">
+            <div className="tool-execution-heading">
+              <span aria-hidden="true">▣</span>
+              <h3>Current Task</h3>
+            </div>
+            <p className="tool-execution-state">{currentTaskState}</p>
+            <p className="tool-execution-detail">{currentTaskDetail}</p>
+            {requestPending && <button className="activity-cancel" type="button" onClick={() => void cancel()}>Stop task</button>}
+          </section>
           <div className="privacy-card">
             <span className="privacy-icon" aria-hidden="true">⌂</span>
             <div>
@@ -1509,7 +2098,14 @@ export function App() {
                 : 'No cloud provider is used by this placeholder.'}</p>
             </div>
           </div>
-          <p className="planned-note">Project, files, Git, web research, and voice views are planned and not available yet.</p>
+          <div className="voice-status-card" aria-label="Voice status">
+            <span aria-hidden="true">♩</span>
+            <div>
+              <strong>{voiceListening ? 'Listening on device' : voiceAvailability === 'available' ? 'Local voice ready' : 'Voice setup required'}</strong>
+              <small>{voiceListening ? 'Microphone is active · press Stop' : `${voiceLanguage} · opt-in microphone`}</small>
+            </div>
+          </div>
+          <p className="planned-note">Voice input depends on an installed on-device language pack. App editing and approvals are not implemented yet.</p>
         </aside>
         )}
       </div>

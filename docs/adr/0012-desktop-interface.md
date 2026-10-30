@@ -1,8 +1,12 @@
 # ADR-0012: macOS desktop interaction shell
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0013](./0013-voice-first-app-integrations.md)
 
 ## Context and problem
+
+> This ADR records a historical implementation decision. The current product
+> direction is defined by [ADR-0013](./0013-voice-first-app-integrations.md)
+> and [the product direction](../product-direction.md).
 
 The CLI has validated the local agent, tool, and persistence boundaries, but
 the product charter calls for a usable macOS desktop application. The first

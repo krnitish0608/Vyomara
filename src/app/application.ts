@@ -19,10 +19,13 @@ import { createDefaultToolRegistry } from '../tools/default-tools.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
 import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
+import type { DesktopEditProposal } from '../desktop/contracts.ts';
+import type { EditProposalManager } from '../desktop/edit-proposals.ts';
 
 export interface RequestResult {
   readonly response: string;
   readonly sessionId: string;
+  readonly editProposals?: readonly DesktopEditProposal[];
 }
 
 export function initializeDesktopFilesystemRoots(config: AppConfig): AppConfig {
@@ -293,6 +296,7 @@ export async function runRequest(
   config: AppConfig,
   logger: Logger,
   sessionId?: string,
+  editProposals?: EditProposalManager,
 ): Promise<RequestResult> {
   const store = new SqliteStore(config.dataDirectory);
   try {
@@ -309,7 +313,7 @@ export async function runRequest(
       })
       : new PlaceholderProvider();
     const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config),
+      registry: createDefaultToolRegistry(config, editProposals),
       policy: new PolicyGateway(),
       config,
       logger: taskLogger,
@@ -346,7 +350,13 @@ export async function runRequest(
     if (response === undefined) {
       throw new Error('The request ended without a response.');
     }
-    return { response, sessionId: session.id };
+    return {
+      response,
+      sessionId: session.id,
+      ...(editProposals && editProposals.list().length > 0
+        ? { editProposals: editProposals.list() }
+        : {}),
+    };
   } finally {
     store.close();
   }

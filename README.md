@@ -3,6 +3,12 @@
 Vyomara is a local-first personal AI assistant for macOS. Its spoken assistant
 name is **Vyom**.
 
+**Current product direction:** Vyom is a voice-first assistant that works
+through your existing Mac apps, with task activity, approvals, and settings in
+Vyomara—not a built-in editor or browser. See
+[the product direction](./docs/product-direction.md). This is the target; the
+implementation is being developed toward it.
+
 ## Development status
 
 Initial implementation is in progress. The CLI and early Electron desktop
@@ -78,7 +84,7 @@ load `.env` files. Use **Folders** to grant and revoke read-only access to
 specific directories; permissions are stored locally. `VYOM_ALLOWED_ROOTS`
 seeds the desktop permissions on first launch. Filesystem tools remain
 unavailable until a folder is allowed. App signing, `.app`/`.dmg` distribution,
-voice, and remote providers are not implemented. The desktop Settings panel
+and remote providers are not implemented. The desktop Settings panel
 lets you switch between local Ollama and a deterministic placeholder and set
 the Ollama model tag. These choices are stored locally and override
 `VYOM_PROVIDER` and `VYOM_OLLAMA_MODEL` after you save them; the Ollama
@@ -112,12 +118,28 @@ Escape closes the open side panel and returns focus to its toolbar button.
 Reduced-motion preferences disable animated progress and smooth scrolling.
 Run `pnpm test:desktop-ui` on macOS Apple Silicon to build the desktop shell
 and exercise its keyboard panel, focus, and reduced-motion behavior in Electron.
-The **Checks** panel can run only the fixed project scripts `pnpm test`,
+The **Project workspace** can run only the fixed project scripts `pnpm test`,
 `pnpm typecheck`, `pnpm build:desktop`, and `pnpm test:desktop-ui` in a project
 folder you select. Each run is explicit, cancelable, limited to five minutes
 and 64,000 output characters, and Vyomara invokes pnpm without a shell. pnpm
 may run project-defined lifecycle scripts, which can execute arbitrary code;
-only select a project you trust.
+checks receive a limited environment but are not sandboxed and may access your
+user files or network. Only select a project you trust.
+For explicit code-edit requests, Vyom reads only that selected project and can
+stage changes to up to three existing UTF-8 files, each no larger than 16 KiB.
+The complete before/after diff appears in Vyomara; nothing is written until
+you click **Apply this diff** for that exact proposal. Rejecting leaves files
+unchanged, and a stale diff is refused. It cannot create or delete files, edit
+known environment/credential/key files, or run arbitrary commands. **Open selected project in
+VS Code** also requires its own confirmation and opens the existing app with
+that folder.
+Direct requests to open VS Code or Chrome, or search in Chrome, show an
+in-app confirmation before Vyomara launches the existing macOS application.
+Chrome searches display the exact query and disclose that Google receives it.
+Assistant replies can be spoken with the local macOS voice. Voice input is
+opt-in, requires microphone permission, and refuses online recognition
+fallback; its local language-pack availability depends on the Electron runtime.
+General control of app interfaces is not implemented.
 
 ## Local history and memory
 

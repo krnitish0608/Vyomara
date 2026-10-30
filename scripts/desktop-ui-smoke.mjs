@@ -92,7 +92,7 @@ async function evaluate(expression) {
 async function clickButton(label) {
   const clicked = await evaluate(`(() => {
     const button = [...document.querySelectorAll('button')]
-      .find(candidate => candidate.innerText.trim() === ${JSON.stringify(label)});
+      .find(candidate => candidate.innerText.trim().endsWith(${JSON.stringify(label)}));
     if (!button || button.disabled) return false;
     button.click();
     return true;
@@ -114,7 +114,11 @@ async function tabUntil(elementId) {
     if (await evaluate(`document.activeElement?.id === ${JSON.stringify(elementId)}`)) return;
     await pressKey('Tab', 'Tab', 9);
   }
-  throw new Error(`Keyboard navigation did not reach "${elementId}".`);
+  const state = await evaluate(`({
+    targetExists: Boolean(document.getElementById(${JSON.stringify(elementId)})),
+    active: document.activeElement?.outerHTML?.slice(0, 160),
+  })`);
+  throw new Error(`Keyboard navigation did not reach "${elementId}": ${JSON.stringify(state)}`);
 }
 
 try {
@@ -148,6 +152,103 @@ try {
     async () => (await evaluate('document.body?.innerText ?? ""')).includes('Deterministic placeholder'),
     'waiting for the desktop shell',
   );
+  const voiceCapabilities = await evaluate(`(async () => {
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    let languages;
+    if (typeof Recognition === 'function' && typeof Recognition.available === 'function') {
+      languages = await Promise.all(['en-US', 'en-IN', 'hi-IN'].map(async lang => {
+        try {
+          return [lang, await Recognition.available({ langs: [lang], processLocally: true })];
+        } catch (error) {
+          return [lang, error instanceof Error ? error.message : 'unavailable'];
+        }
+      }));
+    }
+    return {
+      speechSynthesis: typeof window.speechSynthesis === 'object',
+      localVoices: window.speechSynthesis?.getVoices().filter(voice => voice.localService).length ?? 0,
+      speechRecognition: typeof Recognition === 'function',
+      onDeviceRecognition: typeof Recognition === 'function' &&
+        'processLocally' in Recognition.prototype &&
+        typeof Recognition.available === 'function' &&
+        typeof Recognition.install === 'function',
+      localLanguages: languages,
+    };
+  })()`);
+  console.log(`Electron voice capabilities: ${JSON.stringify(voiceCapabilities)}`);
+  assert(
+    await evaluate(`Boolean(document.querySelector('nav[aria-label="Main navigation"]') &&
+      document.querySelector('aside[aria-label="Task activity"]') &&
+      document.querySelector('.voice-visual'))`),
+    'assistant opens with navigation, voice-centered home, and task activity',
+  );
+  assert(
+    await evaluate(`document.querySelector('.voice-unavailable')?.disabled === false &&
+      document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
+      document.body.innerText.includes('Check local voice') &&
+      document.body.innerText.toLowerCase().includes('microphone audio is never sent')`),
+    'voice capture stays opt-in and discloses local-only processing before microphone access',
+  );
+  assert(
+    await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
+    'current task panel reports the truthful idle state',
+  );
+  await clickButton('Check local voice');
+  await waitFor(
+    () => evaluate(`document.querySelector('.voice-unavailable')?.dataset.state !== 'checking'`),
+    'checking on-device speech availability without starting microphone capture',
+  );
+  assert(
+    await evaluate(`document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false'`),
+    'checking a local speech pack does not start microphone capture',
+  );
+  await evaluate('document.getElementById("prompt").focus()');
+  await typeText('Open VS Code');
+  await pressKey('Enter', 'Enter', 13);
+  await waitFor(
+    () => evaluate('document.querySelector(".app-action-approval")?.innerText.includes("Open Visual Studio Code")'),
+    'showing explicit approval before opening an application',
+  );
+  assert(
+    await evaluate('document.querySelector(".tool-execution-state")?.innerText.includes("Waiting for your application approval")'),
+    'current task status truthfully reflects a pending app approval',
+  );
+  assert(
+    await evaluate(`document.querySelector('.app-action-approval')?.innerText.includes('No files will be changed') &&
+      [...document.querySelectorAll('.app-action-approval button')].some(button => button.innerText === 'Open app')`),
+    'VS Code launch requires explicit review and approval',
+  );
+  await clickButton('Cancel');
+  await waitFor(
+    () => evaluate('document.querySelector(".app-action-approval") === null'),
+    'rejecting the proposed VS Code launch',
+  );
+  assert(
+    await evaluate('document.body.innerText.includes("Cancelled. No application was opened.")'),
+    'rejecting an app action performs no launch',
+  );
+  assert(
+    await evaluate(`Boolean(document.querySelector('.message-speak') &&
+      document.querySelector('.message-speak').innerText.includes('Speak aloud'))`),
+    'assistant replies offer explicit on-device speech output',
+  );
+
+  await evaluate('document.getElementById("prompt").focus()');
+  await typeText('Open Chrome and search for Vyomara privacy');
+  await pressKey('Enter', 'Enter', 13);
+  await waitFor(
+    () => evaluate('document.querySelector(".app-action-approval")?.innerText.includes("Vyomara privacy")'),
+    'showing the exact external search query for approval',
+  );
+  assert(
+    await evaluate(`document.querySelector('.app-action-approval')?.innerText.includes('send this search query to Google over the internet')`),
+    'Chrome search discloses that the query leaves the device',
+  );
+  await clickButton('Cancel');
+  await waitFor(
+    () => evaluate('document.querySelector(".app-action-approval") === null'),
+    'rejecting the proposed Chrome search',
+  );
   await pressKey('Tab', 'Tab', 9);
   const initialFocus = await evaluate(`({
     outline: getComputedStyle(document.activeElement).outlineStyle,
@@ -158,30 +259,35 @@ try {
   for (const [label, panelId] of [
     ['Settings', 'settings-panel'],
     ['History', 'history-panel'],
-    ['Folders', 'permissions-panel'],
+    ['Permissions', 'permissions-panel'],
     ['Memory', 'memory-panel'],
-    ['Checks', 'checks-panel'],
+    ['Project workspace', 'checks-panel'],
   ]) {
     await clickButton(label);
     await waitFor(() => evaluate(`document.getElementById(${JSON.stringify(panelId)}) !== null`), `opening ${label}`);
     assert(
-      await evaluate(`document.activeElement?.textContent.trim() === ${JSON.stringify(label === 'Checks' ? 'Project checks' : label)}`),
+      await evaluate(`      document.activeElement?.textContent.trim() === ${JSON.stringify(label)}`),
       `${label} opens with focus on its heading`,
     );
     assert(
       await evaluate(`(() => {
-        const trigger = [...document.querySelectorAll('button')].find(button => button.innerText.trim() === ${JSON.stringify(label)});
+        const trigger = [...document.querySelectorAll('button')].find(button => button.innerText.trim().endsWith(${JSON.stringify(label)}));
         return trigger?.getAttribute('aria-expanded') === 'true' &&
           trigger.getAttribute('aria-controls') === ${JSON.stringify(panelId)};
       })()`),
       `${label} trigger exposes expanded state and panel relationship`,
     );
-    if (label === 'Checks') {
+    if (label === 'Project workspace') {
       assert(
         await evaluate(`['Run pnpm test', 'Run pnpm typecheck', 'Run pnpm build:desktop', 'Run pnpm test:desktop-ui']
           .every(label => [...document.querySelectorAll('button')]
             .find(button => button.innerText.trim() === label)?.disabled)`),
         'fixed project checks stay disabled until a project folder is selected',
+      );
+      assert(
+        await evaluate(`document.body.innerText.includes('Every full diff needs your explicit approval') &&
+          [...document.querySelectorAll('#checks-panel button')].find(button => button.innerText.includes('Open selected project in VS Code'))?.disabled`),
+        'project edits require explicit approval and VS Code stays disabled without a selected folder',
       );
       assert(
         await evaluate('document.querySelector("#checks-panel input, #checks-panel textarea") === null'),
@@ -194,13 +300,18 @@ try {
       `closing ${label} with Escape`,
     );
     assert(
-      await evaluate('document.activeElement?.innerText.trim()') === label,
+      (await evaluate('document.activeElement?.innerText.trim()')).endsWith(label),
       `${label} Escape restores focus to its toolbar trigger`,
     );
   }
 
   await clickButton('Settings');
   await waitFor(() => evaluate('document.getElementById("settings-panel") !== null'), 'reopening Settings');
+  assert(
+    await evaluate(`Boolean(document.getElementById('voice-language') &&
+      document.querySelector('#settings-panel').innerText.includes('Installing a language pack may contact the browser vendor'))`),
+    'voice language and language-pack privacy are available in Settings',
+  );
   await tabUntil('model-name');
   const settingsInputFocus = await evaluate(`({
     outline: getComputedStyle(document.activeElement).outlineStyle,
@@ -214,6 +325,10 @@ try {
 
   await clickButton('Memory');
   await waitFor(() => evaluate('document.getElementById("memory-panel") !== null'), 'reopening Memory');
+  await waitFor(
+    () => evaluate('document.getElementById("memory-draft")?.disabled === false'),
+    'waiting for the memory panel controls',
+  );
   await tabUntil('memory-draft');
   const memoryInputFocus = await evaluate(`({
     outline: getComputedStyle(document.activeElement).outlineStyle,
@@ -264,11 +379,22 @@ try {
     'enabling confirmed delete-all',
   );
   await clickButton('Delete all conversations and memories');
-  await waitFor(
-    () => evaluate('document.querySelector(\'[role="status"]\')?.innerText.includes("Deleted 0 saved conversation(s) and 0 saved memories")'),
+  const deleteAllState = await waitFor(
+    () => evaluate(`(() => {
+      const notice = [...document.querySelectorAll('#history-panel [role="status"]')]
+        .map(element => element.innerText)
+        .find(text => text.includes('Deleted '));
+      const error = [...document.querySelectorAll('#history-panel [role="alert"]')]
+        .map(element => element.innerText)
+        .find(Boolean);
+      return notice ? { notice } : error ? { error } : undefined;
+    })()`),
     'completing empty delete-all through IPC',
   );
-  assert(true, 'confirmed delete-all completes through the desktop IPC bridge');
+  assert(
+    deleteAllState.notice?.startsWith('Deleted 0 saved conversation(s) and 0 saved memories.') === true,
+    `confirmed delete-all completes through the desktop IPC bridge: ${JSON.stringify(deleteAllState)}`,
+  );
 
   await send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgent, AgentError } from '../src/agent/agent.ts';
@@ -14,6 +14,7 @@ import { createDefaultToolRegistry } from '../src/tools/default-tools.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
 import { PolicyGateway } from '../src/tools/policy.ts';
 import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
+import { EditProposalManager } from '../src/desktop/edit-proposals.ts';
 
 interface ValueInput {
   readonly value: string;
@@ -151,6 +152,83 @@ test('agent accepts a final response without invoking available tools', async ()
     role: 'assistant',
     content: 'No tool was needed.',
   });
+});
+
+test('project edit requests inspect a scoped file and stage a diff without applying it', async t => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-edit-'));
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+  const project = await realpath(temporaryDirectory);
+  await mkdir(join(project, 'src'));
+  const file = join(project, 'src', 'feature.ts');
+  await writeFile(file, 'export const greeting = "hello";\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
+    filesystemAllowedRoots: [project],
+  };
+  const manager = new EditProposalManager(project);
+  const registry = createDefaultToolRegistry(config, manager);
+  const provider = sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'assistant.project-root', arguments: {} }] },
+    { kind: 'tool-calls', calls: [{ toolId: 'filesystem.read-file', arguments: { path: file } }] },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-edit',
+        arguments: { path: 'src/feature.ts', content: 'export const greeting = "namaste";\n' },
+      }],
+    },
+    { kind: 'final', text: 'I prepared a diff for your review. Nothing has been applied.' },
+  ]);
+  const app = harness(provider, registry, {
+    filesystemAllowedRoots: [project],
+    maxToolOutputChars: 20_000,
+    maxAgentIterations: 8,
+    maxToolCalls: 8,
+  });
+
+  assert.equal(await app.run(new AbortController().signal, 'Fix the greeting bug in this project.'), 'I prepared a diff for your review. Nothing has been applied.');
+  assert.equal(await readFile(file, 'utf8'), 'export const greeting = "hello";\n');
+  const [proposal] = manager.list();
+  assert.ok(proposal);
+  assert.match(proposal.diff, /\+export const greeting = "namaste";/);
+  await manager.apply(proposal.id);
+  assert.equal(await readFile(file, 'utf8'), 'export const greeting = "namaste";\n');
+});
+
+test('project edit proposals require a read of the exact selected file in the same request', async t => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-unread-edit-'));
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+  const project = await realpath(temporaryDirectory);
+  const file = join(project, 'untouched.ts');
+  await writeFile(file, 'original\n');
+  const manager = new EditProposalManager(project);
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
+    filesystemAllowedRoots: [project],
+  };
+  const registry = createDefaultToolRegistry(config, manager);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-edit',
+        arguments: { path: 'untouched.ts', content: 'replacement\n' },
+      }],
+    },
+    { kind: 'final', text: 'The file was not read.' },
+  ]), registry, {
+    filesystemAllowedRoots: [project],
+    maxToolOutputChars: 20_000,
+    maxAgentIterations: 8,
+    maxToolCalls: 8,
+  });
+
+  await assert.rejects(app.run(
+    new AbortController().signal,
+    'Fix the bug in this project.',
+  ), /Read this exact file/);
+  assert.deepEqual(manager.list(), []);
+  assert.equal(await readFile(file, 'utf8'), 'original\n');
 });
 
 test('agent executes multiple sequential tool calls within the configured call limit', async () => {
@@ -402,11 +480,13 @@ test('unsupported web and filesystem mutation requests are refused before provid
   const prompts = [
     'Search the web for current weather.',
     'Delete the harmless file /tmp/example.txt.',
+    'Open VS Code and fix the login bug.',
+    'Fix the login bug in VS Code.',
   ];
   for (const prompt of prompts) {
     const app = harness(provider, new ToolRegistry());
     const response = await app.run(new AbortController().signal, prompt);
-    assert.match(response, /not available/i);
+    assert.match(response, /not available|not implemented yet/i);
     assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
   }
   assert.equal(providerCalls, 0);

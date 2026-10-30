@@ -1,5 +1,18 @@
 # Vyomara Product Requirements
 
+> **Current direction:** [Vyomara Product Direction](./product-direction.md)
+> is authoritative and supersedes any conflicting MVP, phase, interaction,
+> scope, or acceptance decision in this historical requirements document.
+> In particular, Vyomara is now voice-first and acts through the user's
+> existing macOS applications; it must not become an editor or embedded
+> browser. Do not treat later-phase labels below as a reason to postpone that
+> direction.
+>
+> The historical read-only/write-out-of-scope requirements below describe the
+> original MVP. Current code-edit behavior is limited to explicit, user-
+> approved diffs for existing files in the selected project, as documented in
+> [ADR-0014](./adr/0014-approved-project-edit-proposals.md).
+
 ## 1. Product vision and target user
 
 Vyomara is a local-first personal AI assistant for macOS. Its spoken name is

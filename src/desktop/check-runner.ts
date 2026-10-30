@@ -63,6 +63,31 @@ function stopProcess(child: ChildProcess, killTimerRef: { timer?: NodeJS.Timeout
   killTimerRef.timer.unref();
 }
 
+function projectCheckEnvironment(): NodeJS.ProcessEnv {
+  const allowedKeys = [
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+    'USER',
+    'LOGNAME',
+    'SHELL',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'CI',
+    'NO_COLOR',
+    'FORCE_COLOR',
+  ];
+  return Object.fromEntries(
+    allowedKeys.flatMap(key => {
+      const value = process.env[key];
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+}
+
 export async function runApprovedCheck(
   directory: string,
   checkId: unknown,
@@ -74,7 +99,7 @@ export async function runApprovedCheck(
   const startedAt = Date.now();
   const child = spawn('pnpm', check.arguments, {
     cwd,
-    env: { ...process.env },
+    env: projectCheckEnvironment(),
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
     shell: false,

@@ -51,6 +51,25 @@ test('approved check runner passes only the selected fixed script and captures b
   assert.equal(result.output, '["typecheck"]');
 });
 
+test('approved project checks do not inherit arbitrary environment variables', async t => {
+  const { project, bin } = await setupFakePnpm(
+    t,
+    "process.stdout.write(JSON.stringify({ path: process.env.PATH, secret: process.env.VYOMARA_TEST_SECRET_SENTINEL ?? null }));",
+  );
+  const previous = process.env.VYOMARA_TEST_SECRET_SENTINEL;
+  process.env.VYOMARA_TEST_SECRET_SENTINEL = 'test-only-not-secret';
+  try {
+    const result = await withPath(bin, () =>
+      runApprovedCheck(project, 'test', new AbortController().signal));
+    assert.equal(result.status, 'passed');
+    assert.match(result.output, /"path":/);
+    assert.match(result.output, /"secret":null/);
+  } finally {
+    if (previous === undefined) delete process.env.VYOMARA_TEST_SECRET_SENTINEL;
+    else process.env.VYOMARA_TEST_SECRET_SENTINEL = previous;
+  }
+});
+
 test('approved check runner reports nonzero exit codes without success-shaped fallback', async t => {
   const { project, bin } = await setupFakePnpm(
     t,

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DesktopChatRequest, VyomaraDesktopApi } from '../desktop/contracts.ts';
+import type { DesktopAppAction, DesktopChatRequest, VyomaraDesktopApi } from '../desktop/contracts.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 const api: VyomaraDesktopApi = {
@@ -20,6 +20,12 @@ const api: VyomaraDesktopApi = {
   },
   sendMessage(request: DesktopChatRequest) {
     return ipcRenderer.invoke('vyomara:chat-send', request);
+  },
+  applyEditProposal(id: string) {
+    return ipcRenderer.invoke('vyomara:edit-apply', id);
+  },
+  rejectEditProposal(id: string) {
+    return ipcRenderer.invoke('vyomara:edit-reject', id);
   },
   cancelRequest() {
     return ipcRenderer.invoke('vyomara:chat-cancel');
@@ -80,6 +86,18 @@ const api: VyomaraDesktopApi = {
   },
   cancelApprovedCheck() {
     return ipcRenderer.invoke('vyomara:checks-cancel');
+  },
+  runDesktopAppAction(action: DesktopAppAction) {
+    return ipcRenderer.invoke('vyomara:app-action', action);
+  },
+  requestMicrophoneAccess() {
+    return ipcRenderer.invoke('vyomara:microphone-request');
+  },
+  speakText(text: string) {
+    return ipcRenderer.invoke('vyomara:speech-speak', text);
+  },
+  stopSpeaking() {
+    return ipcRenderer.invoke('vyomara:speech-stop');
   },
   onActivity(listener: (event: DiagnosticEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, activity: DiagnosticEvent): void => {

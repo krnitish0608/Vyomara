@@ -8,6 +8,18 @@ export interface DesktopChatRequest {
 export interface DesktopChatResponse {
   readonly response: string;
   readonly sessionId: string;
+  readonly editProposals?: readonly DesktopEditProposal[];
+}
+
+export interface DesktopEditProposal {
+  readonly id: string;
+  readonly path: string;
+  readonly diff: string;
+}
+
+export interface DesktopEditApplyResult {
+  readonly path: string;
+  readonly status: 'applied';
 }
 
 export interface DesktopProviderStatus {
@@ -91,6 +103,21 @@ export interface DesktopApprovedCheckResult {
   readonly durationMs: number;
 }
 
+export type DesktopAppAction =
+  | { readonly type: 'open-vscode'; readonly projectDirectory?: string }
+  | { readonly type: 'open-chrome' }
+  | { readonly type: 'search-chrome'; readonly query: string };
+
+export interface DesktopAppActionResult {
+  readonly application: 'Visual Studio Code' | 'Google Chrome';
+  readonly action: 'opened' | 'search-opened';
+  readonly searchUrl?: string;
+}
+
+export type DesktopSpeechResult =
+  | { readonly status: 'completed' }
+  | { readonly status: 'cancelled' };
+
 export type DesktopFilesystemRootGrant =
   | { readonly status: 'cancelled'; readonly roots: readonly string[] }
   | { readonly status: 'granted'; readonly roots: readonly string[] };
@@ -102,6 +129,8 @@ export interface VyomaraDesktopApi {
   checkProviderConnection(): Promise<DesktopProviderConnectionResult>;
   checkProviderModel(model: string): Promise<DesktopProviderModelCheckResult>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
+  applyEditProposal(id: string): Promise<DesktopEditApplyResult>;
+  rejectEditProposal(id: string): Promise<boolean>;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;
@@ -122,5 +151,9 @@ export interface VyomaraDesktopApi {
   selectCheckProject(): Promise<string | undefined>;
   runApprovedCheck(checkId: DesktopApprovedCheckId): Promise<DesktopApprovedCheckResult>;
   cancelApprovedCheck(): Promise<boolean>;
+  runDesktopAppAction(action: DesktopAppAction): Promise<DesktopAppActionResult>;
+  requestMicrophoneAccess(): Promise<boolean>;
+  speakText(text: string): Promise<DesktopSpeechResult>;
+  stopSpeaking(): Promise<boolean>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
 }

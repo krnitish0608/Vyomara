@@ -20,13 +20,21 @@ Proposed decisions must not be presented as approved implementation choices.
 | [0009](./0009-diagnostics-and-audit.md) | Logging, diagnostics, and audit events | Accepted |
 | [0010](./0010-testing-and-evaluation.md) | Testing and repeatable agent evaluation | Accepted |
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
-| [0012](./0012-desktop-interface.md) | macOS desktop interaction shell | Accepted |
+| [0012](./0012-desktop-interface.md) | Initial macOS desktop interaction shell | Superseded |
+| [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Accepted |
+| [0014](./0014-approved-project-edit-proposals.md) | User-approved, selected-project code edits | Accepted |
 
 ## Open decisions
 
+The current product direction is recorded in
+[ADR-0013](./0013-voice-first-app-integrations.md) and
+[docs/product-direction.md](../product-direction.md). Historical ADRs remain
+useful only where compatible with it.
+
 User confirmation is needed for:
 
-1. **Approval UX:** how future side-effect requests are displayed and scoped.
+1. **Approval UX:** how non-code side-effect requests beyond the implemented
+   app-launch, project-edit, and fixed-check flows are displayed and scoped.
 2. **Configuration:** secret injection for any future credential-bearing
    provider.
 3. **Diagnostics:** retention/rotation policy and any future opt-in content

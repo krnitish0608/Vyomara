@@ -82,7 +82,7 @@ function validToolArgumentSchema(schema: ToolArgumentSchema): boolean {
       (property.description !== undefined &&
         (typeof property.description !== 'string' || property.description.length > 256)) ||
       (property.maxLength !== undefined &&
-        (!Number.isSafeInteger(property.maxLength) || property.maxLength < 1 || property.maxLength > 4096)) ||
+        (!Number.isSafeInteger(property.maxLength) || property.maxLength < 1 || property.maxLength > 16_384)) ||
       (property.minimum !== undefined && !Number.isSafeInteger(property.minimum)) ||
       (property.maximum !== undefined && !Number.isSafeInteger(property.maximum)) ||
       (property.minimum !== undefined && property.maximum !== undefined &&
