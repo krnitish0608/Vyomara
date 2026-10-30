@@ -8,9 +8,9 @@ name is **Vyom**.
 Initial implementation is in progress. The CLI and early Electron desktop
 shell can use the local Ollama provider or an explicit deterministic
 placeholder. The desktop shell has text chat, request cancellation, and a
-task-activity panel. Provider/model information is configuration status; an
-optional user-triggered check contacts only the configured local Ollama
-`/api/tags` endpoint and does not verify that the selected model is installed.
+task-activity panel. Provider identity, local service reachability, and selected
+model availability are shown separately in Settings; checks are user-triggered
+and contact only the configured local Ollama `/api/tags` endpoint.
 Requests have correlated
 task/run lifecycle events and are stored as local, inspectable sessions. The
 session history includes user prompts, assistant replies, tool calls, and
@@ -59,9 +59,10 @@ pnpm install
 pnpm desktop
 ```
 
-By default, the app uses local Ollama. Start Ollama separately; use
-**Check Ollama** in the app to test local service reachability. To run the UI
-without a model provider, use `VYOM_PROVIDER=placeholder pnpm desktop`.
+By default, the app uses local Ollama. Start Ollama separately; use the
+provider status controls in **Settings** to check local service reachability
+and model availability. To run the UI without a model provider, use
+`VYOM_PROVIDER=placeholder pnpm desktop`.
 
 Create a local production build or preview it with:
 
@@ -92,9 +93,21 @@ separate. Saved sessions can be reviewed and
 continued from History; the desktop view displays user and final assistant
 messages, not raw tool calls or tool results. The Memory panel supports
 explicit review, save, inspection, and typed-confirmation deletion; saved
-memory is not automatically inserted into model context. History entries can
+memory is not automatically inserted into model context. Reviewed memories
+can also be exported individually as unencrypted JSON to new owner-only files;
+existing files are never overwritten. History entries can
 be reviewed and deleted from the desktop after typing `DELETE`;
 deleting the active conversation also clears it from the current view.
+History conversations can also be exported individually as JSON after review.
+The export contains complete raw history, including tool calls and results;
+Vyomara writes a new owner-only file and does not overwrite existing files.
+The exported JSON is not encrypted, so protect or delete the chosen file as
+appropriate.
+All desktop controls are keyboard reachable, visible focus is preserved, and
+Escape closes the open side panel and returns focus to its toolbar button.
+Reduced-motion preferences disable animated progress and smooth scrolling.
+Run `pnpm test:desktop-ui` on macOS Apple Silicon to build the desktop shell
+and exercise its keyboard panel, focus, and reduced-motion behavior in Electron.
 
 ## Local history and memory
 

@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import { validateOllamaModel } from '../config/config.ts';
 import type { Logger } from '../types.ts';
+import type { SessionMessage } from '../session/session.ts';
 import { runAgent } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
@@ -149,6 +150,17 @@ export function readDesktopMemory(config: AppConfig, id: string): string {
   }
 }
 
+export function exportDesktopMemory(config: AppConfig, id: string): string {
+  const content = readDesktopMemory(config, id);
+  return `${JSON.stringify({
+    format: 'vyomara-memory',
+    version: 1,
+    memoryId: id,
+    exportedAt: new Date().toISOString(),
+    content,
+  }, null, 2)}\n`;
+}
+
 export function saveDesktopMemory(config: AppConfig, content: string): string {
   const store = new SqliteStore(config.dataDirectory);
   try {
@@ -197,6 +209,22 @@ export function readDesktopSession(config: AppConfig, sessionId: string): Deskto
       }
     }
     return { sessionId, messages };
+  } finally {
+    store.close();
+  }
+}
+
+export function exportDesktopSession(config: AppConfig, sessionId: string): string {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    const messages: readonly SessionMessage[] = store.getSession(sessionId).messages();
+    return `${JSON.stringify({
+      format: 'vyomara-session',
+      version: 1,
+      sessionId,
+      exportedAt: new Date().toISOString(),
+      messages,
+    }, null, 2)}\n`;
   } finally {
     store.close();
   }

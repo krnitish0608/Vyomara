@@ -30,6 +30,9 @@ const api: VyomaraDesktopApi = {
   loadSession(sessionId: string) {
     return ipcRenderer.invoke('vyomara:session-load', sessionId);
   },
+  exportSession(sessionId: string) {
+    return ipcRenderer.invoke('vyomara:session-export', sessionId);
+  },
   deleteSession(sessionId: string, confirmation: string) {
     return ipcRenderer.invoke('vyomara:session-delete', { id: sessionId, confirmation });
   },
@@ -47,6 +50,9 @@ const api: VyomaraDesktopApi = {
   },
   readMemory(id: string) {
     return ipcRenderer.invoke('vyomara:memory-read', id);
+  },
+  exportMemory(id: string) {
+    return ipcRenderer.invoke('vyomara:memory-export', id);
   },
   saveMemory(content: string, confirmation: string) {
     return ipcRenderer.invoke('vyomara:memory-save', { content, confirmation });

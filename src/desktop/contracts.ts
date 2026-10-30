@@ -47,6 +47,14 @@ export interface DesktopSessionHistory {
   readonly messages: readonly DesktopConversationMessage[];
 }
 
+export type DesktopSessionExportResult =
+  | { readonly status: 'cancelled' }
+  | { readonly status: 'exported' };
+
+export type DesktopMemoryExportResult =
+  | { readonly status: 'cancelled' }
+  | { readonly status: 'exported' };
+
 export interface DesktopMemorySummary {
   readonly id: string;
   readonly createdAt: string;
@@ -67,12 +75,14 @@ export interface VyomaraDesktopApi {
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;
+  exportSession(sessionId: string): Promise<DesktopSessionExportResult>;
   deleteSession(sessionId: string, confirmation: string): Promise<boolean>;
   listFilesystemRoots(): Promise<readonly string[]>;
   grantFilesystemRoot(): Promise<DesktopFilesystemRootGrant>;
   revokeFilesystemRoot(root: string): Promise<readonly string[]>;
   listMemories(): Promise<readonly DesktopMemorySummary[]>;
   readMemory(id: string): Promise<string>;
+  exportMemory(id: string): Promise<DesktopMemoryExportResult>;
   saveMemory(content: string, confirmation: string): Promise<string>;
   deleteMemory(id: string, confirmation: string): Promise<boolean>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;

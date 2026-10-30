@@ -10,6 +10,7 @@
     "dev": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
+    "test:desktop-ui": "electron-vite build && node scripts/desktop-ui-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "desktop": "electron-vite dev",
     "build:desktop": "electron-vite build",
