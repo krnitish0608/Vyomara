@@ -27,14 +27,18 @@ interface ChatMessage {
   readonly failed?: boolean;
 }
 
-function VyomaraMark() {
+function VyomaraMark({ tile = true }: { readonly tile?: boolean }) {
   return (
     <svg viewBox="0 0 64 64" aria-hidden="true">
-      <rect x="4" y="4" width="56" height="56" rx="18" fill="#101746" stroke="#315cff" strokeWidth="1.5" />
+      {tile && <rect x="4" y="4" width="56" height="56" rx="18" fill="#101746" stroke="#315cff" strokeWidth="1.5" />}
       <ellipse cx="32" cy="32" rx="25" ry="10" transform="rotate(-27 32 32)" fill="none" stroke="#27d9ff" strokeWidth="2.5" />
       <ellipse cx="32" cy="32" rx="24" ry="9" transform="rotate(-27 32 32)" fill="none" stroke="#9c50ff" strokeWidth="1.5" strokeDasharray="28 100" />
       <circle cx="32" cy="32" r="17" fill="#2426a8" stroke="#695bff" strokeWidth="1.5" />
-      <path d="M22 35v-4m6 8V26m6 13V22m6 13v-8m-24 8h2m28-3h2" fill="none" stroke="#e9f4ff" strokeLinecap="round" strokeWidth="3" />
+      <rect className="mark-wave-bar mark-wave-bar-1" x="21" y="29" width="3" height="6" rx="1.5" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-2" x="26" y="24" width="3" height="16" rx="1.5" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-3" x="31" y="20" width="3" height="24" rx="1.5" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-4" x="36" y="25" width="3" height="14" rx="1.5" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-5" x="41" y="28" width="3" height="8" rx="1.5" fill="#e9f4ff" />
     </svg>
   );
 }
@@ -1246,10 +1250,9 @@ export function App() {
                       ? 'Install whisper.cpp to enable offline voice'
                       : voiceOrbLabel}
                   >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <rect x="9" y="2.5" width="6" height="12" rx="3" />
-                      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
-                    </svg>
+                    <span className="voice-orb-mark" aria-hidden="true">
+                      <VyomaraMark tile={false} />
+                    </span>
                   </button>
                   <VoiceWave side="right" />
                 </div>

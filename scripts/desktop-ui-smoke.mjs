@@ -192,6 +192,19 @@ try {
     'welcome screen combines the voice orb, animated waveform, and Vyomara identity',
   );
   assert(
+    await evaluate(`(() => {
+      const orb = document.querySelector('.welcome-card .voice-orb-button');
+      const orbMark = orb?.querySelector('.voice-orb-mark svg');
+      const logoWave = document.querySelector('.topbar .brand-mark .mark-wave-bar');
+      return Boolean(logoWave && orbMark?.querySelector('.mark-wave-bar') &&
+        !orbMark.querySelector('rect[rx="18"]') &&
+        !orb?.querySelector('.voice-orb-mic') &&
+        getComputedStyle(logoWave).animationName === 'mark-wave' &&
+        getComputedStyle(orbMark.querySelector('.mark-wave-bar')).animationName === 'mark-wave');
+    })()`),
+    'the center orb reuses the animated mark without a rectangular tile, V, or microphone glyph',
+  );
+  assert(
     await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&
       document.body.scrollHeight <= document.body.clientHeight &&
       document.querySelector('.message-list').scrollHeight <= document.querySelector('.message-list').clientHeight`),
