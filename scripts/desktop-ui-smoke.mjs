@@ -160,11 +160,12 @@ try {
     ['History', 'history-panel'],
     ['Folders', 'permissions-panel'],
     ['Memory', 'memory-panel'],
+    ['Checks', 'checks-panel'],
   ]) {
     await clickButton(label);
     await waitFor(() => evaluate(`document.getElementById(${JSON.stringify(panelId)}) !== null`), `opening ${label}`);
     assert(
-      await evaluate(`document.activeElement?.textContent.trim() === ${JSON.stringify(label)}`),
+      await evaluate(`document.activeElement?.textContent.trim() === ${JSON.stringify(label === 'Checks' ? 'Project checks' : label)}`),
       `${label} opens with focus on its heading`,
     );
     assert(
@@ -175,6 +176,18 @@ try {
       })()`),
       `${label} trigger exposes expanded state and panel relationship`,
     );
+    if (label === 'Checks') {
+      assert(
+        await evaluate(`['Run pnpm test', 'Run pnpm typecheck', 'Run pnpm build:desktop', 'Run pnpm test:desktop-ui']
+          .every(label => [...document.querySelectorAll('button')]
+            .find(button => button.innerText.trim() === label)?.disabled)`),
+        'fixed project checks stay disabled until a project folder is selected',
+      );
+      assert(
+        await evaluate('document.querySelector("#checks-panel input, #checks-panel textarea") === null'),
+        'project checks do not expose free-form shell input',
+      );
+    }
     await pressKey('Escape', 'Escape', 27);
     await waitFor(
       () => evaluate('document.querySelector(\'button[aria-expanded="true"]\') === null'),

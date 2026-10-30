@@ -112,6 +112,12 @@ Escape closes the open side panel and returns focus to its toolbar button.
 Reduced-motion preferences disable animated progress and smooth scrolling.
 Run `pnpm test:desktop-ui` on macOS Apple Silicon to build the desktop shell
 and exercise its keyboard panel, focus, and reduced-motion behavior in Electron.
+The **Checks** panel can run only the fixed project scripts `pnpm test`,
+`pnpm typecheck`, `pnpm build:desktop`, and `pnpm test:desktop-ui` in a project
+folder you select. Each run is explicit, cancelable, limited to five minutes
+and 64,000 output characters, and Vyomara invokes pnpm without a shell. pnpm
+may run project-defined lifecycle scripts, which can execute arbitrary code;
+only select a project you trust.
 
 ## Local history and memory
 

@@ -239,6 +239,10 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .session-review { display: grid; gap: 9px; margin-top: 12px; padding: 11px; border: 1px solid #463238; border-radius: 10px; background: #151c25; }
 .session-review-messages { display: grid; gap: 10px; max-height: 260px; overflow: auto; margin: 0; padding: 0; list-style: none; }
 .session-review-messages li { display: grid; gap: 5px; color: #b7c0cc; font-size: 10px; }
+.checks-panel { gap: 11px; }
+.check-actions { display: grid; gap: 7px; }
+.check-running { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-muted); font-size: 10px; }
+.check-output { max-height: 260px; overflow: auto; margin: 0; padding: 9px; border-radius: 7px; background: #10161e; color: #c4cbd5; font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-panel { gap: 12px; }
 .memory-disclosure { margin: 4px 0 0; color: var(--text-muted); font-size: 10px; line-height: 1.6; }
 .memory-create, .memory-review { display: grid; gap: 8px; padding: 11px; border: 1px solid #303846; border-radius: 10px; background: #151c25; }

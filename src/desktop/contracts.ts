@@ -80,6 +80,17 @@ export interface DesktopBackupRestoreResult extends DesktopBackupRestorePreview 
   readonly safetyBackupName: string;
 }
 
+export type DesktopApprovedCheckId = 'test' | 'typecheck' | 'build:desktop' | 'test:desktop-ui';
+
+export interface DesktopApprovedCheckResult {
+  readonly checkId: DesktopApprovedCheckId;
+  readonly command: string;
+  readonly status: 'passed' | 'failed' | 'cancelled' | 'timed-out' | 'output-limit';
+  readonly exitCode: number | null;
+  readonly output: string;
+  readonly durationMs: number;
+}
+
 export type DesktopFilesystemRootGrant =
   | { readonly status: 'cancelled'; readonly roots: readonly string[] }
   | { readonly status: 'granted'; readonly roots: readonly string[] };
@@ -108,5 +119,8 @@ export interface VyomaraDesktopApi {
   backupLocalData(): Promise<DesktopBackupResult>;
   selectBackupForRestore(): Promise<DesktopBackupRestorePreview | undefined>;
   restoreLocalData(confirmation: string): Promise<DesktopBackupRestoreResult>;
+  selectCheckProject(): Promise<string | undefined>;
+  runApprovedCheck(checkId: DesktopApprovedCheckId): Promise<DesktopApprovedCheckResult>;
+  cancelApprovedCheck(): Promise<boolean>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
 }

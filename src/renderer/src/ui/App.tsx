@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
+  DesktopApprovedCheckId,
+  DesktopApprovedCheckResult,
   DesktopBackupRestorePreview,
   DesktopProviderConnectionResult,
   DesktopProviderModelCheckResult,
@@ -95,6 +97,11 @@ export function App() {
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [memoryError, setMemoryError] = useState<string>();
   const [memoryNotice, setMemoryNotice] = useState<string>();
+  const [checksOpen, setChecksOpen] = useState(false);
+  const [checkProjectDirectory, setCheckProjectDirectory] = useState<string>();
+  const [checkLoading, setCheckLoading] = useState(false);
+  const [checkResult, setCheckResult] = useState<DesktopApprovedCheckResult>();
+  const [checkError, setCheckError] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
@@ -103,10 +110,12 @@ export function App() {
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const permissionsTrigger = useRef<HTMLButtonElement>(null);
   const memoryTrigger = useRef<HTMLButtonElement>(null);
+  const checksTrigger = useRef<HTMLButtonElement>(null);
   const settingsHeading = useRef<HTMLHeadingElement>(null);
   const historyHeading = useRef<HTMLHeadingElement>(null);
   const permissionsHeading = useRef<HTMLHeadingElement>(null);
   const memoryHeading = useRef<HTMLHeadingElement>(null);
+  const checksHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -137,7 +146,8 @@ export function App() {
     else if (historyOpen) historyHeading.current?.focus();
     else if (permissionsOpen) permissionsHeading.current?.focus();
     else if (memoryOpen) memoryHeading.current?.focus();
-  }, [historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
+    else if (checksOpen) checksHeading.current?.focus();
+  }, [checksOpen, historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent): void {
@@ -154,17 +164,20 @@ export function App() {
       } else if (memoryOpen) {
         setMemoryOpen(false);
         memoryTrigger.current?.focus();
+      } else if (checksOpen) {
+        setChecksOpen(false);
+        checksTrigger.current?.focus();
       }
     }
 
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
+  }, [checksOpen, historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     const value = prompt.trim();
-    if (!value || requestPending) return;
+    if (!value || requestPending || checkLoading) return;
 
     setPrompt('');
     setRequestError(undefined);
@@ -206,6 +219,52 @@ export function App() {
     await window.vyomara.cancelRequest();
   }
 
+  async function selectCheckProject(): Promise<void> {
+    setCheckError(undefined);
+    setCheckResult(undefined);
+    try {
+      const directory = await window.vyomara.selectCheckProject();
+      if (directory) setCheckProjectDirectory(directory);
+    } catch (error) {
+      setCheckError(error instanceof Error ? error.message : 'The project folder could not be selected.');
+    }
+  }
+
+  async function runCheck(checkId: DesktopApprovedCheckId): Promise<void> {
+    if (!checkProjectDirectory || checkLoading || requestPending) return;
+    setCheckLoading(true);
+    setCheckError(undefined);
+    setCheckResult(undefined);
+    try {
+      setCheckResult(await window.vyomara.runApprovedCheck(checkId));
+    } catch (error) {
+      setCheckError(error instanceof Error ? error.message : 'The approved check failed safely.');
+    } finally {
+      setCheckLoading(false);
+    }
+  }
+
+  async function cancelCheck(): Promise<void> {
+    try {
+      await window.vyomara.cancelApprovedCheck();
+    } catch (error) {
+      setCheckError(error instanceof Error ? error.message : 'The project check could not be cancelled.');
+    }
+  }
+
+  function toggleChecks(): void {
+    if (checksOpen) {
+      closePanel('checks');
+      return;
+    }
+    setSettingsOpen(false);
+    setHistoryOpen(false);
+    setPermissionsOpen(false);
+    setMemoryOpen(false);
+    setChecksOpen(true);
+    setCheckError(undefined);
+  }
+
   async function checkProviderConnection(): Promise<void> {
     if (
       connectionCheck === 'checking' ||
@@ -233,6 +292,7 @@ export function App() {
     setHistoryOpen(false);
     setPermissionsOpen(false);
     setMemoryOpen(false);
+    setChecksOpen(false);
     setProviderDraft(provider?.provider ?? 'ollama');
     setModelDraft(provider?.model ?? 'llama3.2');
     setSettingsError(undefined);
@@ -241,7 +301,7 @@ export function App() {
     setSettingsOpen(true);
   }
 
-  function closePanel(panel: 'history' | 'memory' | 'permissions' | 'settings'): void {
+  function closePanel(panel: 'checks' | 'history' | 'memory' | 'permissions' | 'settings'): void {
     if (panel === 'settings') {
       setSettingsOpen(false);
       settingsTrigger.current?.focus();
@@ -251,6 +311,9 @@ export function App() {
     } else if (panel === 'permissions') {
       setPermissionsOpen(false);
       permissionsTrigger.current?.focus();
+    } else if (panel === 'checks') {
+      setChecksOpen(false);
+      checksTrigger.current?.focus();
     } else {
       setMemoryOpen(false);
       memoryTrigger.current?.focus();
@@ -328,6 +391,7 @@ export function App() {
     setRequestError(undefined);
     setHistoryOpen(false);
     setSettingsOpen(false);
+    setChecksOpen(false);
     setSelectedHistorySession(undefined);
     setHistoryDeleteConfirmation('');
   }
@@ -341,6 +405,7 @@ export function App() {
     setPermissionsOpen(false);
     setMemoryOpen(false);
     setSettingsOpen(false);
+    setChecksOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -532,6 +597,7 @@ export function App() {
     setHistoryOpen(false);
     setMemoryOpen(false);
     setSettingsOpen(false);
+    setChecksOpen(false);
     setPermissionsOpen(true);
     setPermissionsLoading(true);
     setPermissionsError(undefined);
@@ -578,6 +644,7 @@ export function App() {
     setHistoryOpen(false);
     setPermissionsOpen(false);
     setSettingsOpen(false);
+    setChecksOpen(false);
     setMemoryOpen(true);
     setMemoryLoading(true);
     setMemoryError(undefined);
@@ -730,6 +797,17 @@ export function App() {
         >
           Memory
         </button>
+        <button
+          ref={checksTrigger}
+          className="new-chat-button"
+          type="button"
+          onClick={toggleChecks}
+          disabled={requestPending}
+          aria-expanded={checksOpen}
+          aria-controls={checksOpen ? 'checks-panel' : undefined}
+        >
+          Checks
+        </button>
         <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
           <span aria-hidden="true">＋</span> New chat
         </button>
@@ -819,7 +897,69 @@ export function App() {
           </p>
         </section>
 
-        {memoryOpen ? (
+        {checksOpen ? (
+        <aside id="checks-panel" className="activity-panel history-panel checks-panel" aria-label="Approved project checks">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">FIXED COMMANDS ONLY</p>
+              <h2 ref={checksHeading} tabIndex={-1}>Project checks</h2>
+            </div>
+            <button className="history-close" type="button" onClick={() => closePanel('checks')}>
+              Close
+            </button>
+          </div>
+          <p className="permissions-disclosure">
+            Choose a project you trust. Its pnpm scripts may execute code.
+            Vyomara invokes only the listed commands without a shell; pnpm may run project-defined lifecycle scripts.
+            Runs have a five-minute timeout and bounded output.
+          </p>
+          <button
+            className="permission-add"
+            type="button"
+            onClick={() => void selectCheckProject()}
+            disabled={checkLoading || requestPending}
+          >
+            Choose project folder…
+          </button>
+          {checkProjectDirectory && <p className="permission-path">Project: {checkProjectDirectory}</p>}
+          <div className="check-actions" aria-label="Available project checks">
+            {([
+              ['test', 'Run pnpm test'],
+              ['typecheck', 'Run pnpm typecheck'],
+              ['build:desktop', 'Run pnpm build:desktop'],
+              ['test:desktop-ui', 'Run pnpm test:desktop-ui'],
+            ] as const).map(([checkId, label]) => (
+              <button
+                className="permission-add"
+                key={checkId}
+                type="button"
+                onClick={() => void runCheck(checkId)}
+                disabled={!checkProjectDirectory || checkLoading || requestPending}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {checkLoading && (
+            <div className="check-running" role="status">
+              <span>Project check is running…</span>
+              <button className="permission-revoke" type="button" onClick={() => void cancelCheck()}>
+                Cancel check
+              </button>
+            </div>
+          )}
+          {checkError && <p className="history-message history-error" role="alert">{checkError}</p>}
+          {checkResult && (
+            <section className="session-review" aria-label="Project check result">
+              <p className="memory-review-title">
+                {checkResult.command} · {checkResult.status} · exit {checkResult.exitCode ?? 'unavailable'}
+              </p>
+              <p className="history-privacy">Completed in {checkResult.durationMs} ms. Output is capped at 64,000 characters.</p>
+              <pre className="check-output">{checkResult.output || 'No output.'}</pre>
+            </section>
+          )}
+        </aside>
+        ) : memoryOpen ? (
         <aside id="memory-panel" className="activity-panel history-panel memory-panel" aria-label="Explicit memory">
           <div className="panel-heading">
             <div>
