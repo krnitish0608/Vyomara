@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>VyomaraSpeech</string>
+  <key>CFBundleIdentifier</key>
+  <string>app.vyomara.speech</string>
+  <key>CFBundleName</key>
+  <string>Vyomara Speech</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Vyomara uses the microphone only when you press the voice-input button.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Vyomara transcribes your speech on this Mac when you press the voice-input button.</string>
+</dict>
+</plist>

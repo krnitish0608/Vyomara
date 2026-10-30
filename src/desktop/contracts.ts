@@ -118,6 +118,14 @@ export type DesktopSpeechResult =
   | { readonly status: 'completed' }
   | { readonly status: 'cancelled' };
 
+export type DesktopSpeechLanguage = 'en-US' | 'en-IN' | 'hi-IN';
+
+export type DesktopSpeechRecognitionEvent =
+  | { readonly type: 'listening' }
+  | { readonly type: 'partial' | 'final'; readonly transcript: string }
+  | { readonly type: 'stopped' }
+  | { readonly type: 'error'; readonly message: string };
+
 export type DesktopFilesystemRootGrant =
   | { readonly status: 'cancelled'; readonly roots: readonly string[] }
   | { readonly status: 'granted'; readonly roots: readonly string[] };
@@ -152,7 +160,10 @@ export interface VyomaraDesktopApi {
   runApprovedCheck(checkId: DesktopApprovedCheckId): Promise<DesktopApprovedCheckResult>;
   cancelApprovedCheck(): Promise<boolean>;
   runDesktopAppAction(action: DesktopAppAction): Promise<DesktopAppActionResult>;
-  requestMicrophoneAccess(): Promise<boolean>;
+  checkSpeechLanguage(language: DesktopSpeechLanguage): Promise<boolean>;
+  startSpeechRecognition(language: DesktopSpeechLanguage): Promise<void>;
+  stopSpeechRecognition(): Promise<boolean>;
+  onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;

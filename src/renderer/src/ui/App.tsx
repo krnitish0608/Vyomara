@@ -18,15 +18,10 @@ import type {
 } from '../../../desktop/contracts.ts';
 import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
 import {
-  getLocalSpeechRecognition,
   isLocalVoiceLanguage,
   localVoiceLanguages,
 } from './local-voice.ts';
-import type {
-  LocalSpeechAvailability,
-  LocalSpeechRecognition,
-  LocalVoiceLanguage,
-} from './local-voice.ts';
+import type { LocalSpeechAvailability, LocalVoiceLanguage } from './local-voice.ts';
 
 interface ChatMessage {
   readonly id: number;
@@ -129,14 +124,12 @@ export function App() {
   const [appActionResult, setAppActionResult] = useState<DesktopAppActionResult>();
   const [voiceLanguage, setVoiceLanguage] = useState<LocalVoiceLanguage>('en-US');
   const [voiceAvailability, setVoiceAvailability] = useState<LocalSpeechAvailability | 'not-checked' | 'checking'>('not-checked');
-  const [voiceInstalling, setVoiceInstalling] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceStarting, setVoiceStarting] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string>();
   const [speakingMessageId, setSpeakingMessageId] = useState<number>();
   const [speechError, setSpeechError] = useState<string>();
-  const localRecognition = useRef<LocalSpeechRecognition | undefined>(undefined);
-  const finalTranscript = useRef('');
   const endOfMessages = useRef<HTMLDivElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
@@ -165,10 +158,37 @@ export function App() {
       const label = activityLabel(event);
       if (label) setActivity(current => [...current, label].slice(-12));
     });
+    const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
+      if (event.type === 'partial') setVoiceTranscript(event.transcript);
+      if (event.type === 'listening') {
+        setVoiceStarting(false);
+        setVoiceListening(true);
+      }
+      if (event.type === 'stopped') {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+      }
+      if (event.type === 'error') {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+        setVoiceError(event.message);
+      }
+      if (event.type === 'final') {
+        setVoiceTranscript(event.transcript);
+        setVoiceStarting(false);
+        setVoiceListening(false);
+        const transcript = event.transcript.trim();
+        if (transcript) {
+          setPrompt(transcript);
+          void submitPrompt(transcript);
+        }
+      }
+    });
     return () => {
       mounted = false;
       unsubscribe();
-      localRecognition.current?.abort();
+      unsubscribeSpeech();
+      void window.vyomara.stopSpeechRecognition();
     };
   }, []);
 
@@ -337,24 +357,14 @@ export function App() {
   }
 
   async function checkLocalVoiceAvailability(): Promise<LocalSpeechAvailability | undefined> {
-    const SpeechRecognition = getLocalSpeechRecognition();
-    if (!SpeechRecognition) {
-      setVoiceAvailability('unavailable');
-      setVoiceError('This Electron runtime does not support on-device speech recognition.');
-      return undefined;
-    }
     setVoiceAvailability('checking');
     setVoiceError(undefined);
     try {
-      const availability = await SpeechRecognition.available({
-        langs: [voiceLanguage],
-        processLocally: true,
-      });
+      const available = await window.vyomara.checkSpeechLanguage(voiceLanguage);
+      const availability = available ? 'available' : 'unavailable';
       setVoiceAvailability(availability);
       if (availability === 'unavailable') {
-        setVoiceError(`On-device speech recognition is unavailable for ${voiceLanguage}. Vyom will not send microphone audio to an online service.`);
-      } else if (availability === 'downloadable') {
-        setVoiceError(`An on-device ${voiceLanguage} language pack can be installed from Settings. The pack download uses the browser vendor's service; microphone audio is not uploaded.`);
+        setVoiceError(`macOS does not provide on-device speech recognition for ${voiceLanguage}. Vyom will not send microphone audio to an online service.`);
       }
       return availability;
     } catch (error) {
@@ -365,108 +375,25 @@ export function App() {
     }
   }
 
-  async function installLocalVoiceLanguage(): Promise<void> {
-    const SpeechRecognition = getLocalSpeechRecognition();
-    if (!SpeechRecognition || voiceInstalling || voiceListening) return;
-    setVoiceInstalling(true);
-    setVoiceError(undefined);
-    try {
-      const availability = await SpeechRecognition.available({
-        langs: [voiceLanguage],
-        processLocally: true,
-      });
-      setVoiceAvailability(availability);
-      if (availability === 'unavailable') {
-        throw new Error(`The browser's on-device speech service does not support ${voiceLanguage}.`);
-      }
-      if (availability === 'available') {
-        setVoiceError(undefined);
-        return;
-      }
-      const installed = await SpeechRecognition.install({ langs: [voiceLanguage] });
-      if (!installed) throw new Error(`The ${voiceLanguage} on-device language pack was not installed.`);
-      const updatedAvailability = await SpeechRecognition.available({
-        langs: [voiceLanguage],
-        processLocally: true,
-      });
-      setVoiceAvailability(updatedAvailability);
-      if (updatedAvailability !== 'available') {
-        throw new Error(`The ${voiceLanguage} language pack installed but is not available for local recognition.`);
-      }
-      setVoiceError(undefined);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'The on-device language pack could not be installed.';
-      setVoiceAvailability('unavailable');
-      setVoiceError(message);
-    } finally {
-      setVoiceInstalling(false);
-    }
-  }
-
   async function startLocalListening(): Promise<void> {
     if (voiceListening || requestPending || appActionProposal) return;
     setVoiceError(undefined);
     setVoiceTranscript('');
-    finalTranscript.current = '';
     const availability = await checkLocalVoiceAvailability();
-    if (availability !== 'available') return;
-    const SpeechRecognition = getLocalSpeechRecognition();
-    if (!SpeechRecognition) return;
+    if (availability !== 'available' || voiceAvailability !== 'available') return;
     try {
-      const microphoneGranted = await window.vyomara.requestMicrophoneAccess();
-      if (!microphoneGranted) {
-        setVoiceError('Microphone access was not granted. No recording was started.');
-        return;
-      }
+      setVoiceStarting(true);
+      await window.vyomara.startSpeechRecognition(voiceLanguage);
     } catch (error) {
-      setVoiceError(error instanceof Error ? error.message : 'Microphone access could not be requested.');
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = voiceLanguage;
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.processLocally = true;
-    recognition.onresult = event => {
-      let transcript = '';
-      let completed = '';
-      for (let index = 0; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        if (!result) continue;
-        const text = result[0]?.transcript ?? '';
-        transcript += text;
-        if (result.isFinal) completed += text;
-      }
-      finalTranscript.current = completed;
-      setVoiceTranscript(transcript.trim());
-    };
-    recognition.onerror = event => {
-      setVoiceError(`On-device speech recognition failed: ${event.error}. No online recognition fallback was used.`);
-      finalTranscript.current = '';
-    };
-    recognition.onend = () => {
-      setVoiceListening(false);
-      localRecognition.current = undefined;
-      const transcript = finalTranscript.current.trim();
-      if (!transcript) return;
-      setPrompt(transcript);
-      setVoiceTranscript('');
-      void submitPrompt(transcript);
-    };
-    localRecognition.current = recognition;
-    setVoiceListening(true);
-    try {
-      recognition.start();
-    } catch (error) {
-      localRecognition.current = undefined;
-      setVoiceListening(false);
+      setVoiceStarting(false);
       setVoiceError(error instanceof Error ? error.message : 'The microphone could not be started.');
     }
   }
 
   function stopLocalListening(): void {
-    localRecognition.current?.stop();
+    void window.vyomara.stopSpeechRecognition().catch(error => {
+      setVoiceError(error instanceof Error ? error.message : 'Voice input could not be stopped.');
+    });
   }
 
   async function speakMessage(message: ChatMessage): Promise<void> {
@@ -1221,18 +1148,20 @@ export function App() {
                   <span className="voice-wave voice-wave-right">▂ ▄ ▇ ▃ ▆ ▄ ▂</span>
                 </div>
                 <h2>Talk to Vyom</h2>
-                <p>Voice input requires a supported on-device language pack. Microphone audio is never sent to an online recognition service; typing always works.</p>
+                <p>Vyom checks local macOS language support before requesting microphone access. Audio is never sent to an online recognition service; typing always works.</p>
                 <button
-                  className={voiceListening ? 'voice-unavailable voice-listening' : 'voice-unavailable'}
+                  className={voiceListening || voiceStarting ? 'voice-unavailable voice-listening' : 'voice-unavailable'}
                   type="button"
-                  onClick={() => voiceListening ? stopLocalListening() : void startLocalListening()}
+                  onClick={() => voiceListening || voiceStarting ? stopLocalListening() : void startLocalListening()}
                   disabled={requestPending || appActionRunning || voiceAvailability === 'checking'}
-                  aria-label={voiceListening ? 'Stop listening' : 'Use on-device voice input'}
-                  aria-pressed={voiceListening}
+                  aria-label={voiceListening || voiceStarting ? 'Stop listening' : 'Use on-device voice input'}
+                  aria-pressed={voiceListening || voiceStarting}
                   data-state={voiceAvailability}
                 >
-                  <span aria-hidden="true">{voiceListening ? '■' : '♩'}</span>
-                  {voiceListening
+                  <span aria-hidden="true">{voiceListening || voiceStarting ? '■' : '♩'}</span>
+                  {voiceStarting
+                    ? 'Starting local voice… · Stop'
+                    : voiceListening
                     ? 'Listening on this device · Stop'
                     : voiceAvailability === 'available'
                       ? 'Speak to Vyom'
@@ -1882,51 +1811,35 @@ export function App() {
                 setVoiceAvailability('not-checked');
                 setVoiceError(undefined);
               }}
-              disabled={voiceInstalling || voiceListening}
+              disabled={voiceAvailability === 'checking' || voiceListening}
             >
               {localVoiceLanguages.map(language => (
                 <option key={language.code} value={language.code}>{language.label}</option>
               ))}
             </select>
             <div className="settings-status-row">
-              <span>On-device language pack</span>
+              <span>On-device recognition</span>
               <span role={voiceError ? 'alert' : 'status'}>
-                {voiceInstalling
-                  ? 'Installing…'
-                  : voiceAvailability === 'available'
-                    ? 'Available locally'
-                    : voiceAvailability === 'downloadable'
-                      ? 'Download available'
-                      : voiceAvailability === 'downloading'
-                        ? 'Downloading…'
-                        : voiceAvailability === 'checking'
-                          ? 'Checking…'
-                          : voiceAvailability === 'unavailable'
-                            ? 'Unavailable'
-                            : 'Not checked'}
+                {voiceAvailability === 'available'
+                  ? 'Available on this Mac'
+                  : voiceAvailability === 'checking'
+                    ? 'Checking…'
+                    : voiceAvailability === 'unavailable'
+                      ? 'Unavailable'
+                      : 'Not checked'}
               </span>
             </div>
             <button
               className="history-close"
               type="button"
               onClick={() => void checkLocalVoiceAvailability()}
-              disabled={voiceInstalling || voiceListening || voiceAvailability === 'checking'}
+              disabled={voiceListening || voiceAvailability === 'checking'}
             >
-              Check on-device language
+              Check local recognition
             </button>
-            {voiceAvailability === 'downloadable' && (
-              <button
-                className="permission-add"
-                type="button"
-                onClick={() => void installLocalVoiceLanguage()}
-                disabled={voiceInstalling || voiceListening}
-              >
-                {voiceInstalling ? 'Installing local language…' : `Download ${voiceLanguage} language pack`}
-              </button>
-            )}
             {voiceError && <p className="history-message history-error" role="alert">{voiceError}</p>}
             <p className="history-privacy">
-              Microphone access starts only when you press the voice button. Recognition is required to run on-device; Vyomara never falls back to sending microphone audio online. Installing a language pack may contact the browser vendor.
+              macOS may request microphone and speech-recognition permissions when you start listening. Audio is processed on this Mac only; Vyomara never falls back to sending microphone audio online.
             </p>
           </section>
           <section className="settings-status" aria-label="Current provider status">
@@ -2101,11 +2014,11 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceListening ? 'Listening on device' : voiceAvailability === 'available' ? 'Local voice ready' : 'Voice setup required'}</strong>
-              <small>{voiceListening ? 'Microphone is active · press Stop' : `${voiceLanguage} · opt-in microphone`}</small>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening on device' : voiceAvailability === 'available' ? 'Local voice ready' : 'Voice setup required'}</strong>
+              <small>{voiceStarting ? 'macOS permission may be requested · press Stop to cancel' : voiceListening ? 'Microphone is active · press Stop' : `${voiceLanguage} · opt-in microphone`}</small>
             </div>
           </div>
-          <p className="planned-note">Voice input depends on an installed on-device language pack. App editing and approvals are not implemented yet.</p>
+          <p className="planned-note">Voice checks local macOS support before listening. Project edits require your review and approval.</p>
         </aside>
         )}
       </div>

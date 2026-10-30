@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DesktopAppAction, DesktopChatRequest, VyomaraDesktopApi } from '../desktop/contracts.ts';
+import type {
+  DesktopAppAction,
+  DesktopChatRequest,
+  DesktopSpeechLanguage,
+  DesktopSpeechRecognitionEvent,
+  VyomaraDesktopApi,
+} from '../desktop/contracts.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 const api: VyomaraDesktopApi = {
@@ -90,8 +96,21 @@ const api: VyomaraDesktopApi = {
   runDesktopAppAction(action: DesktopAppAction) {
     return ipcRenderer.invoke('vyomara:app-action', action);
   },
-  requestMicrophoneAccess() {
-    return ipcRenderer.invoke('vyomara:microphone-request');
+  checkSpeechLanguage(language: DesktopSpeechLanguage) {
+    return ipcRenderer.invoke('vyomara:speech-recognition-check', language);
+  },
+  startSpeechRecognition(language: DesktopSpeechLanguage) {
+    return ipcRenderer.invoke('vyomara:speech-recognition-start', language);
+  },
+  stopSpeechRecognition() {
+    return ipcRenderer.invoke('vyomara:speech-recognition-stop');
+  },
+  onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, recognitionEvent: DesktopSpeechRecognitionEvent): void => {
+      listener(recognitionEvent);
+    };
+    ipcRenderer.on('vyomara:speech-recognition-event', handler);
+    return () => ipcRenderer.removeListener('vyomara:speech-recognition-event', handler);
   },
   speakText(text: string) {
     return ipcRenderer.invoke('vyomara:speech-speak', text);

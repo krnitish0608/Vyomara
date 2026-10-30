@@ -111,11 +111,12 @@ app and run only its listed, disclosed checks. Direct VS Code/Chrome launch
 and Chrome search requests require an in-app confirmation before invoking
 fixed macOS app launches. Chrome searches display the exact query and
 disclose that Google receives it. Assistant replies can be spoken through the
-local macOS voice; voice input uses on-device recognition only, requires
-explicit microphone permission, and depends on a compatible language pack.
-In the current Electron test runtime, English (US), English (India), and Hindi
-(India) packs all reported unavailable. Earlier requirements and ADRs remain
-historical unless compatible with this direction.
+local macOS voice; voice input uses on-device recognition only and requests
+microphone and speech permissions only when listening starts. A bundled Swift
+helper checks native macOS language support locally. On the current development
+Mac, English (US) and English (India) are supported and Hindi (India) is not.
+Earlier requirements and ADRs remain historical unless compatible with this
+direction.
 
 ## Reference image
 

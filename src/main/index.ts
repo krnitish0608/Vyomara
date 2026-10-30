@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { AgentError } from '../agent/agent.ts';
@@ -49,6 +49,7 @@ import { exportToSelectedFile } from '../desktop/session-export.ts';
 import { runApprovedCheck, validateCheckDirectory } from '../desktop/check-runner.ts';
 import { DesktopAppActionError, parseDesktopAppAction, runDesktopAppAction } from '../desktop/app-actions.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
+import { MacSpeechRecognitionRunner } from '../desktop/mac-speech-recognition.ts';
 import { EditProposalError, EditProposalManager } from '../desktop/edit-proposals.ts';
 import { isCodeEditRequest } from '../desktop/action-intent.ts';
 
@@ -58,6 +59,7 @@ let activeCheck: AbortController | undefined;
 let activeApplicationAction = false;
 let pendingEditProposals: EditProposalManager | undefined;
 const macSpeechRunner = new MacSpeechRunner();
+const macSpeechRecognitionRunner = new MacSpeechRecognitionRunner();
 let activePermissionChange = false;
 let checkProjectDirectory: string | undefined;
 let pendingRestoreBackupPath: string | undefined;
@@ -510,16 +512,25 @@ ipcMain.handle('vyomara:app-action', async (_event, input: unknown) => {
   }
 });
 
-ipcMain.handle('vyomara:microphone-request', async () => {
-  if (process.platform !== 'darwin') {
-    throw new Error('On-device microphone input is currently supported only on macOS.');
-  }
+ipcMain.handle('vyomara:speech-recognition-check', async (_event, input: unknown) => {
+  if (typeof input !== 'string') throw new Error('A speech-recognition language is required.');
+  return await macSpeechRecognitionRunner.checkLanguage(input);
+});
+
+ipcMain.handle('vyomara:speech-recognition-start', async (_event, input: unknown) => {
+  if (typeof input !== 'string') throw new Error('A speech-recognition language is required.');
   try {
-    return await systemPreferences.askForMediaAccess('microphone');
+    await macSpeechRecognitionRunner.start(input, event => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('vyomara:speech-recognition-event', event);
+      }
+    });
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
 });
+
+ipcMain.handle('vyomara:speech-recognition-stop', () => macSpeechRecognitionRunner.stop());
 
 ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
   try {
@@ -695,6 +706,7 @@ app.on('before-quit', () => {
   activeRequest?.abort();
   activeCheck?.abort();
   macSpeechRunner.stop();
+  macSpeechRecognitionRunner.stop();
 });
 
 app.on('window-all-closed', () => {

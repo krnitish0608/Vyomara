@@ -50,6 +50,9 @@ changes. Search must disclose external data flow. Existing text chat and
 read-only tools may remain as fallback capabilities if they fit the target
 experience.
 
-The exact voice runtime, supported macOS versions, application automation
-mechanism, and step-by-step approval details still require technical design
-before implementation.
+Voice input now uses a bundled Swift helper linked to Apple Speech and
+AVFoundation. The helper declares macOS microphone and speech usage
+descriptions, and requests on-device-only recognition after the user presses
+the listening control. Desktop builds require the local Swift compiler and
+code-signing utility. Permission behavior still needs validation in a
+distributed signed app.

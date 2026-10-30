@@ -137,8 +137,11 @@ Direct requests to open VS Code or Chrome, or search in Chrome, show an
 in-app confirmation before Vyomara launches the existing macOS application.
 Chrome searches display the exact query and disclose that Google receives it.
 Assistant replies can be spoken with the local macOS voice. Voice input is
-opt-in, requires microphone permission, and refuses online recognition
-fallback; its local language-pack availability depends on the Electron runtime.
+opt-in, uses a bundled native macOS Speech helper with on-device recognition,
+and requests microphone and speech permissions only when listening starts.
+Language support is checked locally; online recognition is never used as a
+fallback. The helper is built during desktop builds with the local Swift
+toolchain.
 General control of app interfaces is not implemented.
 
 ## Local history and memory

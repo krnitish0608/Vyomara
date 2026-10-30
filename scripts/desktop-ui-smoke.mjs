@@ -152,29 +152,14 @@ try {
     async () => (await evaluate('document.body?.innerText ?? ""')).includes('Deterministic placeholder'),
     'waiting for the desktop shell',
   );
-  const voiceCapabilities = await evaluate(`(async () => {
-    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    let languages;
-    if (typeof Recognition === 'function' && typeof Recognition.available === 'function') {
-      languages = await Promise.all(['en-US', 'en-IN', 'hi-IN'].map(async lang => {
-        try {
-          return [lang, await Recognition.available({ langs: [lang], processLocally: true })];
-        } catch (error) {
-          return [lang, error instanceof Error ? error.message : 'unavailable'];
-        }
-      }));
-    }
-    return {
-      speechSynthesis: typeof window.speechSynthesis === 'object',
-      localVoices: window.speechSynthesis?.getVoices().filter(voice => voice.localService).length ?? 0,
-      speechRecognition: typeof Recognition === 'function',
-      onDeviceRecognition: typeof Recognition === 'function' &&
-        'processLocally' in Recognition.prototype &&
-        typeof Recognition.available === 'function' &&
-        typeof Recognition.install === 'function',
-      localLanguages: languages,
-    };
-  })()`);
+  const voiceCapabilities = await evaluate(`(async () => ({
+    speechSynthesis: typeof window.speechSynthesis === 'object',
+    localVoices: window.speechSynthesis?.getVoices().filter(voice => voice.localService).length ?? 0,
+    localLanguages: await Promise.all(['en-US', 'en-IN', 'hi-IN'].map(async language => [
+      language,
+      await window.vyomara.checkSpeechLanguage(language),
+    ])),
+  }))()`);
   console.log(`Electron voice capabilities: ${JSON.stringify(voiceCapabilities)}`);
   assert(
     await evaluate(`Boolean(document.querySelector('nav[aria-label="Main navigation"]') &&
@@ -186,7 +171,7 @@ try {
     await evaluate(`document.querySelector('.voice-unavailable')?.disabled === false &&
       document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
       document.body.innerText.includes('Check local voice') &&
-      document.body.innerText.toLowerCase().includes('microphone audio is never sent')`),
+      document.body.innerText.toLowerCase().includes('audio is never sent to an online recognition service')`),
     'voice capture stays opt-in and discloses local-only processing before microphone access',
   );
   assert(
@@ -199,8 +184,9 @@ try {
     'checking on-device speech availability without starting microphone capture',
   );
   assert(
-    await evaluate(`document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false'`),
-    'checking a local speech pack does not start microphone capture',
+    await evaluate(`document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
+      ['available', 'unavailable'].includes(document.querySelector('.voice-unavailable')?.dataset.state)`),
+    'checking native speech support does not start microphone capture',
   );
   await evaluate('document.getElementById("prompt").focus()');
   await typeText('Open VS Code');
@@ -309,8 +295,8 @@ try {
   await waitFor(() => evaluate('document.getElementById("settings-panel") !== null'), 'reopening Settings');
   assert(
     await evaluate(`Boolean(document.getElementById('voice-language') &&
-      document.querySelector('#settings-panel').innerText.includes('Installing a language pack may contact the browser vendor'))`),
-    'voice language and language-pack privacy are available in Settings',
+      document.querySelector('#settings-panel').innerText.includes('macOS may request microphone and speech-recognition permissions'))`),
+    'voice language and native permission disclosures are available in Settings',
   );
   await tabUntil('model-name');
   const settingsInputFocus = await evaluate(`({
