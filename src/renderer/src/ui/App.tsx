@@ -26,6 +26,26 @@ interface ChatMessage {
   readonly failed?: boolean;
 }
 
+function VyomaraMark() {
+  return (
+    <svg viewBox="0 0 64 64" aria-hidden="true">
+      <rect x="4" y="4" width="56" height="56" rx="18" fill="#101746" stroke="#315cff" strokeWidth="1.5" />
+      <ellipse cx="32" cy="32" rx="25" ry="10" transform="rotate(-27 32 32)" fill="none" stroke="#27d9ff" strokeWidth="2.5" />
+      <ellipse cx="32" cy="32" rx="24" ry="9" transform="rotate(-27 32 32)" fill="none" stroke="#9c50ff" strokeWidth="1.5" strokeDasharray="28 100" />
+      <circle cx="32" cy="32" r="17" fill="#2426a8" stroke="#695bff" strokeWidth="1.5" />
+      <path d="M22 35v-4m6 8V26m6 13V22m6 13v-8m-24 8h2m28-3h2" fill="none" stroke="#e9f4ff" strokeLinecap="round" strokeWidth="3" />
+    </svg>
+  );
+}
+
+function VoiceWave({ side }: { readonly side: 'left' | 'right' }) {
+  return (
+    <span className={`voice-waveform voice-waveform-${side}`} aria-hidden="true">
+      {Array.from({ length: 9 }, (_, index) => <i key={index} />)}
+    </span>
+  );
+}
+
 function activityLabel(event: DiagnosticEvent): string | undefined {
   switch (event.event) {
     case 'task.created':
@@ -1074,12 +1094,21 @@ export function App() {
       : appActionProposal
         ? 'Review the exact application action before Vyom continues.'
         : 'When a task starts, its actual progress and results will appear here.';
+  const voiceOrbAction = speechSetup?.modelReady ? toggleVoiceListening : downloadVoiceModel;
+  const voiceOrbLabel = voiceListening
+    ? 'Turn voice listening off'
+    : speechSetup?.modelReady
+      ? 'Start offline voice listening'
+      : 'Download offline voice model and start listening';
+  const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="window-lights" aria-hidden="true"><i /><i /><i /></div>
-        <span className="window-title">Vyomara · Personal AI assistant</span>
+        <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
+          <span className="brand-mark"><VyomaraMark /></span>
+          <span><strong>Vyomara</strong><small>Local-first AI companion</small></span>
+        </a>
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
@@ -1099,10 +1128,6 @@ export function App() {
 
       <div className="workspace">
         <nav className="side-nav" aria-label="Main navigation">
-          <a className="brand" href="#" aria-label="Vyomara home">
-            <span className="brand-mark" aria-hidden="true">V</span>
-            <span><strong>Vyomara</strong><small>Your Personal AI Agent</small></span>
-          </a>
           <div className="side-nav-group">
             <p className="side-nav-label">ASSISTANT</p>
             <button className="side-nav-item side-nav-item-active" type="button" aria-current="page">
@@ -1191,9 +1216,9 @@ export function App() {
         <section className="conversation" aria-label="Conversation">
           <div className="conversation-heading">
             <div>
-              <p className="eyebrow">YOUR PERSONAL AI ASSISTANT</p>
-              <h1>Good to see you</h1>
-              <p className="intro">I&apos;m Vyom. What would you like to do today?</p>
+              <p className="eyebrow">VYOMARA · LOCAL AI COMPANION</p>
+              <h1>Your voice. Your orbit.</h1>
+              <p className="intro">I&apos;m Vyom, ready when you are.</p>
             </div>
             {sessionId && <span className="session-badge">Session saved locally</span>}
           </div>
@@ -1201,9 +1226,48 @@ export function App() {
           <div className="message-list" ref={messageList} aria-live="polite">
             {messages.length === 0 ? (
               <div className="welcome-card">
-                <div className="welcome-icon" aria-hidden="true">V</div>
-                <h2>What would you like to talk about?</h2>
-                <p>Type or speak a message to start chatting with Vyom.</p>
+                <p className="welcome-kicker">A PERSONAL AI, RIGHT HERE ON YOUR MAC</p>
+                <h2>What&apos;s on your mind?</h2>
+                <p className="welcome-copy">Start with your voice or type below. Your voice stays on this Mac.</p>
+                <div className={`voice-orbit${voiceListening ? ' voice-orbit-listening' : ''}`} aria-label="Offline voice input">
+                  <VoiceWave side="left" />
+                  <button
+                    className="voice-orb-button"
+                    type="button"
+                    onClick={() => void voiceOrbAction()}
+                    disabled={voiceOrbDisabled}
+                    aria-label={voiceOrbLabel}
+                    aria-pressed={voiceListening || voiceStarting}
+                    title={speechSetup?.runtimeAvailable === false
+                      ? 'Install whisper.cpp to enable offline voice'
+                      : voiceOrbLabel}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
+                    </svg>
+                  </button>
+                  <VoiceWave side="right" />
+                </div>
+                <p
+                  className={`voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
+                  role={voiceError ? 'alert' : 'status'}
+                  aria-live="polite"
+                >
+                  {voiceError
+                    ? voiceError
+                    : voiceDownloading
+                      ? `Preparing offline voice… ${voiceDownloadProgress ?? 0}%`
+                      : voiceStarting
+                        ? 'Starting local microphone…'
+                        : voiceListening
+                          ? voiceTranscript || 'Listening… speak naturally'
+                          : speechSetup?.runtimeAvailable === false
+                            ? 'Offline voice engine unavailable'
+                            : speechSetup?.modelReady
+                              ? 'Tap the orb to speak'
+                              : 'Tap the orb to set up offline voice'}
+                </p>
               </div>
             ) : messages.map(message => (
               <article

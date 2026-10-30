@@ -169,6 +169,18 @@ try {
     'assistant opens with navigation, chat-first welcome, and task activity',
   );
   assert(
+    await evaluate(`Boolean(!document.querySelector('.window-lights') &&
+      document.querySelector('.topbar .brand-mark svg') &&
+      !document.querySelector('.side-nav .brand'))`),
+    'the top-left Vyomara logo remains without a duplicate brand in the sidebar',
+  );
+  assert(
+    await evaluate(`document.querySelector('.conversation-heading h1')?.innerText === 'Your voice. Your orbit.' &&
+      document.querySelector('.welcome-card .voice-orb-button') &&
+      document.querySelectorAll('.welcome-card .voice-waveform').length === 2`),
+    'welcome screen combines the voice orb, animated waveform, and Vyomara identity',
+  );
+  assert(
     await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&
       document.body.scrollHeight <= document.body.clientHeight &&
       document.querySelector('.message-list').scrollHeight <= document.querySelector('.message-list').clientHeight`),
@@ -176,8 +188,18 @@ try {
   );
   assert(
     await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
-      document.querySelector('.welcome-card')?.innerText.includes('Type or speak a message')`),
+      document.querySelector('.welcome-card')?.innerText.includes('Start with your voice or type below')`),
     'empty chat accepts a typed or spoken message without a greeting barrier',
+  );
+  assert(
+    await evaluate(`(() => {
+      const button = document.querySelector('.welcome-card .voice-orb-button');
+      return button?.type === 'button' &&
+        button.getAttribute('aria-pressed') === 'false' &&
+        button.getAttribute('aria-label')?.includes('listening') &&
+        button.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)};
+    })()`),
+    'welcome voice orb exposes the same safe, stateful offline listening control',
   );
   assert(
     await evaluate(`(() => {
