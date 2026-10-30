@@ -142,14 +142,13 @@ that folder.
 Direct requests to open VS Code or Chrome, or search in Chrome, show an
 in-app confirmation before Vyomara launches the existing macOS application.
 Chrome searches display the exact query and disclose that Google receives it.
-Assistant replies can be spoken with the local macOS voice. Voice input is
-opt-in, uses a bundled native macOS Speech helper with on-device recognition,
-and requests microphone and speech permissions only when listening starts.
-Language support is checked locally; online recognition is never used as a
-fallback. The helper is built during desktop builds with the local Swift
-toolchain. macOS Dictation must be enabled in **System Settings > Keyboard >
-Dictation** for Apple's speech recognizer to work; Vyomara reports this
-requirement if macOS disables recognition.
+Assistant replies can be spoken with the local macOS voice. Voice input uses
+the multilingual `whisper.cpp` base model and runs locally; it does not depend
+on Siri or Dictation and never sends microphone audio to an online service.
+Vyomara downloads the model only after you request it in the app. Install the
+local runtime with `brew install whisper.cpp`, then turn listening on in the
+app. Say “Hello Vyomara” to wake Vyom; it stays awake until Listening Off is
+selected. Turning listening off stops microphone capture.
 General control of app interfaces is not implemented.
 
 ## Local history and memory

@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   DesktopAppAction,
   DesktopChatRequest,
-  DesktopSpeechLanguage,
   DesktopSpeechRecognitionEvent,
   VyomaraDesktopApi,
 } from '../desktop/contracts.ts';
@@ -96,14 +95,14 @@ const api: VyomaraDesktopApi = {
   runDesktopAppAction(action: DesktopAppAction) {
     return ipcRenderer.invoke('vyomara:app-action', action);
   },
-  checkSpeechLanguage(language: DesktopSpeechLanguage) {
-    return ipcRenderer.invoke('vyomara:speech-recognition-check', language);
+  getSpeechSetupStatus() {
+    return ipcRenderer.invoke('vyomara:speech-setup-status');
   },
-  startSpeechRecognition(language: DesktopSpeechLanguage) {
-    return ipcRenderer.invoke('vyomara:speech-recognition-start', language);
+  downloadSpeechModel() {
+    return ipcRenderer.invoke('vyomara:speech-model-download');
   },
-  stopSpeechRecognition() {
-    return ipcRenderer.invoke('vyomara:speech-recognition-stop');
+  setSpeechListening(enabled: boolean) {
+    return ipcRenderer.invoke('vyomara:speech-listening-set', enabled);
   },
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, recognitionEvent: DesktopSpeechRecognitionEvent): void => {

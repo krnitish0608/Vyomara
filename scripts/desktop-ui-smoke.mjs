@@ -155,12 +155,13 @@ try {
   const voiceCapabilities = await evaluate(`(async () => ({
     speechSynthesis: typeof window.speechSynthesis === 'object',
     localVoices: window.speechSynthesis?.getVoices().filter(voice => voice.localService).length ?? 0,
-    localLanguages: await Promise.all(['en-US', 'en-IN', 'hi-IN'].map(async language => [
-      language,
-      await window.vyomara.checkSpeechLanguage(language),
-    ])),
+    speechSetup: await window.vyomara.getSpeechSetupStatus(),
   }))()`);
   console.log(`Electron voice capabilities: ${JSON.stringify(voiceCapabilities)}`);
+  assert(
+    voiceCapabilities.speechSetup.listeningEnabled === false,
+    'startup does not enable microphone capture without a saved user preference',
+  );
   assert(
     await evaluate(`Boolean(document.querySelector('nav[aria-label="Main navigation"]') &&
       document.querySelector('aside[aria-label="Task activity"]') &&
@@ -170,9 +171,9 @@ try {
   assert(
     await evaluate(`document.querySelector('.voice-unavailable')?.disabled === false &&
       document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
-      document.querySelector('.voice-unavailable')?.innerText.includes('Speak to Vyom') &&
-      document.body.innerText.toLowerCase().includes('audio is never sent to an online recognition service')`),
-    'voice capture stays opt-in and discloses local-only processing before microphone access',
+      document.querySelector('.voice-unavailable')?.innerText.includes('Download offline voice model') &&
+      document.body.innerText.toLowerCase().includes('microphone audio is never sent online')`),
+    'offline model download requires user action and discloses local-only recognition',
   );
   assert(
     await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
@@ -283,20 +284,13 @@ try {
 
   await clickButton('Settings');
   await waitFor(() => evaluate('document.getElementById("settings-panel") !== null'), 'reopening Settings');
-  await clickButton('Check local recognition');
-  await waitFor(
-    () => evaluate(`document.getElementById('voice-availability-status')?.innerText !== 'Checking…'`),
-    'checking native speech support without starting microphone capture',
-  );
+  const voiceSettingsDisclosure = await evaluate(`({
+    hasSection: document.querySelector('#settings-panel')?.innerText.includes('Offline voice'),
+    hasKillSwitch: document.querySelector('#settings-panel')?.innerText.includes('Listening Off stops the microphone immediately'),
+  })`);
   assert(
-    await evaluate(`['Available on this Mac', 'Unavailable'].includes(document.getElementById('voice-availability-status')?.innerText) &&
-      document.querySelector('.voice-status-card strong')?.innerText !== 'Listening on device'`),
-    'checking native speech support does not start microphone capture',
-  );
-  assert(
-    await evaluate(`Boolean(document.getElementById('voice-language') &&
-      document.querySelector('#settings-panel').innerText.includes('macOS may request microphone and speech-recognition permissions'))`),
-    'voice language and native permission disclosures are available in Settings',
+    voiceSettingsDisclosure.hasSection && voiceSettingsDisclosure.hasKillSwitch,
+    'voice settings disclose local model status and the listening kill switch without starting the microphone',
   );
   await tabUntil('model-name');
   const settingsInputFocus = await evaluate(`({

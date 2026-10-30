@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { AgentError } from '../agent/agent.ts';
 import {
   grantDesktopFilesystemRoot,
@@ -49,7 +51,8 @@ import { exportToSelectedFile } from '../desktop/session-export.ts';
 import { runApprovedCheck, validateCheckDirectory } from '../desktop/check-runner.ts';
 import { DesktopAppActionError, parseDesktopAppAction, runDesktopAppAction } from '../desktop/app-actions.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
-import { MacSpeechRecognitionError, MacSpeechRecognitionRunner } from '../desktop/mac-speech-recognition.ts';
+import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
+import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 import { EditProposalError, EditProposalManager } from '../desktop/edit-proposals.ts';
 import { isCodeEditRequest } from '../desktop/action-intent.ts';
 
@@ -59,7 +62,8 @@ let activeCheck: AbortController | undefined;
 let activeApplicationAction = false;
 let pendingEditProposals: EditProposalManager | undefined;
 const macSpeechRunner = new MacSpeechRunner();
-const macSpeechRecognitionRunner = new MacSpeechRecognitionRunner();
+let localWhisperRunner: LocalWhisperRunner | undefined;
+let voiceListeningEnabled = false;
 let activePermissionChange = false;
 let checkProjectDirectory: string | undefined;
 let pendingRestoreBackupPath: string | undefined;
@@ -74,7 +78,7 @@ function publicErrorMessage(error: unknown): string {
     error instanceof PersistenceError ||
     error instanceof DesktopAppActionError ||
     error instanceof MacSpeechError ||
-    error instanceof MacSpeechRecognitionError ||
+    error instanceof LocalSpeechError ||
     error instanceof EditProposalError
   ) {
     return error.message;
@@ -95,6 +99,59 @@ function createDesktopLogger(): Logger {
       emit({ event: 'request.failed', code: 'request.failed' });
     },
   };
+}
+
+function getLocalWhisperRunner(): LocalWhisperRunner {
+  localWhisperRunner ??= new LocalWhisperRunner({
+    modelDirectory: join(app.getPath('userData'), 'speech-models'),
+    binaryPath: resolveWhisperBinary(),
+  });
+  return localWhisperRunner;
+}
+
+function emitSpeechEvent(event: LocalWhisperEvent): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('vyomara:speech-recognition-event', event);
+  }
+}
+
+function handleLocalWhisperEvent(event: LocalWhisperEvent): void {
+  emitSpeechEvent(event);
+  if (event.type !== 'wake-detected' || event.hasCommand) return;
+  const runner = getLocalWhisperRunner();
+  runner.setSpeaking(true);
+  void macSpeechRunner.speak('Haan, boliye.').catch(error => {
+    emitSpeechEvent({
+      type: 'error',
+      message: error instanceof Error ? error.message : 'Vyom could not acknowledge the wake phrase.',
+    });
+  }).finally(() => runner.setSpeaking(false));
+}
+
+function voicePreferencePath(): string {
+  return join(app.getPath('userData'), 'voice-preferences.json');
+}
+
+async function saveVoiceListeningPreference(enabled: boolean): Promise<void> {
+  const path = voicePreferencePath();
+  await mkdir(join(app.getPath('userData')), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${path}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify({ enabled }), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporaryPath, path);
+}
+
+async function readVoiceListeningPreference(): Promise<boolean> {
+  try {
+    const text = await readFile(voicePreferencePath(), 'utf8');
+    const value: unknown = JSON.parse(text);
+    if (typeof value !== 'object' || value === null || !('enabled' in value) || typeof value.enabled !== 'boolean') {
+      throw new Error('Saved voice-listening preference is invalid.');
+    }
+    return value.enabled;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 function createWindow(): BrowserWindow {
@@ -513,35 +570,65 @@ ipcMain.handle('vyomara:app-action', async (_event, input: unknown) => {
   }
 });
 
-ipcMain.handle('vyomara:speech-recognition-check', async (_event, input: unknown) => {
-  if (typeof input !== 'string') throw new Error('A speech-recognition language is required.');
-  return await macSpeechRecognitionRunner.checkLanguage(input);
+ipcMain.handle('vyomara:speech-setup-status', async () => {
+  const runner = getLocalWhisperRunner();
+  return {
+    modelReady: await runner.modelAvailable(),
+    runtimeAvailable: resolveWhisperBinary() !== undefined,
+    listeningEnabled: voiceListeningEnabled,
+  };
 });
 
-ipcMain.handle('vyomara:speech-recognition-start', async (_event, input: unknown) => {
-  if (typeof input !== 'string') throw new Error('A speech-recognition language is required.');
+ipcMain.handle('vyomara:speech-model-download', async () => {
+  if (voiceListeningEnabled) throw new Error('Turn voice listening off before downloading the speech model.');
   try {
-    await macSpeechRecognitionRunner.start(input, event => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('vyomara:speech-recognition-event', event);
-      }
-    });
+    await getLocalWhisperRunner().downloadModel(emitSpeechEvent);
   } catch (error) {
     console.error(JSON.stringify({
-      event: 'speech.recognition.start-failed',
+      event: 'speech.model-download-failed',
       message: error instanceof Error ? error.message : 'Unknown native speech startup error.',
     }));
     throw new Error(publicErrorMessage(error));
   }
 });
 
-ipcMain.handle('vyomara:speech-recognition-stop', () => macSpeechRecognitionRunner.stop());
+ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) => {
+  if (typeof input !== 'boolean') throw new Error('Voice listening must be explicitly enabled or disabled.');
+  const runner = getLocalWhisperRunner();
+  if (input) {
+    if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the local base speech model before enabling voice listening.');
+    if (!resolveWhisperBinary()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
+    try {
+      runner.start(handleLocalWhisperEvent);
+      voiceListeningEnabled = true;
+      await saveVoiceListeningPreference(true);
+    } catch (error) {
+      runner.stop();
+      voiceListeningEnabled = false;
+      throw new Error(publicErrorMessage(error));
+    }
+  } else {
+    voiceListeningEnabled = false;
+    await runner.stop();
+    macSpeechRunner.stop();
+    await saveVoiceListeningPreference(false);
+    emitSpeechEvent({ type: 'stopped' });
+  }
+  return {
+    modelReady: await runner.modelAvailable(),
+    runtimeAvailable: resolveWhisperBinary() !== undefined,
+    listeningEnabled: voiceListeningEnabled,
+  };
+});
 
 ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
+  localWhisperRunner?.setSpeaking(true);
   try {
     return await macSpeechRunner.speak(input);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
+  } finally {
+    localWhisperRunner?.setSpeaking(false);
   }
 });
 
@@ -667,7 +754,7 @@ ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
   }
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const audioOnlyRequest = 'mediaTypes' in details &&
@@ -694,6 +781,7 @@ app.whenReady().then(() => {
   try {
     environmentConfig = loadConfig(process.env);
     config = initializeDesktopProviderSettings(initializeDesktopFilesystemRoots(environmentConfig));
+    voiceListeningEnabled = await readVoiceListeningPreference();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';
     dialog.showErrorBox('Vyomara configuration error', message);
@@ -711,7 +799,7 @@ app.on('before-quit', () => {
   activeRequest?.abort();
   activeCheck?.abort();
   macSpeechRunner.stop();
-  macSpeechRecognitionRunner.stop();
+  void localWhisperRunner?.stop();
 });
 
 app.on('window-all-closed', () => {

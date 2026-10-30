@@ -25,8 +25,7 @@ run('/usr/libexec/PlistBuddy', [
   '-c', 'Set :CFBundleIdentifier app.vyomara.desktop',
   '-c', 'Set :CFBundleName Vyomara',
   '-c', 'Set :CFBundleDisplayName Vyomara',
-  '-c', 'Set :NSMicrophoneUsageDescription Vyomara uses the microphone only when you press the voice-input button.',
-  '-c', 'Add :NSSpeechRecognitionUsageDescription string Vyomara transcribes your speech on this Mac when you press the voice-input button.',
+  '-c', 'Set :NSMicrophoneUsageDescription Vyomara uses the microphone only while local voice listening is enabled.',
   plist,
 ]);
 run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', '--identifier', 'app.vyomara.desktop', appBundle]);

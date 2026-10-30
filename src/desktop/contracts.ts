@@ -118,13 +118,20 @@ export type DesktopSpeechResult =
   | { readonly status: 'completed' }
   | { readonly status: 'cancelled' };
 
-export type DesktopSpeechLanguage = 'en-US' | 'en-IN' | 'hi-IN';
-
 export type DesktopSpeechRecognitionEvent =
   | { readonly type: 'listening' }
-  | { readonly type: 'partial' | 'final'; readonly transcript: string }
+  | { readonly type: 'wake-detected'; readonly hasCommand: boolean }
+  | { readonly type: 'partial' | 'command'; readonly transcript: string }
   | { readonly type: 'stopped' }
+  | { readonly type: 'model-progress'; readonly received: number; readonly total: number }
+  | { readonly type: 'model-ready' }
   | { readonly type: 'error'; readonly message: string };
+
+export interface DesktopSpeechSetupStatus {
+  readonly modelReady: boolean;
+  readonly runtimeAvailable: boolean;
+  readonly listeningEnabled: boolean;
+}
 
 export type DesktopFilesystemRootGrant =
   | { readonly status: 'cancelled'; readonly roots: readonly string[] }
@@ -160,9 +167,9 @@ export interface VyomaraDesktopApi {
   runApprovedCheck(checkId: DesktopApprovedCheckId): Promise<DesktopApprovedCheckResult>;
   cancelApprovedCheck(): Promise<boolean>;
   runDesktopAppAction(action: DesktopAppAction): Promise<DesktopAppActionResult>;
-  checkSpeechLanguage(language: DesktopSpeechLanguage): Promise<boolean>;
-  startSpeechRecognition(language: DesktopSpeechLanguage): Promise<void>;
-  stopSpeechRecognition(): Promise<boolean>;
+  getSpeechSetupStatus(): Promise<DesktopSpeechSetupStatus>;
+  downloadSpeechModel(): Promise<void>;
+  setSpeechListening(enabled: boolean): Promise<DesktopSpeechSetupStatus>;
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;

@@ -111,12 +111,10 @@ app and run only its listed, disclosed checks. Direct VS Code/Chrome launch
 and Chrome search requests require an in-app confirmation before invoking
 fixed macOS app launches. Chrome searches display the exact query and
 disclose that Google receives it. Assistant replies can be spoken through the
-local macOS voice; voice input uses on-device recognition only and requests
-microphone and speech permissions only when listening starts. A bundled Swift
-helper checks native macOS language support locally. macOS Dictation must be
-enabled for Apple's recognizer; Vyomara explains this if recognition reports
-it disabled. On the current development Mac, English (US) and English (India)
-are supported and Hindi (India) is not.
+local macOS voice. Voice input uses the multilingual `whisper.cpp` base model,
+which the user explicitly downloads; it does not require Siri or Dictation.
+Listening starts only after the user enables it, wakes on “Hello Vyomara,”
+and stays active until Listening Off; all recognition remains on-device.
 Earlier requirements and ADRs remain historical unless compatible with this
 direction.
 

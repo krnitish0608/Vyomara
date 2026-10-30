@@ -12,16 +12,12 @@ import type {
   DesktopProviderModelCheckResult,
   DesktopProviderSettings,
   DesktopProviderStatus,
+  DesktopSpeechSetupStatus,
   DesktopSessionHistory,
   DesktopMemorySummary,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
 import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
-import {
-  isLocalVoiceLanguage,
-  localVoiceLanguages,
-} from './local-voice.ts';
-import type { LocalSpeechAvailability, LocalVoiceLanguage } from './local-voice.ts';
 
 interface ChatMessage {
   readonly id: number;
@@ -122,10 +118,12 @@ export function App() {
   const [appActionRunning, setAppActionRunning] = useState(false);
   const [appActionError, setAppActionError] = useState<string>();
   const [appActionResult, setAppActionResult] = useState<DesktopAppActionResult>();
-  const [voiceLanguage, setVoiceLanguage] = useState<LocalVoiceLanguage>('en-US');
-  const [voiceAvailability, setVoiceAvailability] = useState<LocalSpeechAvailability | 'not-checked' | 'checking'>('not-checked');
+  const [speechSetup, setSpeechSetup] = useState<DesktopSpeechSetupStatus>();
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceStarting, setVoiceStarting] = useState(false);
+  const [voiceAwake, setVoiceAwake] = useState(false);
+  const [voiceDownloading, setVoiceDownloading] = useState(false);
+  const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number>();
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string>();
   const [speakingMessageId, setSpeakingMessageId] = useState<number>();
@@ -160,35 +158,56 @@ export function App() {
     });
     const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
       if (event.type === 'partial') setVoiceTranscript(event.transcript);
+      if (event.type === 'model-progress' && event.total > 0) {
+        setVoiceDownloadProgress(Math.min(100, Math.round(event.received / event.total * 100)));
+      }
+      if (event.type === 'model-ready') {
+        setSpeechSetup(current => current ? { ...current, modelReady: true } : current);
+        setVoiceDownloading(false);
+        setVoiceDownloadProgress(undefined);
+      }
       if (event.type === 'listening') {
         setVoiceStarting(false);
         setVoiceListening(true);
       }
+      if (event.type === 'wake-detected') {
+        setVoiceAwake(true);
+        setVoiceTranscript('');
+      }
       if (event.type === 'stopped') {
         setVoiceStarting(false);
         setVoiceListening(false);
+        setVoiceAwake(false);
       }
       if (event.type === 'error') {
         setVoiceStarting(false);
         setVoiceListening(false);
+        setVoiceDownloading(false);
         setVoiceError(event.message);
       }
-      if (event.type === 'final') {
+      if (event.type === 'command') {
         setVoiceTranscript(event.transcript);
-        setVoiceStarting(false);
-        setVoiceListening(false);
-        const transcript = event.transcript.trim();
-        if (transcript) {
-          setPrompt(transcript);
-          void submitPrompt(transcript);
-        }
+        setVoiceAwake(true);
+        void submitPrompt(event.transcript, true);
       }
+    });
+    void window.vyomara.getSpeechSetupStatus().then(status => {
+      if (!mounted) return;
+      setSpeechSetup(status);
+      if (status.listeningEnabled && status.modelReady && status.runtimeAvailable) {
+        setVoiceStarting(true);
+        void window.vyomara.setSpeechListening(true).then(setSpeechSetup).catch(error => {
+          setVoiceStarting(false);
+          setVoiceError(error instanceof Error ? error.message : 'Voice listening could not start.');
+        });
+      }
+    }).catch(error => {
+      if (mounted) setVoiceError(error instanceof Error ? error.message : 'Voice setup could not be loaded.');
     });
     return () => {
       mounted = false;
       unsubscribe();
       unsubscribeSpeech();
-      void window.vyomara.stopSpeechRecognition();
     };
   }, []);
 
@@ -276,7 +295,7 @@ export function App() {
     }
   }
 
-  async function submitPrompt(value: string): Promise<void> {
+  async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
     if (!trimmed || requestPending || checkLoading || appActionRunning || appActionProposal || editProposals.length > 0) return;
     setPrompt('');
@@ -323,6 +342,11 @@ export function App() {
         role: 'assistant',
         content: result.response,
       }]);
+      if (speakResponse) {
+        void window.vyomara.speakText(result.response).catch(error => {
+          setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
+        });
+      }
       setEditProposals(result.editProposals ?? []);
       setEditProposalErrors({});
       if (result.editProposals?.length) {
@@ -356,44 +380,42 @@ export function App() {
     await submitPrompt(prompt);
   }
 
-  async function checkLocalVoiceAvailability(): Promise<LocalSpeechAvailability | undefined> {
-    setVoiceAvailability('checking');
+  async function downloadVoiceModel(): Promise<void> {
+    if (voiceDownloading || voiceListening) return;
+    setVoiceDownloading(true);
+    setVoiceDownloadProgress(0);
     setVoiceError(undefined);
     try {
-      const available = await window.vyomara.checkSpeechLanguage(voiceLanguage);
-      const availability = available ? 'available' : 'unavailable';
-      setVoiceAvailability(availability);
-      if (availability === 'unavailable') {
-        setVoiceError(`macOS does not provide on-device speech recognition for ${voiceLanguage}. Vyom will not send microphone audio to an online service.`);
-      }
-      return availability;
+      await window.vyomara.downloadSpeechModel();
+      const status = await window.vyomara.getSpeechSetupStatus();
+      setSpeechSetup(status);
+      setVoiceStarting(true);
+      setSpeechSetup(await window.vyomara.setSpeechListening(true));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Local speech availability could not be checked.';
-      setVoiceAvailability('unavailable');
-      setVoiceError(message);
-      return undefined;
+      setVoiceDownloading(false);
+      setVoiceStarting(false);
+      setVoiceError(error instanceof Error ? error.message : 'The offline speech model could not be installed.');
     }
   }
 
-  async function startLocalListening(): Promise<void> {
-    if (voiceListening || requestPending || appActionProposal) return;
+  async function toggleVoiceListening(): Promise<void> {
+    if (!speechSetup || voiceStarting) return;
     setVoiceError(undefined);
     setVoiceTranscript('');
-    const availability = await checkLocalVoiceAvailability();
-    if (availability !== 'available') return;
+    if (!voiceListening && !speechSetup.modelReady) return;
+    setVoiceStarting(!voiceListening);
     try {
-      setVoiceStarting(true);
-      await window.vyomara.startSpeechRecognition(voiceLanguage);
+      const status = await window.vyomara.setSpeechListening(!voiceListening);
+      setSpeechSetup(status);
+      if (!status.listeningEnabled) {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+        setVoiceAwake(false);
+      }
     } catch (error) {
       setVoiceStarting(false);
-      setVoiceError(error instanceof Error ? error.message : 'The microphone could not be started.');
+      setVoiceError(error instanceof Error ? error.message : 'Voice listening could not be changed.');
     }
-  }
-
-  function stopLocalListening(): void {
-    void window.vyomara.stopSpeechRecognition().catch(error => {
-      setVoiceError(error instanceof Error ? error.message : 'Voice input could not be stopped.');
-    });
   }
 
   async function speakMessage(message: ChatMessage): Promise<void> {
@@ -1148,29 +1170,29 @@ export function App() {
                   <span className="voice-wave voice-wave-right">▂ ▄ ▇ ▃ ▆ ▄ ▂</span>
                 </div>
                 <h2>Talk to Vyom</h2>
-                <p>Vyom checks local macOS language support before requesting microphone access. Audio is never sent to an online recognition service; typing always works.</p>
+                <p>Offline voice recognition stays on this Mac; microphone audio is never sent online. Say “Hello Vyomara” once, then speak naturally; turn listening off any time to disable the microphone.</p>
                 <button
                   className={voiceListening || voiceStarting ? 'voice-unavailable voice-listening' : 'voice-unavailable'}
                   type="button"
-                  onClick={() => voiceListening || voiceStarting ? stopLocalListening() : void startLocalListening()}
-                  disabled={requestPending || appActionRunning || voiceAvailability === 'checking'}
-                  aria-label={voiceListening || voiceStarting ? 'Stop listening' : 'Start voice input'}
+                  onClick={() => speechSetup?.modelReady ? void toggleVoiceListening() : void downloadVoiceModel()}
+                  disabled={requestPending || appActionRunning || voiceStarting || voiceDownloading || !speechSetup?.runtimeAvailable}
+                  aria-label={voiceListening ? 'Turn listening off' : speechSetup?.modelReady ? 'Turn listening on' : 'Download offline voice model'}
                   aria-pressed={voiceListening || voiceStarting}
-                  data-state={voiceAvailability}
+                  data-state={voiceListening ? 'listening' : voiceDownloading ? 'downloading' : speechSetup?.modelReady ? 'ready' : 'setup-required'}
                 >
-                  <span aria-hidden="true">{voiceListening || voiceStarting ? '■' : '♩'}</span>
+                  <span aria-hidden="true">{voiceListening ? '■' : '♩'}</span>
                   {voiceStarting
-                    ? 'Starting local voice… · Stop'
+                    ? 'Starting microphone…'
                     : voiceListening
-                    ? 'Listening on this device · Stop'
-                    : voiceAvailability === 'available'
-                      ? 'Speak to Vyom'
-                      : voiceAvailability === 'checking'
-                        ? 'Checking local voice…'
-                        : voiceAvailability === 'unavailable'
-                          ? 'Check local voice again'
-                          : 'Speak to Vyom'}
+                      ? 'Listening for Hello Vyomara · Turn off'
+                      : voiceDownloading
+                        ? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`
+                        : speechSetup?.modelReady
+                          ? 'Turn listening on'
+                          : 'Download offline voice model · 142 MB'}
                 </button>
+                {speechSetup?.runtimeAvailable === false && <p className="voice-error">Install whisper.cpp with <code>brew install whisper.cpp</code>, then restart Vyomara.</p>}
+                {voiceListening && <p className="voice-transcript" role="status">{voiceAwake ? 'Vyom is awake and listening for your command.' : 'Say “Hello Vyomara” to begin.'}</p>}
                 {voiceTranscript && <p className="voice-transcript" role="status">{voiceTranscript}</p>}
                 {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
                 <div className="suggestions" aria-label="Example prompts">
@@ -1801,47 +1823,25 @@ export function App() {
             Ollama connections are limited to the configured loopback endpoint.
           </p>
           <section className="settings-status" aria-label="On-device voice input">
-            <p className="memory-review-title">Voice &amp; language</p>
-            <label className="memory-label" htmlFor="voice-language">Speech recognition language</label>
-            <select
-              id="voice-language"
-              className="settings-input"
-              value={voiceLanguage}
-              onChange={event => {
-                if (!isLocalVoiceLanguage(event.target.value)) return;
-                setVoiceLanguage(event.target.value);
-                setVoiceAvailability('not-checked');
-                setVoiceError(undefined);
-              }}
-              disabled={voiceAvailability === 'checking' || voiceListening}
-            >
-              {localVoiceLanguages.map(language => (
-                <option key={language.code} value={language.code}>{language.label}</option>
-              ))}
-            </select>
+            <p className="memory-review-title">Offline voice</p>
             <div className="settings-status-row">
-              <span>On-device recognition</span>
-              <span id="voice-availability-status" role={voiceError ? 'alert' : 'status'}>
-                {voiceAvailability === 'available'
-                  ? 'Available on this Mac'
-                  : voiceAvailability === 'checking'
-                    ? 'Checking…'
-                    : voiceAvailability === 'unavailable'
-                      ? 'Unavailable'
-                      : 'Not checked'}
+              <span>Base multilingual model</span>
+              <span role={voiceError ? 'alert' : 'status'}>
+                {speechSetup?.modelReady ? 'Downloaded and verified' : voiceDownloading ? `Downloading ${voiceDownloadProgress ?? 0}%` : 'Not installed'}
               </span>
             </div>
             <button
               className="history-close"
               type="button"
-              onClick={() => void checkLocalVoiceAvailability()}
-              disabled={voiceListening || voiceAvailability === 'checking'}
+              onClick={() => speechSetup?.modelReady ? void toggleVoiceListening() : void downloadVoiceModel()}
+              disabled={!speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading}
             >
-              Check local recognition
+              {voiceListening ? 'Turn listening off' : voiceStarting ? 'Starting…' : speechSetup?.modelReady ? 'Turn listening on' : voiceDownloading ? 'Downloading…' : 'Download model · 142 MB'}
             </button>
+            {speechSetup?.runtimeAvailable === false && <p className="history-message history-error">Install whisper.cpp with <code>brew install whisper.cpp</code>, then restart Vyomara.</p>}
             {voiceError && <p className="history-message history-error" role="alert">{voiceError}</p>}
             <p className="history-privacy">
-              macOS may request microphone and speech-recognition permissions when you start listening. Audio is processed on this Mac only; Vyomara never falls back to sending microphone audio online.
+              The multilingual Whisper model is downloaded only when you choose. Recognition runs locally through whisper.cpp; microphone audio is never sent to an online service. Listening Off stops the microphone immediately.
             </p>
           </section>
           <section className="settings-status" aria-label="Current provider status">
@@ -2016,11 +2016,11 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening on device' : voiceAvailability === 'available' ? 'Local voice ready' : 'Voice setup required'}</strong>
-              <small>{voiceStarting ? 'macOS permission may be requested · press Stop to cancel' : voiceListening ? 'Microphone is active · press Stop' : `${voiceLanguage} · opt-in microphone`}</small>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? voiceAwake ? 'Vyom is awake' : 'Waiting for Hello Vyomara' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <small>{voiceListening ? 'Microphone active · Listening Off disables it' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Download the offline model in Settings'}</small>
             </div>
           </div>
-          <p className="planned-note">Voice checks local macOS support before listening. Project edits require your review and approval.</p>
+          <p className="planned-note">Speech recognition stays on this Mac. Sensitive project edits still require your review and approval.</p>
         </aside>
         )}
       </div>
