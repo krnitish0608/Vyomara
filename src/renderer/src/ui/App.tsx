@@ -18,6 +18,7 @@ import type {
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
 import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
+import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
 interface ChatMessage {
   readonly id: number;
@@ -1107,7 +1108,10 @@ export function App() {
       <header className="topbar">
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
-          <span><strong>Vyomara</strong><small>Local-first AI companion</small></span>
+          <span className="topbar-brand-copy">
+            <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
+            <small>AI Twins. One Orbit. Your Control.</small>
+          </span>
         </a>
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />

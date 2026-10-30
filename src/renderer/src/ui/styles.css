@@ -301,9 +301,9 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 .topbar-brand { gap: 10px; font-size: 14px; }
-.topbar-brand > span:last-child { display: grid; gap: 2px; }
-.topbar-brand strong { font-weight: 750; }
-.topbar-brand small { color: #8496c0; font-size: 9px; font-weight: 500; letter-spacing: .025em; }
+.topbar-brand-copy { display: grid; justify-items: start; gap: 3px; }
+.topbar-wordmark { display: block; width: 140px; height: 32px; object-fit: contain; object-position: left center; mix-blend-mode: lighten; }
+.topbar-brand small { color: #9aabd0; font-size: 9px; font-weight: 550; letter-spacing: .01em; line-height: 1.2; white-space: nowrap; }
 .topbar .provider-status { font-size: 10px; }
 
 .side-nav { min-width: 0; display: flex; flex-direction: column; gap: 20px; padding: 18px 11px 12px; border-right: 1px solid rgba(80, 107, 171, 0.2); background: rgba(4, 10, 26, 0.68); }
@@ -413,7 +413,9 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
   .activity-panel:not(.history-panel) { display: none; }
   .activity-panel.history-panel { position: absolute; z-index: 2; inset: 0; border-left: 0; }
   .topbar { padding: 0 14px; }
-  .topbar-brand { font-size: 12px; }
+  .topbar-brand-copy { gap: 2px; }
+  .topbar-wordmark { width: 124px; height: 29px; }
+  .topbar-brand small { font-size: 8px; }
   .topbar-brand .brand-mark { width: 31px; height: 31px; }
   .provider-status { font-size: 10px; }
   .status-note { display: none; }

@@ -175,6 +175,17 @@ try {
     'the top-left Vyomara logo remains without a duplicate brand in the sidebar',
   );
   assert(
+    await evaluate(`(() => {
+      const logo = document.querySelector('.topbar-wordmark');
+      return logo?.tagName === 'IMG' &&
+        logo.getAttribute('alt') === 'Vyomara' &&
+        logo.complete &&
+        logo.naturalWidth > 500 &&
+        logo.parentElement?.querySelector('small')?.textContent === 'AI Twins. One Orbit. Your Control.';
+    })()`),
+    'the top bar pairs the supplied Vyomara wordmark with the approved tagline',
+  );
+  assert(
     await evaluate(`document.querySelector('.conversation-heading h1')?.innerText === 'Your voice. Your orbit.' &&
       document.querySelector('.welcome-card .voice-orb-button') &&
       document.querySelectorAll('.welcome-card .voice-waveform').length === 2`),
