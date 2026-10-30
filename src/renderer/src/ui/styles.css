@@ -342,7 +342,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-orb-button { position: relative; z-index: 0; width: 112px; height: 112px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid rgba(91, 126, 255, .88); border-radius: 50%; background: radial-gradient(circle at 50% 34%, #534aff 0, #3427dc 39%, #11175b 78%); box-shadow: 0 0 0 5px rgba(42, 91, 245, .16), 0 0 28px rgba(56, 83, 255, .4), inset 0 0 18px rgba(148, 127, 255, .62); color: #f5f7ff; cursor: pointer; transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease; }
 .voice-orb-button::before, .voice-orb-button::after { position: absolute; z-index: -1; content: ""; pointer-events: none; }
 .voice-orb-button::before { inset: -10px; border: 1px solid rgba(89, 97, 255, .32); border-radius: 50%; }
-.voice-orb-button::after { inset: 14px -17px; border: 2px solid rgba(41, 207, 255, .8); border-right-color: rgba(181, 75, 255, .9); border-radius: 50%; transform: rotate(-28deg); box-shadow: 0 0 14px rgba(58, 117, 255, .35); }
+.voice-orb-button::after { inset: 14px -17px; border: 1.5px solid rgba(41, 207, 255, .8); border-right-color: rgba(181, 75, 255, .9); border-radius: 50%; box-shadow: 0 0 14px rgba(58, 117, 255, .35); transform-style: preserve-3d; animation: orbital-spin 6s linear infinite; }
 .voice-orb-button:hover:not(:disabled) { transform: scale(1.04); box-shadow: 0 0 0 6px rgba(42, 91, 245, .2), 0 0 38px rgba(91, 83, 255, .65), inset 0 0 22px rgba(169, 148, 255, .75); }
 .voice-orb-button:focus-visible { outline: 2px solid #b8d5ff; outline-offset: 9px; }
 .voice-orb-button:disabled { opacity: .58; cursor: not-allowed; }
@@ -352,6 +352,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-orb-mark .mark-wave-bar-1, .voice-orb-mark .mark-wave-bar-5 { animation-delay: -650ms; }
 .voice-orb-mark .mark-wave-bar-2, .voice-orb-mark .mark-wave-bar-4 { animation-delay: -320ms; }
 .voice-orbit-listening .voice-orb-mark .mark-wave-bar { animation-duration: 550ms; }
+.voice-orbit-listening .voice-orb-button::after { animation-duration: 3s; }
 .voice-orbit-listening .voice-orb-button::before { animation: orbit-pulse 1.8s ease-out infinite; }
 .voice-waveform { width: clamp(54px, 10vw, 148px); display: flex; align-items: center; justify-content: center; gap: clamp(3px, .55vw, 8px); }
 .voice-waveform i { width: 2px; height: 11px; flex: 1 1 2px; max-width: 5px; border-radius: 4px; background: linear-gradient(180deg, #39d8ff, #3878ff); opacity: .55; transform: scaleY(.55); }
@@ -365,6 +366,10 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-orbit-error { color: #ff9fab !important; }
 @keyframes voice-wave { from { transform: scaleY(.48); } to { transform: scaleY(1); } }
 @keyframes mark-wave { 0%, 100% { transform: scaleY(.52); opacity: .75; } 50% { transform: scaleY(1.12); opacity: 1; } }
+@keyframes orbital-spin {
+  from { transform: perspective(420px) rotateX(68deg) rotateZ(-28deg) rotateY(0deg); }
+  to { transform: perspective(420px) rotateX(68deg) rotateZ(-28deg) rotateY(360deg); }
+}
 @keyframes orbit-pulse { 0% { opacity: .55; transform: scale(.96); } 75%, 100% { opacity: 0; transform: scale(1.18); } }
 @keyframes orb-breathe { 0%, 100% { box-shadow: 0 0 0 5px rgba(42, 91, 245, .16), 0 0 28px rgba(56, 83, 255, .4), inset 0 0 18px rgba(148, 127, 255, .62); } 50% { box-shadow: 0 0 0 9px rgba(42, 91, 245, .2), 0 0 42px rgba(91, 83, 255, .65), inset 0 0 24px rgba(169, 148, 255, .72); } }
 .conversation .composer { border-color: rgba(71, 105, 194, .38); border-radius: 20px; background: rgba(7, 18, 45, .94); box-shadow: 0 0 20px rgba(19, 61, 171, .12); }
