@@ -100,6 +100,10 @@ async function clickButton(label) {
   if (!clicked) throw new Error(`Could not click enabled button "${label}".`);
 }
 
+async function typeText(text) {
+  await send('Input.insertText', { text });
+}
+
 async function pressKey(key, code, windowsVirtualKeyCode) {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
@@ -114,16 +118,16 @@ async function tabUntil(elementId) {
 }
 
 try {
-  const targets = await waitFor(async () => {
+  const target = await waitFor(async () => {
     try {
       const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
-      return response.ok ? response.json() : undefined;
+      if (!response.ok) return undefined;
+      const targets = await response.json();
+      return targets.find(candidate => candidate.type === 'page' && candidate.webSocketDebuggerUrl);
     } catch {
       return undefined;
     }
   }, 'waiting for Electron DevTools');
-  const target = targets.find(candidate => candidate.type === 'page' && candidate.webSocketDebuggerUrl);
-  if (!target) throw new Error('Electron did not expose a page target.');
 
   socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolveOpen, rejectOpen) => {
@@ -207,6 +211,51 @@ try {
     'Memory textarea has a visible keyboard focus indicator',
   );
   await pressKey('Escape', 'Escape', 27);
+
+  await clickButton('History');
+  await waitFor(() => evaluate('document.getElementById("history-panel") !== null'), 'reopening History');
+  await waitFor(
+    () => evaluate(`(() => {
+      const panel = document.getElementById('history-panel');
+      const backupButton = [...document.querySelectorAll('button')]
+        .find(button => button.textContent.trim() === 'Create local backup');
+      return Boolean(panel?.innerText.includes('unencrypted') && backupButton);
+    })()`),
+    'loading backup action and disclosure',
+  );
+  assert(
+    true,
+    'History exposes manual backup with an unencrypted-data disclosure',
+  );
+  assert(
+    await evaluate(`(() => {
+      const panel = document.getElementById('history-panel');
+      const selectButton = [...document.querySelectorAll('button')]
+        .find(button => button.textContent.trim() === 'Select backup to review…');
+      return Boolean(panel?.innerText.includes('Restore replaces all current local conversations') && selectButton);
+    })()`),
+    'History exposes the backup-selection restore flow with a replacement disclosure',
+  );
+  await tabUntil('history-delete-all-confirm');
+  await typeText('DELETE');
+  assert(
+    await evaluate(`[...document.querySelectorAll('button')]
+      .find(button => button.innerText.trim() === 'Delete all conversations and memories')?.disabled`),
+    'delete-all stays disabled until the exact confirmation is entered',
+  );
+  await evaluate('document.getElementById("history-delete-all-confirm").select()');
+  await typeText('DELETE ALL');
+  await waitFor(
+    () => evaluate(`[...document.querySelectorAll('button')]
+      .find(button => button.innerText.trim() === 'Delete all conversations and memories')?.disabled === false`),
+    'enabling confirmed delete-all',
+  );
+  await clickButton('Delete all conversations and memories');
+  await waitFor(
+    () => evaluate('document.querySelector(\'[role="status"]\')?.innerText.includes("Deleted 0 saved conversation(s) and 0 saved memories")'),
+    'completing empty delete-all through IPC',
+  );
+  assert(true, 'confirmed delete-all completes through the desktop IPC bridge');
 
   await send('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],

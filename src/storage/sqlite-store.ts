@@ -1,7 +1,19 @@
-import { closeSync, chmodSync, lstatSync, mkdirSync, openSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  copyFileSync,
+  constants as fsConstants,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { homedir } from 'node:os';
-import { join, resolve, isAbsolute } from 'node:path';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
@@ -15,6 +27,11 @@ const maximumSessionBytes = 8 * 1024 * 1024;
 const maximumFilesystemRoots = 32;
 const maximumFilesystemRootChars = 4_096;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface LocalBackupSummary {
+  readonly sessions: number;
+  readonly memories: number;
+}
 
 export class PersistenceError extends Error {
   readonly code: 'invalid-path' | 'database-error' | 'not-found' | 'invalid-data';
@@ -533,6 +550,263 @@ export class SqliteStore {
     this.assertOpen();
     assertUuid(id);
     return this.#database.prepare('DELETE FROM memories WHERE id = ?').run(id).changes > 0;
+  }
+
+  deleteAllSessionsAndMemories(): { readonly sessionsDeleted: number; readonly memoriesDeleted: number } {
+    this.assertOpen();
+    this.#database.exec('BEGIN IMMEDIATE');
+    try {
+      const sessionsDeleted = Number(this.#database.prepare('DELETE FROM sessions').run().changes);
+      const memoriesDeleted = Number(this.#database.prepare('DELETE FROM memories').run().changes);
+      if (!Number.isSafeInteger(sessionsDeleted) || !Number.isSafeInteger(memoriesDeleted)) {
+        throw new Error('Deleted record count exceeds the supported range.');
+      }
+      this.#database.exec('COMMIT');
+      return { sessionsDeleted, memoriesDeleted };
+    } catch {
+      this.#database.exec('ROLLBACK');
+      throw new PersistenceError(
+        'Local conversations and memories could not be deleted safely.',
+        'database-error',
+      );
+    }
+  }
+
+  exportBackup(destination: string): void {
+    this.assertOpen();
+    if (
+      !isAbsolute(destination) ||
+      destination.trim() !== destination ||
+      destination.includes('\0') ||
+      resolve(destination) === this.databasePath
+    ) {
+      throw new PersistenceError('The local backup destination is invalid.', 'invalid-path');
+    }
+
+    let stagingDirectory: string;
+    try {
+      stagingDirectory = mkdtempSync(join(dirname(destination), '.vyomara-backup-'));
+    } catch {
+      throw new PersistenceError('A private staging area for the local backup could not be created.', 'database-error');
+    }
+    const stagedDatabase = join(stagingDirectory, 'vyomara.sqlite');
+    try {
+      this.#database.prepare('VACUUM INTO ?').run(stagedDatabase);
+      chmodSync(stagedDatabase, 0o600);
+      linkSync(stagedDatabase, destination);
+    } catch {
+      throw new PersistenceError(
+        'The local backup could not be created without replacing an existing file.',
+        'database-error',
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
+  }
+
+  inspectBackup(sourcePath: string): LocalBackupSummary {
+    this.assertOpen();
+    if (
+      !isAbsolute(sourcePath) ||
+      sourcePath.trim() !== sourcePath ||
+      sourcePath.includes('\0') ||
+      resolve(sourcePath) === this.databasePath
+    ) {
+      throw new PersistenceError('The selected local backup path is invalid.', 'invalid-path');
+    }
+
+    let source: DatabaseSync | undefined;
+    try {
+      const sourceStats = lstatSync(sourcePath);
+      if (!sourceStats.isFile() || sourceStats.isSymbolicLink()) {
+        throw new PersistenceError('The selected backup must be a regular file.', 'invalid-path');
+      }
+      source = new DatabaseSync(sourcePath, { readOnly: true });
+      const versionRow = source.prepare('PRAGMA user_version').get();
+      if (!isRecord(versionRow) || versionRow.user_version !== 2) {
+        throw new PersistenceError('The selected backup version is not supported.', 'invalid-data');
+      }
+      const expectedSchema = this.#database.prepare(`
+        SELECT type, name, sql FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
+      `).all();
+      const backupSchema = source.prepare(`
+        SELECT type, name, sql FROM sqlite_schema
+        WHERE name NOT LIKE 'sqlite_%'
+        ORDER BY type, name
+      `).all();
+      if (JSON.stringify(backupSchema) !== JSON.stringify(expectedSchema)) {
+        throw new PersistenceError('The selected backup does not have the expected Vyomara schema.', 'invalid-data');
+      }
+      const integrity = source.prepare('PRAGMA integrity_check').all();
+      if (
+        integrity.length !== 1 ||
+        !isRecord(integrity[0]) ||
+        integrity[0].integrity_check !== 'ok' ||
+        source.prepare('PRAGMA foreign_key_check').all().length !== 0
+      ) {
+        throw new PersistenceError('The selected backup failed database integrity checks.', 'invalid-data');
+      }
+      const sessionRows = source.prepare(
+        'SELECT id, created_at, updated_at FROM sessions',
+      ).all();
+      const readMessages = source.prepare(
+        'SELECT message_json FROM session_messages WHERE session_id = ? ORDER BY ordinal',
+      );
+      for (const row of sessionRows) {
+        if (
+          !isRecord(row) ||
+          typeof row.id !== 'string' ||
+          typeof row.created_at !== 'string' ||
+          !Number.isFinite(Date.parse(row.created_at)) ||
+          typeof row.updated_at !== 'string' ||
+          !Number.isFinite(Date.parse(row.updated_at))
+        ) {
+          throw new PersistenceError('The selected backup contains an invalid session.', 'invalid-data');
+        }
+        assertUuid(row.id);
+        const messages = readMessages.all(row.id);
+        let totalBytes = 0;
+        if (messages.length > maximumSessionMessages) {
+          throw new PersistenceError('A session in the selected backup exceeds the supported size.', 'invalid-data');
+        }
+        for (const message of messages) {
+          if (!isRecord(message) || typeof message.message_json !== 'string') {
+            throw new PersistenceError('The selected backup contains invalid session data.', 'invalid-data');
+          }
+          totalBytes += Buffer.byteLength(message.message_json);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(message.message_json);
+          } catch {
+            throw new PersistenceError('The selected backup contains invalid session data.', 'invalid-data');
+          }
+          if (!validSessionMessage(parsed)) {
+            throw new PersistenceError('The selected backup contains invalid session data.', 'invalid-data');
+          }
+        }
+        if (totalBytes > maximumSessionBytes) {
+          throw new PersistenceError('A session in the selected backup exceeds the supported size.', 'invalid-data');
+        }
+      }
+      const memoryRows = source.prepare(
+        'SELECT id, content, created_at, updated_at FROM memories',
+      ).all();
+      for (const row of memoryRows) {
+        if (
+          !isRecord(row) ||
+          typeof row.id !== 'string' ||
+          typeof row.content !== 'string' ||
+          row.content.trim() === '' ||
+          row.content.length > maximumMemoryChars ||
+          typeof row.created_at !== 'string' ||
+          !Number.isFinite(Date.parse(row.created_at)) ||
+          typeof row.updated_at !== 'string' ||
+          !Number.isFinite(Date.parse(row.updated_at))
+        ) {
+          throw new PersistenceError('The selected backup contains invalid memory data.', 'invalid-data');
+        }
+        assertUuid(row.id);
+      }
+      const roots = source.prepare('SELECT path FROM filesystem_roots').all();
+      if (
+        roots.length > maximumFilesystemRoots ||
+        roots.some(row =>
+          !isRecord(row) ||
+          typeof row.path !== 'string' ||
+          row.path.length === 0 ||
+          row.path.length > maximumFilesystemRootChars ||
+          row.path.trim() !== row.path ||
+          row.path.includes('\0') ||
+          !isAbsolute(row.path))
+      ) {
+        throw new PersistenceError('The selected backup contains invalid folder permissions.', 'invalid-data');
+      }
+      const settings = source.prepare('SELECT key, value FROM app_settings').all();
+      const settingValues = new Map<string, string>();
+      for (const row of settings) {
+        if (
+          !isRecord(row) ||
+          typeof row.key !== 'string' ||
+          !/^[a-z][a-z0-9-]{0,63}$/.test(row.key) ||
+          typeof row.value !== 'string' ||
+          row.value.length > 256
+        ) {
+          throw new PersistenceError('The selected backup contains invalid application settings.', 'invalid-data');
+        }
+        settingValues.set(row.key, row.value);
+      }
+      if (
+        (settingValues.has('provider') !== settingValues.has('ollama-model')) ||
+        (settingValues.has('provider') &&
+          settingValues.get('provider') !== 'ollama' &&
+          settingValues.get('provider') !== 'placeholder') ||
+        (settingValues.has('ollama-model') &&
+          !/^[a-zA-Z0-9._:/-]{1,128}$/.test(settingValues.get('ollama-model') ?? '')) ||
+        (settingValues.has('filesystem-roots-initialized') &&
+          settingValues.get('filesystem-roots-initialized') !== 'true')
+      ) {
+        throw new PersistenceError('The selected backup contains unsupported application settings.', 'invalid-data');
+      }
+      const counts = source.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM sessions) AS sessions,
+          (SELECT COUNT(*) FROM memories) AS memories
+      `).get();
+      if (
+        !isRecord(counts) ||
+        typeof counts.sessions !== 'number' ||
+        typeof counts.memories !== 'number'
+      ) {
+        throw new PersistenceError('The selected backup summary is invalid.', 'invalid-data');
+      }
+      return { sessions: counts.sessions, memories: counts.memories };
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('The selected file is not a valid Vyomara backup.', 'invalid-data');
+    } finally {
+      source?.close();
+    }
+  }
+
+  restoreBackup(sourcePath: string, safetyBackupPath: string): LocalBackupSummary {
+    this.assertOpen();
+    const summary = this.inspectBackup(sourcePath);
+    if (
+      !isAbsolute(safetyBackupPath) ||
+      safetyBackupPath.trim() !== safetyBackupPath ||
+      safetyBackupPath.includes('\0') ||
+      resolve(safetyBackupPath) === resolve(sourcePath) ||
+      resolve(safetyBackupPath) === this.databasePath
+    ) {
+      throw new PersistenceError('The pre-restore backup destination is invalid.', 'invalid-path');
+    }
+
+    let stagingDirectory: string;
+    try {
+      stagingDirectory = mkdtempSync(join(this.directory, '.vyomara-restore-'));
+    } catch {
+      throw new PersistenceError('A private staging area for restore could not be created.', 'database-error');
+    }
+    const stagedDatabase = join(stagingDirectory, 'vyomara.sqlite');
+    try {
+      copyFileSync(sourcePath, stagedDatabase, fsConstants.COPYFILE_EXCL);
+      chmodSync(stagedDatabase, 0o600);
+      this.inspectBackup(stagedDatabase);
+      this.exportBackup(safetyBackupPath);
+      this.close();
+      renameSync(stagedDatabase, this.databasePath);
+      return summary;
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError(
+        'Restore failed safely. The existing database was not replaced.',
+        'database-error',
+      );
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
   }
 
   appendAuditEvent(event: DiagnosticEvent): void {

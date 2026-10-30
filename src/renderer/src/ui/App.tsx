@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
+  DesktopBackupRestorePreview,
   DesktopProviderConnectionResult,
   DesktopProviderModelCheckResult,
   DesktopProviderSettings,
@@ -76,6 +77,9 @@ export function App() {
   const [historyError, setHistoryError] = useState<string>();
   const [selectedHistorySession, setSelectedHistorySession] = useState<DesktopSessionHistory>();
   const [historyDeleteConfirmation, setHistoryDeleteConfirmation] = useState('');
+  const [historyDeleteAllConfirmation, setHistoryDeleteAllConfirmation] = useState('');
+  const [backupRestorePreview, setBackupRestorePreview] = useState<DesktopBackupRestorePreview>();
+  const [backupRestoreConfirmation, setBackupRestoreConfirmation] = useState('');
   const [historyNotice, setHistoryNotice] = useState<string>();
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [allowedRoots, setAllowedRoots] = useState<readonly string[]>([]);
@@ -426,6 +430,94 @@ export function App() {
       setHistoryNotice('Conversation deleted from this Mac.');
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The conversation could not be deleted.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function deleteAllSavedHistoryAndMemories(): Promise<void> {
+    if (historyDeleteAllConfirmation !== 'DELETE ALL' || historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    try {
+      const result = await window.vyomara.deleteAllHistoryAndMemories(historyDeleteAllConfirmation);
+      setSessions([]);
+      setSelectedHistorySession(undefined);
+      setHistoryDeleteConfirmation('');
+      setHistoryDeleteAllConfirmation('');
+      setSessionId(undefined);
+      setMessages([]);
+      setActivity([]);
+      setRequestError(undefined);
+      setHistoryNotice(
+        `Deleted ${result.sessionsDeleted} saved conversation(s) and ${result.memoriesDeleted} saved memor${result.memoriesDeleted === 1 ? 'y' : 'ies'}. Provider settings and folder permissions were kept.`,
+      );
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'Saved conversations and memories could not be deleted.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function createLocalBackup(): Promise<void> {
+    if (historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    try {
+      const result = await window.vyomara.backupLocalData();
+      if (result.status === 'exported') {
+        setHistoryNotice('Local backup created. It is unencrypted; keep the file somewhere protected.');
+      }
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The local backup could not be created.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function selectBackupForRestore(): Promise<void> {
+    if (historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    setBackupRestorePreview(undefined);
+    setBackupRestoreConfirmation('');
+    try {
+      const preview = await window.vyomara.selectBackupForRestore();
+      if (preview) setBackupRestorePreview(preview);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The selected backup could not be reviewed.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function restoreLocalData(): Promise<void> {
+    if (backupRestoreConfirmation !== 'RESTORE' || historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    try {
+      const result = await window.vyomara.restoreLocalData(backupRestoreConfirmation);
+      setBackupRestorePreview(undefined);
+      setBackupRestoreConfirmation('');
+      setSessions(await window.vyomara.listSessions());
+      setMemories(await window.vyomara.listMemories());
+      setAllowedRoots(await window.vyomara.listFilesystemRoots());
+      setProvider(await window.vyomara.getProviderStatus());
+      setSelectedHistorySession(undefined);
+      setSelectedMemory(undefined);
+      setSessionId(undefined);
+      setMessages([]);
+      setActivity([]);
+      setRequestError(undefined);
+      setHistoryNotice(
+        `Restored ${result.sessions} conversation(s) and ${result.memories} memory item(s) from ${result.fileName}. A pre-restore safety copy was saved as ${result.safetyBackupName}.`,
+      );
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The selected backup could not be restored.');
     } finally {
       setHistoryLoading(false);
     }
@@ -965,6 +1057,65 @@ export function App() {
                 ))}
               </ol>
             )}
+            <section className="session-review" aria-label="Create a local data backup">
+              <p className="memory-review-title">Back up local data</p>
+              <p className="history-privacy">
+                The SQLite backup includes complete conversations (including raw tool calls and results),
+                explicit memories, provider settings, and allowed folder paths. It is unencrypted, saved
+                with owner-only permissions, and will not overwrite an existing file.
+              </p>
+              <button
+                className="permission-add"
+                type="button"
+                onClick={() => void createLocalBackup()}
+                disabled={historyLoading || requestPending}
+              >
+                {historyLoading ? 'Creating backup…' : 'Create local backup'}
+              </button>
+            </section>
+            <section className="session-review" aria-label="Restore a local data backup">
+              <p className="memory-review-title">Restore a local backup</p>
+              <p className="history-privacy">
+                Restore replaces all current local conversations, memories, provider settings, and folder permissions.
+                Vyomara first creates a safety backup in its local data folder. Backup contents are unencrypted.
+              </p>
+              <button
+                className="permission-add"
+                type="button"
+                onClick={() => void selectBackupForRestore()}
+                disabled={historyLoading || requestPending}
+              >
+                Select backup to review…
+              </button>
+              {backupRestorePreview && (
+                <div className="session-review" aria-label="Review selected backup">
+                  <p className="memory-review-title">Selected backup: {backupRestorePreview.fileName}</p>
+                  <p className="history-privacy">
+                    Contains {backupRestorePreview.sessions} conversation(s) and {backupRestorePreview.memories} memory item(s).
+                    Current saved data will be replaced after you confirm.
+                  </p>
+                  <label className="memory-label" htmlFor="backup-restore-confirm">
+                    Type RESTORE to replace current local data
+                  </label>
+                  <input
+                    id="backup-restore-confirm"
+                    className="memory-confirm-input"
+                    value={backupRestoreConfirmation}
+                    onChange={event => setBackupRestoreConfirmation(event.target.value)}
+                    autoComplete="off"
+                    disabled={historyLoading || requestPending}
+                  />
+                  <button
+                    className="permission-revoke"
+                    type="button"
+                    onClick={() => void restoreLocalData()}
+                    disabled={backupRestoreConfirmation !== 'RESTORE' || historyLoading || requestPending}
+                  >
+                    {historyLoading ? 'Restoring local data…' : 'Restore this backup'}
+                  </button>
+                </div>
+              )}
+            </section>
             {selectedHistorySession && (
               <section className="session-review" aria-label="Review saved conversation">
                 <p className="memory-review-title">Review conversation</p>
@@ -1011,6 +1162,32 @@ export function App() {
                 </button>
               </section>
             )}
+            <section className="session-review" aria-label="Delete all saved conversations and memories">
+              <p className="memory-review-title">Delete all saved data</p>
+              <p className="history-privacy">
+                This permanently deletes every saved conversation and explicit memory from this Mac.
+                Provider settings and allowed folders are kept.
+              </p>
+              <label className="memory-label" htmlFor="history-delete-all-confirm">
+                Type DELETE ALL to confirm
+              </label>
+              <input
+                id="history-delete-all-confirm"
+                className="memory-confirm-input"
+                value={historyDeleteAllConfirmation}
+                onChange={event => setHistoryDeleteAllConfirmation(event.target.value)}
+                autoComplete="off"
+                disabled={historyLoading || requestPending}
+              />
+              <button
+                className="permission-revoke"
+                type="button"
+                onClick={() => void deleteAllSavedHistoryAndMemories()}
+                disabled={historyDeleteAllConfirmation !== 'DELETE ALL' || historyLoading || requestPending}
+              >
+                {historyLoading ? 'Deleting saved data…' : 'Delete all conversations and memories'}
+              </button>
+            </section>
             {historyNotice && <p className="memory-notice" role="status">{historyNotice}</p>}
           </div>
           <p className="history-privacy">

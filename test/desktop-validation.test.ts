@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   parseDesktopChatRequest,
+  parseDesktopDeleteAllRequest,
   parseDesktopFilesystemRoot,
   parseDesktopMemoryDeleteRequest,
   parseDesktopMemoryId,
   parseDesktopMemorySaveRequest,
   parseDesktopOllamaModelName,
   parseDesktopProviderSettings,
+  parseDesktopRestoreRequest,
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../src/desktop/validation.ts';
@@ -93,6 +95,44 @@ test('desktop IPC requires an exact DELETE confirmation for reviewed session his
     assert.throws(
       () => parseDesktopSessionDeleteRequest(invalid),
       /Session deletion request|Session request|type DELETE/,
+    );
+  }
+});
+
+test('desktop IPC requires exact DELETE ALL confirmation with no extra fields', () => {
+  assert.deepEqual(
+    parseDesktopDeleteAllRequest({ confirmation: 'DELETE ALL' }),
+    { confirmation: 'DELETE ALL' },
+  );
+  for (const invalid of [
+    null,
+    [],
+    {},
+    { confirmation: 'DELETE' },
+    { confirmation: 'delete all' },
+    { confirmation: 'DELETE ALL', extra: true },
+  ]) {
+    assert.throws(
+      () => parseDesktopDeleteAllRequest(invalid),
+      /Delete-all request|Type DELETE ALL/,
+    );
+  }
+});
+
+test('desktop IPC requires exact RESTORE confirmation with no extra fields', () => {
+  assert.deepEqual(parseDesktopRestoreRequest({ confirmation: 'RESTORE' }), {
+    confirmation: 'RESTORE',
+  });
+  for (const invalid of [
+    null,
+    [],
+    {},
+    { confirmation: 'restore' },
+    { confirmation: 'RESTORE', path: '/unexpected.sqlite' },
+  ]) {
+    assert.throws(
+      () => parseDesktopRestoreRequest(invalid),
+      /Restore request|type RESTORE/,
     );
   }
 });

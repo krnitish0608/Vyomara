@@ -1,5 +1,5 @@
 import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import { validateOllamaModel } from '../config/config.ts';
 import type { Logger } from '../types.ts';
@@ -174,6 +174,63 @@ export function deleteDesktopMemory(config: AppConfig, id: string): boolean {
   const store = new SqliteStore(config.dataDirectory);
   try {
     return store.deleteMemory(id);
+  } finally {
+    store.close();
+  }
+}
+
+export function deleteAllDesktopSessionsAndMemories(config: AppConfig): {
+  readonly sessionsDeleted: number;
+  readonly memoriesDeleted: number;
+} {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.deleteAllSessionsAndMemories();
+  } finally {
+    store.close();
+  }
+}
+
+export function exportDesktopBackup(config: AppConfig, destination: string): void {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.exportBackup(destination);
+  } finally {
+    store.close();
+  }
+}
+
+export function inspectDesktopBackup(config: AppConfig, sourcePath: string): {
+  readonly fileName: string;
+  readonly sessions: number;
+  readonly memories: number;
+} {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return { fileName: basename(sourcePath), ...store.inspectBackup(sourcePath) };
+  } finally {
+    store.close();
+  }
+}
+
+export function restoreDesktopBackup(config: AppConfig, sourcePath: string): {
+  readonly fileName: string;
+  readonly sessions: number;
+  readonly memories: number;
+  readonly safetyBackupName: string;
+} {
+  const store = new SqliteStore(config.dataDirectory);
+  const safetyBackupPath = join(
+    config.dataDirectory,
+    `vyomara-pre-restore-${new Date().toISOString().replaceAll(':', '-')}.sqlite`,
+  );
+  try {
+    const summary = store.restoreBackup(sourcePath, safetyBackupPath);
+    return {
+      fileName: basename(sourcePath),
+      ...summary,
+      safetyBackupName: basename(safetyBackupPath),
+    };
   } finally {
     store.close();
   }

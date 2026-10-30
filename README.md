@@ -27,8 +27,10 @@ automatically. A save displays the exact memory content before asking you to
 type `SAVE`; deletion requires typing `DELETE` after reviewing the target.
 The `--confirm` flag enables these interactive confirmation prompts. Data is
 retained until explicitly deleted. The
-application does not encrypt the database or create backups; macOS FileVault is
-recommended, and OS backups may include the data.
+application does not encrypt the database. History offers manual unencrypted
+SQLite backup and a validated restore workflow that first saves a safety copy
+of current data. macOS FileVault is recommended, and OS backups may include
+the data.
 
 ## Prerequisites
 
@@ -102,7 +104,9 @@ History conversations can also be exported individually as JSON after review.
 The export contains complete raw history, including tool calls and results;
 Vyomara writes a new owner-only file and does not overwrite existing files.
 The exported JSON is not encrypted, so protect or delete the chosen file as
-appropriate.
+appropriate. The History panel also supports clearing all saved conversations
+and explicit memories after typing `DELETE ALL`; provider settings and allowed
+folders are kept.
 All desktop controls are keyboard reachable, visible focus is preserved, and
 Escape closes the open side panel and returns focus to its toolbar button.
 Reduced-motion preferences disable animated progress and smooth scrolling.
@@ -131,4 +135,10 @@ pnpm dev -- --memory delete <memory-id> --confirm
 ```
 
 Memory is not currently injected into model context. No interactive approval
-flow or automated backup/export is provided.
+flow or automatic backup is provided. Use the desktop History panel to create
+a manual unencrypted backup; it contains complete session history, saved
+memories, provider settings, and allowed folder paths. To restore, select a
+backup from History, review its conversation/memory counts, and type `RESTORE`.
+Vyomara validates the database schema and integrity and saves a pre-restore
+copy in its local data folder before replacing current local data. Both backup
+files are unencrypted; protect them accordingly.

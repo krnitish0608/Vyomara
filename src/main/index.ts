@@ -5,10 +5,13 @@ import { AgentError } from '../agent/agent.ts';
 import {
   grantDesktopFilesystemRoot,
   initializeDesktopFilesystemRoots,
+  deleteAllDesktopSessionsAndMemories,
   deleteDesktopMemory,
   deleteDesktopSession,
+  exportDesktopBackup,
   exportDesktopSession,
   exportDesktopMemory,
+  inspectDesktopBackup,
   initializeDesktopProviderSettings,
   readDesktopSession,
   readDesktopMemories,
@@ -16,6 +19,7 @@ import {
   readDesktopSessions,
   resetDesktopProviderSettings,
   revokeDesktopFilesystemRoot,
+  restoreDesktopBackup,
   saveDesktopMemory,
   saveDesktopProviderSettings,
   runRequest,
@@ -30,12 +34,14 @@ import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import {
   DesktopValidationError,
   parseDesktopChatRequest,
+  parseDesktopDeleteAllRequest,
   parseDesktopFilesystemRoot,
   parseDesktopOllamaModelName,
   parseDesktopMemoryDeleteRequest,
   parseDesktopMemoryId,
   parseDesktopMemorySaveRequest,
   parseDesktopProviderSettings,
+  parseDesktopRestoreRequest,
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
@@ -44,6 +50,7 @@ import { exportToSelectedFile } from '../desktop/session-export.ts';
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
 let activePermissionChange = false;
+let pendingRestoreBackupPath: string | undefined;
 let config: AppConfig | undefined;
 let environmentConfig: AppConfig | undefined;
 
@@ -287,6 +294,91 @@ ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
   try {
     const request = parseDesktopSessionDeleteRequest(input);
     return deleteDesktopSession(config, request.id);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-delete-all', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before deleting saved data.');
+  }
+  try {
+    parseDesktopDeleteAllRequest(input);
+    return deleteAllDesktopSessionsAndMemories(config);
+  } catch (error) {
+    if (error instanceof DesktopValidationError) throw new Error(error.message);
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-backup', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before backing up saved data.');
+  }
+  const timestamp = new Date().toISOString().slice(0, 19).replaceAll(':', '-');
+  const options: SaveDialogOptions = {
+    title: 'Back up Vyomara local data',
+    buttonLabel: 'Create backup',
+    defaultPath: `vyomara-backup-${timestamp}.sqlite`,
+    filters: [{ name: 'SQLite database', extensions: ['sqlite'] }],
+  };
+  try {
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (result.canceled) return { status: 'cancelled' as const };
+    exportDesktopBackup(config, result.filePath);
+    return { status: 'exported' as const };
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-restore-select', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before selecting a backup.');
+  }
+  pendingRestoreBackupPath = undefined;
+  const options: OpenDialogOptions = {
+    title: 'Select a Vyomara backup to restore',
+    buttonLabel: 'Review backup',
+    properties: ['openFile'],
+    filters: [{ name: 'SQLite database', extensions: ['sqlite'] }],
+  };
+  try {
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return undefined;
+    const backupPath = result.filePaths[0]!;
+    const preview = inspectDesktopBackup(config, backupPath);
+    pendingRestoreBackupPath = backupPath;
+    return preview;
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:data-restore', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before restoring saved data.');
+  }
+  try {
+    parseDesktopRestoreRequest(input);
+    if (!pendingRestoreBackupPath) {
+      throw new DesktopValidationError('Select and review a backup before confirming restore.');
+    }
+    const result = restoreDesktopBackup(config, pendingRestoreBackupPath);
+    pendingRestoreBackupPath = undefined;
+    config = initializeDesktopFilesystemRoots(config);
+    config = initializeDesktopProviderSettings(config);
+    return result;
   } catch (error) {
     if (error instanceof DesktopValidationError) throw new Error(error.message);
     throw new Error(publicErrorMessage(error));
