@@ -10,6 +10,13 @@ export type SpeechRecognitionEvent =
   | { readonly type: 'stopped' }
   | { readonly type: 'error'; readonly message: string };
 
+export class MacSpeechRecognitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MacSpeechRecognitionError';
+  }
+}
+
 type HelperMessage = SpeechRecognitionEvent | {
   readonly type: 'availability';
   readonly language: string;
@@ -26,28 +33,39 @@ export class MacSpeechRecognitionRunner {
   private activeChild: ReturnType<typeof spawn> | undefined;
 
   async checkLanguage(language: string): Promise<boolean> {
-    if (process.platform !== 'darwin') return false;
-    if (!isSpeechLanguage(language)) throw new Error('Unsupported speech-recognition language.');
-    const child = spawn(helperPath, ['--check', language], { stdio: ['ignore', 'pipe', 'pipe'] });
+    if (process.platform !== 'darwin') throw new MacSpeechRecognitionError('On-device voice input is available only on macOS.');
+    if (!isSpeechLanguage(language)) throw new MacSpeechRecognitionError('Unsupported speech-recognition language.');
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(helperPath, ['--check', language], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      throw new MacSpeechRecognitionError(`Native speech helper could not start: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+    const stdout = child.stdout;
+    const stderr = child.stderr;
+    if (!stdout || !stderr) {
+      child.kill('SIGTERM');
+      throw new MacSpeechRecognitionError('Native speech availability helper did not provide output streams.');
+    }
     let output = '';
     let errorOutput = '';
     return await new Promise<boolean>((resolve, reject) => {
       const timeout = setTimeout(() => {
         child.kill('SIGTERM');
-        reject(new Error('On-device speech availability check timed out.'));
+        reject(new MacSpeechRecognitionError('On-device speech availability check timed out.'));
       }, 10_000);
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', chunk => { output = (output + String(chunk)).slice(-4_096); });
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', chunk => { errorOutput = (errorOutput + String(chunk)).slice(-4_096); });
+      stdout.setEncoding('utf8');
+      stdout.on('data', chunk => { output = (output + String(chunk)).slice(-4_096); });
+      stderr.setEncoding('utf8');
+      stderr.on('data', chunk => { errorOutput = (errorOutput + String(chunk)).slice(-4_096); });
       child.once('error', error => {
         clearTimeout(timeout);
-        reject(new Error(`Native speech helper could not start: ${error.message}`));
+        reject(new MacSpeechRecognitionError(`Native speech helper could not start: ${error.message}`));
       });
       child.once('close', code => {
         clearTimeout(timeout);
         if (code !== 0) {
-          reject(new Error(errorOutput.trim() || `Native speech availability check exited with code ${code ?? 'unknown'}.`));
+          reject(new MacSpeechRecognitionError(errorOutput.trim() || `Native speech availability check exited with code ${code ?? 'unknown'}.`));
           return;
         }
         try {
@@ -64,32 +82,43 @@ export class MacSpeechRecognitionRunner {
   }
 
   start(language: string, onEvent: (event: SpeechRecognitionEvent) => void): Promise<void> {
-    if (process.platform !== 'darwin') return Promise.reject(new Error('On-device voice input is available only on macOS.'));
-    if (!isSpeechLanguage(language)) return Promise.reject(new Error('Unsupported speech-recognition language.'));
-    if (this.activeChild) return Promise.reject(new Error('Voice input is already active.'));
-    const child = spawn(helperPath, [language], { stdio: ['pipe', 'pipe', 'pipe'] });
+    if (process.platform !== 'darwin') return Promise.reject(new MacSpeechRecognitionError('On-device voice input is available only on macOS.'));
+    if (!isSpeechLanguage(language)) return Promise.reject(new MacSpeechRecognitionError('Unsupported speech-recognition language.'));
+    if (this.activeChild) return Promise.reject(new MacSpeechRecognitionError('Voice input is already active.'));
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(helperPath, [language], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) {
+      return Promise.reject(new MacSpeechRecognitionError(`Native speech helper could not start: ${error instanceof Error ? error.message : 'unknown error'}`));
+    }
     this.activeChild = child;
-    child.stdout.setEncoding('utf8');
+    const stdout = child.stdout;
+    if (!stdout) {
+      this.activeChild = undefined;
+      child.kill('SIGTERM');
+      return Promise.reject(new MacSpeechRecognitionError('Native voice helper did not provide an output stream.'));
+    }
+    stdout.setEncoding('utf8');
     let buffer = '';
     let started = false;
     let stopped = false;
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         child.kill('SIGTERM');
-        reject(new Error('Native voice input did not start in time.'));
+        reject(new MacSpeechRecognitionError('Native voice input did not start in time. Check macOS microphone and speech-recognition permissions.'));
       }, 60_000);
       const cleanup = (): void => {
         clearTimeout(timeout);
         if (this.activeChild === child) this.activeChild = undefined;
       };
-      child.stdout.on('data', chunk => {
+      stdout.on('data', chunk => {
         buffer += String(chunk);
         if (buffer.length > 16_384) {
           cleanup();
           child.kill('SIGTERM');
           const message = 'Native speech helper exceeded its output limit.';
           onEvent({ type: 'error', message });
-          if (!started) reject(new Error(message));
+          if (!started) reject(new MacSpeechRecognitionError(message));
           return;
         }
         let newline = buffer.indexOf('\n');
@@ -105,7 +134,7 @@ export class MacSpeechRecognitionRunner {
             if (event.type === 'error') {
               onEvent(event);
               cleanup();
-              if (!started) reject(new Error(event.message));
+              if (!started) reject(new MacSpeechRecognitionError(event.message));
               continue;
             }
             if (event.type === 'listening') {
@@ -117,7 +146,9 @@ export class MacSpeechRecognitionRunner {
             cleanup();
             child.kill('SIGTERM');
             onEvent({ type: 'error', message: error instanceof Error ? error.message : 'Native speech helper returned invalid data.' });
-            if (!started) reject(error);
+            if (!started) reject(error instanceof MacSpeechRecognitionError
+              ? error
+              : new MacSpeechRecognitionError(error instanceof Error ? error.message : 'Native speech helper returned invalid data.'));
           }
         }
       });
@@ -125,11 +156,17 @@ export class MacSpeechRecognitionRunner {
         cleanup();
         const message = `Native speech helper could not start: ${error.message}`;
         onEvent({ type: 'error', message });
-        if (!started) reject(new Error(message));
+        if (!started) reject(new MacSpeechRecognitionError(message));
       });
       child.once('close', code => {
         cleanup();
-        if (!started && code !== 0) reject(new Error(`Native voice input exited with code ${code ?? 'unknown'}.`));
+        if (!started) {
+          reject(new MacSpeechRecognitionError(
+            code === 0
+              ? 'Native voice input stopped before listening started. Check macOS microphone and speech-recognition permissions.'
+              : `Native voice input exited with code ${code ?? 'unknown'} before listening started.`,
+          ));
+        }
         if (!stopped) onEvent({ type: 'stopped' });
       });
     });

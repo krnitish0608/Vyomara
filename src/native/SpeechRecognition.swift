@@ -91,7 +91,8 @@ final class SpeechCapture {
         stopRequested = true
         guard captureStarted else { finish(); return }
         request.endAudio()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.finish() }
+        task?.finish()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { self.finish() }
     }
 
     private func finish() {

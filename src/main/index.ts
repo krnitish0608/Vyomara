@@ -49,7 +49,7 @@ import { exportToSelectedFile } from '../desktop/session-export.ts';
 import { runApprovedCheck, validateCheckDirectory } from '../desktop/check-runner.ts';
 import { DesktopAppActionError, parseDesktopAppAction, runDesktopAppAction } from '../desktop/app-actions.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
-import { MacSpeechRecognitionRunner } from '../desktop/mac-speech-recognition.ts';
+import { MacSpeechRecognitionError, MacSpeechRecognitionRunner } from '../desktop/mac-speech-recognition.ts';
 import { EditProposalError, EditProposalManager } from '../desktop/edit-proposals.ts';
 import { isCodeEditRequest } from '../desktop/action-intent.ts';
 
@@ -74,6 +74,7 @@ function publicErrorMessage(error: unknown): string {
     error instanceof PersistenceError ||
     error instanceof DesktopAppActionError ||
     error instanceof MacSpeechError ||
+    error instanceof MacSpeechRecognitionError ||
     error instanceof EditProposalError
   ) {
     return error.message;
@@ -526,6 +527,10 @@ ipcMain.handle('vyomara:speech-recognition-start', async (_event, input: unknown
       }
     });
   } catch (error) {
+    console.error(JSON.stringify({
+      event: 'speech.recognition.start-failed',
+      message: error instanceof Error ? error.message : 'Unknown native speech startup error.',
+    }));
     throw new Error(publicErrorMessage(error));
   }
 });

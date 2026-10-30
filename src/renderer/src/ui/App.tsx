@@ -380,7 +380,7 @@ export function App() {
     setVoiceError(undefined);
     setVoiceTranscript('');
     const availability = await checkLocalVoiceAvailability();
-    if (availability !== 'available' || voiceAvailability !== 'available') return;
+    if (availability !== 'available') return;
     try {
       setVoiceStarting(true);
       await window.vyomara.startSpeechRecognition(voiceLanguage);
@@ -1154,7 +1154,7 @@ export function App() {
                   type="button"
                   onClick={() => voiceListening || voiceStarting ? stopLocalListening() : void startLocalListening()}
                   disabled={requestPending || appActionRunning || voiceAvailability === 'checking'}
-                  aria-label={voiceListening || voiceStarting ? 'Stop listening' : 'Use on-device voice input'}
+                  aria-label={voiceListening || voiceStarting ? 'Stop listening' : 'Start voice input'}
                   aria-pressed={voiceListening || voiceStarting}
                   data-state={voiceAvailability}
                 >
@@ -1167,7 +1167,9 @@ export function App() {
                       ? 'Speak to Vyom'
                       : voiceAvailability === 'checking'
                         ? 'Checking local voice…'
-                        : 'Check local voice'}
+                        : voiceAvailability === 'unavailable'
+                          ? 'Check local voice again'
+                          : 'Speak to Vyom'}
                 </button>
                 {voiceTranscript && <p className="voice-transcript" role="status">{voiceTranscript}</p>}
                 {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
@@ -1819,7 +1821,7 @@ export function App() {
             </select>
             <div className="settings-status-row">
               <span>On-device recognition</span>
-              <span role={voiceError ? 'alert' : 'status'}>
+              <span id="voice-availability-status" role={voiceError ? 'alert' : 'status'}>
                 {voiceAvailability === 'available'
                   ? 'Available on this Mac'
                   : voiceAvailability === 'checking'

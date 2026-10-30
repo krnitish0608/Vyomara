@@ -170,23 +170,13 @@ try {
   assert(
     await evaluate(`document.querySelector('.voice-unavailable')?.disabled === false &&
       document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
-      document.body.innerText.includes('Check local voice') &&
+      document.querySelector('.voice-unavailable')?.innerText.includes('Speak to Vyom') &&
       document.body.innerText.toLowerCase().includes('audio is never sent to an online recognition service')`),
     'voice capture stays opt-in and discloses local-only processing before microphone access',
   );
   assert(
     await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
     'current task panel reports the truthful idle state',
-  );
-  await clickButton('Check local voice');
-  await waitFor(
-    () => evaluate(`document.querySelector('.voice-unavailable')?.dataset.state !== 'checking'`),
-    'checking on-device speech availability without starting microphone capture',
-  );
-  assert(
-    await evaluate(`document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
-      ['available', 'unavailable'].includes(document.querySelector('.voice-unavailable')?.dataset.state)`),
-    'checking native speech support does not start microphone capture',
   );
   await evaluate('document.getElementById("prompt").focus()');
   await typeText('Open VS Code');
@@ -293,6 +283,16 @@ try {
 
   await clickButton('Settings');
   await waitFor(() => evaluate('document.getElementById("settings-panel") !== null'), 'reopening Settings');
+  await clickButton('Check local recognition');
+  await waitFor(
+    () => evaluate(`document.getElementById('voice-availability-status')?.innerText !== 'Checking…'`),
+    'checking native speech support without starting microphone capture',
+  );
+  assert(
+    await evaluate(`['Available on this Mac', 'Unavailable'].includes(document.getElementById('voice-availability-status')?.innerText) &&
+      document.querySelector('.voice-status-card strong')?.innerText !== 'Listening on device'`),
+    'checking native speech support does not start microphone capture',
+  );
   assert(
     await evaluate(`Boolean(document.getElementById('voice-language') &&
       document.querySelector('#settings-panel').innerText.includes('macOS may request microphone and speech-recognition permissions'))`),
