@@ -67,6 +67,12 @@ pnpm install
 pnpm desktop
 ```
 
+The launcher builds the desktop app and opens a local, ad-hoc-signed
+`Vyomara.app` bundle through macOS LaunchServices. This is required so macOS
+attributes microphone and speech permissions to Vyomara, rather than to the
+terminal or editor that started it. Release signing and distribution are not
+implemented.
+
 By default, the app uses local Ollama. Start Ollama separately; use the
 provider status controls in **Settings** to check local service reachability
 and model availability. To run the UI without a model provider, use

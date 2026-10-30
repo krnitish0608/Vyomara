@@ -12,9 +12,9 @@
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
     "test:desktop-ui": "electron-vite build && node scripts/desktop-ui-smoke.mjs",
     "typecheck": "tsc --noEmit",
-    "desktop": "electron-vite dev",
+    "desktop": "node scripts/desktop-app.mjs",
     "build:desktop": "electron-vite build",
-    "preview:desktop": "electron-vite preview"
+    "preview:desktop": "node scripts/desktop-app.mjs"
   },
   "engines": {
     "node": ">=22.22.1"
