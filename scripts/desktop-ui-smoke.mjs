@@ -195,17 +195,30 @@ try {
     await evaluate(`(() => {
       const orb = document.querySelector('.welcome-card .voice-orb-button');
       const orbMark = orb?.querySelector('.voice-orb-mark svg');
+      const current = orb?.querySelector('.voice-orb-current');
       const logoWave = document.querySelector('.topbar .brand-mark .mark-wave-bar');
       const orbit = getComputedStyle(orb, '::after');
       return Boolean(logoWave && orbMark?.querySelector('.mark-wave-bar') &&
+        current &&
         !orbMark.querySelector('rect[rx="18"]') &&
         !orb?.querySelector('.voice-orb-mic') &&
         getComputedStyle(logoWave).animationName === 'mark-wave' &&
         getComputedStyle(orbMark.querySelector('.mark-wave-bar')).animationName === 'mark-wave' &&
+        getComputedStyle(current).animationName === 'inner-current-spin' &&
         orbit.animationName === 'orbital-spin' &&
         orbit.animationDuration === '6s');
     })()`),
     'the center orb reuses the animated mark without a tile and gives its thin orbit a 3D spin',
+  );
+  const firstCurrentTransform = await evaluate(
+    `getComputedStyle(document.querySelector('.welcome-card .voice-orb-current')).transform`,
+  );
+  await delay(350);
+  assert(
+    await evaluate(
+      `getComputedStyle(document.querySelector('.welcome-card .voice-orb-current')).transform !== ${JSON.stringify(firstCurrentTransform)}`,
+    ),
+    'a thin luminous current moves in a separate loop inside the larger orb',
   );
   const firstOrbitTransform = await evaluate(
     `getComputedStyle(document.querySelector('.welcome-card .voice-orb-button'), '::after').transform`,

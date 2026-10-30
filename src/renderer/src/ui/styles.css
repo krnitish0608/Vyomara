@@ -346,12 +346,16 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-orb-button:hover:not(:disabled) { transform: scale(1.04); box-shadow: 0 0 0 6px rgba(42, 91, 245, .2), 0 0 38px rgba(91, 83, 255, .65), inset 0 0 22px rgba(169, 148, 255, .75); }
 .voice-orb-button:focus-visible { outline: 2px solid #b8d5ff; outline-offset: 9px; }
 .voice-orb-button:disabled { opacity: .58; cursor: not-allowed; }
+.voice-orb-current { position: absolute; z-index: 0; inset: 8px; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0deg 238deg, rgba(48, 219, 255, .04) 252deg, rgba(74, 222, 255, .8) 278deg, rgba(175, 99, 255, .95) 296deg, rgba(74, 222, 255, .18) 311deg, transparent 326deg 360deg); -webkit-mask: radial-gradient(circle, transparent 0 67%, #000 69% 72%, transparent 75%); mask: radial-gradient(circle, transparent 0 67%, #000 69% 72%, transparent 75%); filter: drop-shadow(0 0 4px rgba(69, 191, 255, .75)); animation: inner-current-spin 4.8s linear infinite; pointer-events: none; }
+.voice-orb-current::after { position: absolute; inset: 0; border-radius: inherit; background: inherit; content: ""; filter: blur(2px); opacity: .55; }
 .voice-orb-mark { position: absolute; inset: 20px; display: grid; place-items: center; filter: drop-shadow(0 0 10px rgba(85, 121, 255, .52)); }
+.voice-orb-mark { z-index: 1; }
 .voice-orb-mark svg { display: block; width: 100%; height: 100%; }
 .voice-orb-mark .mark-wave-bar { transform-box: fill-box; transform-origin: center; animation: mark-wave 1.05s ease-in-out infinite; }
 .voice-orb-mark .mark-wave-bar-1, .voice-orb-mark .mark-wave-bar-5 { animation-delay: -650ms; }
 .voice-orb-mark .mark-wave-bar-2, .voice-orb-mark .mark-wave-bar-4 { animation-delay: -320ms; }
 .voice-orbit-listening .voice-orb-mark .mark-wave-bar { animation-duration: 550ms; }
+.voice-orbit-listening .voice-orb-current { animation-duration: 2.4s; opacity: 1; }
 .voice-orbit-listening .voice-orb-button::after { animation-duration: 3s; }
 .voice-orbit-listening .voice-orb-button::before { animation: orbit-pulse 1.8s ease-out infinite; }
 .voice-waveform { width: clamp(54px, 10vw, 148px); display: flex; align-items: center; justify-content: center; gap: clamp(3px, .55vw, 8px); }
@@ -366,6 +370,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-orbit-error { color: #ff9fab !important; }
 @keyframes voice-wave { from { transform: scaleY(.48); } to { transform: scaleY(1); } }
 @keyframes mark-wave { 0%, 100% { transform: scaleY(.52); opacity: .75; } 50% { transform: scaleY(1.12); opacity: 1; } }
+@keyframes inner-current-spin { to { transform: rotate(360deg); } }
 @keyframes orbital-spin {
   from { transform: perspective(420px) rotateX(68deg) rotateZ(-28deg) rotateY(0deg); }
   to { transform: perspective(420px) rotateX(68deg) rotateZ(-28deg) rotateY(360deg); }

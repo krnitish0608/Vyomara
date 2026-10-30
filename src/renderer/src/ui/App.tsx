@@ -1250,6 +1250,7 @@ export function App() {
                       ? 'Install whisper.cpp to enable offline voice'
                       : voiceOrbLabel}
                   >
+                    <span className="voice-orb-current" aria-hidden="true" />
                     <span className="voice-orb-mark" aria-hidden="true">
                       <VyomaraMark tile={false} />
                     </span>
