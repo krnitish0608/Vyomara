@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,6 +62,33 @@ test('requests persist and continue isolated session history with metadata-only 
     typeof row.details_json === 'string' &&
     !row.details_json.includes('private prompt fixture') &&
     !row.details_json.includes('continued turn fixture')));
+});
+
+test('ordinary Ollama chat does not advertise filesystem tools even when folders are permitted', async t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const allowedRoot = join(root, 'allowed');
+  await mkdir(allowedRoot);
+  const config = loadConfig({
+    VYOM_PROVIDER: 'ollama',
+    VYOM_DATA_DIR: join(root, 'app-data'),
+    VYOM_ALLOWED_ROOTS: JSON.stringify([allowedRoot]),
+  });
+  t.mock.method(globalThis, 'fetch', async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const request = JSON.parse(String(init?.body)) as { readonly tools?: readonly unknown[] };
+    assert.deepEqual(request.tools, []);
+    return new Response(JSON.stringify({
+      message: { role: 'assistant', content: 'React Native is a framework for building native mobile apps with React.' },
+    }), { headers: { 'content-type': 'application/json' } });
+  });
+
+  const result = await runRequest(
+    'Do you know about React Native?',
+    new AbortController().signal,
+    config,
+    createLogger(() => {}),
+  );
+  assert.match(result.response, /^React Native is a framework/);
 });
 
 test('CLI exposes session review/deletion and explicit confirmed memory operations', t => {

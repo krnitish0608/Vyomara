@@ -1492,7 +1492,6 @@ test('mocked Ollama safely calls the registered filesystem reader and receives i
   assert.equal(await readFile(file, 'utf8'), 'local note');
   const advertised = requests[0]?.tools as Array<{ function: { name: string } }>;
   assert.deepEqual(advertised.map(tool => tool.function.name), [
-    'assistant.info',
     'filesystem.list-directory',
     'filesystem.read-file',
     'filesystem.directory-tree',

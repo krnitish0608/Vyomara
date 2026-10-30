@@ -22,6 +22,10 @@ import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
 import type { DesktopEditProposal } from '../desktop/contracts.ts';
 import type { EditProposalManager } from '../desktop/edit-proposals.ts';
 
+function promptContainsAbsoluteLocalPath(prompt: string): boolean {
+  return /(?:^|[\s"'`])\/(?!\/)[^\s"'`]+/.test(prompt);
+}
+
 export interface RequestResult {
   readonly response: string;
   readonly sessionId: string;
@@ -313,7 +317,12 @@ export async function runRequest(
       })
       : new PlaceholderProvider();
     const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config, editProposals),
+      registry: createDefaultToolRegistry(
+        config,
+        editProposals,
+        config.filesystemAllowedRoots.length > 0 &&
+          (editProposals !== undefined || promptContainsAbsoluteLocalPath(prompt)),
+      ),
       policy: new PolicyGateway(),
       config,
       logger: taskLogger,

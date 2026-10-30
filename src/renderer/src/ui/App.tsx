@@ -62,6 +62,10 @@ function activityLabel(event: DiagnosticEvent): string | undefined {
   }
 }
 
+function startsWithVyomGreeting(message: string): boolean {
+  return /^hello\s+vyom(?=$|[\s,.!?;:])/i.test(message.trim());
+}
+
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
@@ -112,6 +116,7 @@ export function App() {
   const [editProposalErrors, setEditProposalErrors] = useState<Record<string, string>>({});
   const [editProposalNotice, setEditProposalNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
+  const [sessionStartError, setSessionStartError] = useState<string>();
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
   const [appActionProposal, setAppActionProposal] = useState<DesktopAppAction>();
@@ -128,7 +133,7 @@ export function App() {
   const [voiceError, setVoiceError] = useState<string>();
   const [speakingMessageId, setSpeakingMessageId] = useState<number>();
   const [speechError, setSpeechError] = useState<string>();
-  const endOfMessages = useRef<HTMLDivElement>(null);
+  const messageList = useRef<HTMLDivElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const permissionsTrigger = useRef<HTMLButtonElement>(null);
@@ -212,9 +217,11 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    endOfMessages.current?.scrollIntoView({
+    const list = messageList.current;
+    if (!list) return;
+    list.scrollTo({
+      top: list.scrollHeight,
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-      block: 'end',
     });
   }, [messages, requestPending]);
 
@@ -298,6 +305,11 @@ export function App() {
   async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
     if (!trimmed || requestPending || checkLoading || appActionRunning || appActionProposal || editProposals.length > 0) return;
+    if (!sessionId && messages.length === 0 && !startsWithVyomGreeting(trimmed)) {
+      setSessionStartError('Every new chat starts with “Hello Vyom”. Say hello, and Vyom will greet you back.');
+      return;
+    }
+    setSessionStartError(undefined);
     setPrompt('');
     setRequestError(undefined);
     setAppActionProposal(undefined);
@@ -672,6 +684,8 @@ export function App() {
     if (requestPending || editProposals.length > 0) return;
     setSessionId(undefined);
     setMessages([]);
+    setPrompt('');
+    setSessionStartError(undefined);
     setActivity([]);
     setRequestError(undefined);
     setHistoryOpen(false);
@@ -713,6 +727,7 @@ export function App() {
     try {
       const saved = await window.vyomara.loadSession(id);
       setSessionId(saved.sessionId);
+      setSessionStartError(undefined);
       setMessages(saved.messages.map((message, index) => ({
         id: index,
         role: message.role,
@@ -1161,48 +1176,13 @@ export function App() {
             {sessionId && <span className="session-badge">Session saved locally</span>}
           </div>
 
-          <div className="message-list" aria-live="polite">
+          <div className="message-list" ref={messageList} aria-live="polite">
             {messages.length === 0 ? (
               <div className="welcome-card">
-                <div className="voice-visual" aria-hidden="true">
-                  <span className="voice-wave voice-wave-left">▂ ▄ ▆ ▃ ▇ ▄ ▂</span>
-                  <span className="voice-orb"><span>♩</span></span>
-                  <span className="voice-wave voice-wave-right">▂ ▄ ▇ ▃ ▆ ▄ ▂</span>
-                </div>
-                <h2>Talk to Vyom</h2>
-                <p>Offline voice recognition stays on this Mac; microphone audio is never sent online. Say “Hello Vyomara” once, then speak naturally; turn listening off any time to disable the microphone.</p>
-                <button
-                  className={voiceListening || voiceStarting ? 'voice-unavailable voice-listening' : 'voice-unavailable'}
-                  type="button"
-                  onClick={() => speechSetup?.modelReady ? void toggleVoiceListening() : void downloadVoiceModel()}
-                  disabled={requestPending || appActionRunning || voiceStarting || voiceDownloading || !speechSetup?.runtimeAvailable}
-                  aria-label={voiceListening ? 'Turn listening off' : speechSetup?.modelReady ? 'Turn listening on' : 'Download offline voice model'}
-                  aria-pressed={voiceListening || voiceStarting}
-                  data-state={voiceListening ? 'listening' : voiceDownloading ? 'downloading' : speechSetup?.modelReady ? 'ready' : 'setup-required'}
-                >
-                  <span aria-hidden="true">{voiceListening ? '■' : '♩'}</span>
-                  {voiceStarting
-                    ? 'Starting microphone…'
-                    : voiceListening
-                      ? 'Listening for Hello Vyomara · Turn off'
-                      : voiceDownloading
-                        ? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`
-                        : speechSetup?.modelReady
-                          ? 'Turn listening on'
-                          : 'Download offline voice model · 142 MB'}
-                </button>
-                {speechSetup?.runtimeAvailable === false && <p className="voice-error">Install whisper.cpp with <code>brew install whisper.cpp</code>, then restart Vyomara.</p>}
-                {voiceListening && <p className="voice-transcript" role="status">{voiceAwake ? 'Vyom is awake and listening for your command.' : 'Say “Hello Vyomara” to begin.'}</p>}
-                {voiceTranscript && <p className="voice-transcript" role="status">{voiceTranscript}</p>}
-                {voiceError && <p className="voice-error" role="alert">{voiceError}</p>}
-                <div className="suggestions" aria-label="Example prompts">
-                  <button type="button" onClick={() => setPrompt('Explain what Vyomara can do.')}>
-                    What can Vyom do?
-                  </button>
-                  <button type="button" onClick={() => setPrompt('Help me understand this project.')}>
-                    Understand my project
-                  </button>
-                </div>
+                <div className="welcome-icon" aria-hidden="true">V</div>
+                <h2>A new conversation starts with hello.</h2>
+                <p>Type “Hello Vyom” to start. Vyom will greet you, and then you can chat naturally.</p>
+                {sessionStartError && <p className="session-start-error" role="alert">{sessionStartError}</p>}
               </div>
             ) : messages.map(message => (
               <article
@@ -1313,11 +1293,10 @@ export function App() {
             {requestPending && (
               <div className="pending-state" role="status">
                 <span className="thinking-indicator"><i /><i /><i /></span>
-                <span>Vyom is working…</span>
+                <span>Vyom is typing…</span>
                 <button type="button" onClick={() => void cancel()}>Cancel</button>
               </div>
             )}
-            <div ref={endOfMessages} />
           </div>
 
           <form className="composer" onSubmit={event => void submit(event)}>
@@ -1325,8 +1304,11 @@ export function App() {
             <textarea
               id="prompt"
               value={prompt}
-              onChange={event => setPrompt(event.target.value)}
-              placeholder="Message Vyom…"
+              onChange={event => {
+                setPrompt(event.target.value);
+                setSessionStartError(undefined);
+              }}
+              placeholder={!sessionId && messages.length === 0 ? 'Start with “Hello Vyom”…' : 'Message Vyom…'}
               rows={2}
               maxLength={8000}
               disabled={requestPending || editProposals.length > 0}
@@ -2018,6 +2000,7 @@ export function App() {
             <div>
               <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? voiceAwake ? 'Vyom is awake' : 'Waiting for Hello Vyomara' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
               <small>{voiceListening ? 'Microphone active · Listening Off disables it' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Download the offline model in Settings'}</small>
+              {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>
           </div>
           <p className="planned-note">Speech recognition stays on this Mac. Sensitive project edits still require your review and approval.</p>

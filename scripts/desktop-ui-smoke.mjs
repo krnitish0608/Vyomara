@@ -165,19 +165,64 @@ try {
   assert(
     await evaluate(`Boolean(document.querySelector('nav[aria-label="Main navigation"]') &&
       document.querySelector('aside[aria-label="Task activity"]') &&
-      document.querySelector('.voice-visual'))`),
-    'assistant opens with navigation, voice-centered home, and task activity',
+      document.querySelector('.welcome-card'))`),
+    'assistant opens with navigation, chat-first welcome, and task activity',
   );
   assert(
-    await evaluate(`document.querySelector('.voice-unavailable')?.disabled === false &&
-      document.querySelector('.voice-unavailable')?.getAttribute('aria-pressed') === 'false' &&
-      document.querySelector('.voice-unavailable')?.innerText.includes('Download offline voice model') &&
-      document.body.innerText.toLowerCase().includes('microphone audio is never sent online')`),
-    'offline model download requires user action and discloses local-only recognition',
+    await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&
+      document.body.scrollHeight <= document.body.clientHeight &&
+      document.querySelector('.message-list').scrollHeight <= document.querySelector('.message-list').clientHeight`),
+    'the app fits the viewport and keeps conversation scrolling inside the message list',
+  );
+  assert(
+    await evaluate(`document.getElementById('prompt')?.placeholder.includes('Hello Vyom') &&
+      document.querySelector('.welcome-card')?.innerText.includes('Vyom will greet you')`),
+    'empty chat clearly asks the user to start with Hello Vyom',
   );
   assert(
     await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
     'current task panel reports the truthful idle state',
+  );
+  await evaluate('document.getElementById("prompt").focus()');
+  await typeText('Can you help me?');
+  await pressKey('Enter', 'Enter', 13);
+  await waitFor(
+    () => evaluate('document.querySelector(".session-start-error")?.innerText.includes("Hello Vyom")'),
+    'enforcing the Hello Vyom first-message boundary',
+  );
+  assert(
+    await evaluate(`document.querySelectorAll('.message').length === 0 &&
+      !document.querySelector('.session-badge')`),
+    'a new conversation cannot bypass its greeting or create a session early',
+  );
+  await clickButton('New conversation');
+  await evaluate('document.getElementById("prompt").focus()');
+  await typeText('Hello Vyom');
+  await pressKey('Enter', 'Enter', 13);
+  await waitFor(
+    () => evaluate(`document.querySelector('.message-user .message-text')?.innerText === 'Hello Vyom' &&
+      document.querySelector('.message-assistant .message-text') &&
+      !document.querySelector('.pending-state')`),
+    'receiving Vyom’s greeting before continuing a new conversation',
+  );
+  assert(
+    await evaluate(`document.querySelector('.message-user')?.classList.contains('message-user') &&
+      document.querySelector('.message-assistant')?.classList.contains('message-assistant')`),
+    'chat messages distinguish the user and Vyom in the conversation layout',
+  );
+  await evaluate('document.getElementById("prompt").focus()');
+  await typeText('How are you?');
+  await pressKey('Enter', 'Enter', 13);
+  await waitFor(
+    () => evaluate(`document.querySelectorAll('.message-user').length === 2 &&
+      document.querySelectorAll('.message-assistant').length === 2 &&
+      !document.querySelector('.pending-state')`),
+    'continuing the same chat with a normal follow-up message',
+  );
+  assert(
+    await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&
+      document.body.scrollHeight <= document.body.clientHeight`),
+    'longer conversations do not create an outer page scrollbar',
   );
   await evaluate('document.getElementById("prompt").focus()');
   await typeText('Open VS Code');
@@ -372,7 +417,7 @@ try {
     'completing empty delete-all through IPC',
   );
   assert(
-    deleteAllState.notice?.startsWith('Deleted 0 saved conversation(s) and 0 saved memories.') === true,
+    deleteAllState.notice?.startsWith('Deleted 1 saved conversation(s) and 0 saved memories.') === true,
     `confirmed delete-all completes through the desktop IPC bridge: ${JSON.stringify(deleteAllState)}`,
   );
 
