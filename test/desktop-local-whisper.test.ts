@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { extractWhisperTranscriptions, matchWakePhrase } from '../src/desktop/local-whisper.ts';
+import { extractWhisperTranscriptions, LocalWhisperRunner } from '../src/desktop/local-whisper.ts';
 
 test('Whisper transcription parser extracts clean lines from VAD output', () => {
   const output = [
@@ -19,18 +22,55 @@ test('Whisper transcription parser extracts clean lines from VAD output', () => 
   ]);
 });
 
-test('wake phrase matching accepts English and Hindi phrases and preserves command text', () => {
-  assert.deepEqual(matchWakePhrase(' Hello Vyomara, open VS Code '), {
-    detected: true,
-    remainder: 'open VS Code',
+test('local voice sends an arbitrary first transcription without requiring a wake phrase', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'vyomara-whisper-test-'));
+  const transcript = 'Can you help me?';
+  const output = `### Transcription 0 START\n${transcript}\n### Transcription 0 END\n`;
+  const binaryPath = join(directory, 'fake-whisper');
+  await writeFile(binaryPath, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(output)});\n`);
+  await chmod(binaryPath, 0o700);
+  const runner = new LocalWhisperRunner({
+    modelDirectory: directory,
+    binaryPath,
   });
-  assert.deepEqual(matchWakePhrase('नमस्ते व्योम, मौसम बताओ'), {
-    detected: true,
-    remainder: 'मौसम बताओ',
+  const events: string[] = [];
+
+  try {
+    runner.start(event => {
+      if (event.type === 'command') events.push(event.transcript);
+    });
+    for (let attempt = 0; attempt < 50 && events.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.deepEqual(events, [transcript]);
+  } finally {
+    await runner.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('silent voice pause suppresses stop events before speech playback resumes listening', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'vyomara-whisper-pause-test-'));
+  const binaryPath = join(directory, 'fake-whisper');
+  await writeFile(binaryPath, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} -e 'setInterval(() => {}, 1000)'\n`);
+  await chmod(binaryPath, 0o700);
+  const runner = new LocalWhisperRunner({
+    modelDirectory: directory,
+    binaryPath,
   });
-  assert.deepEqual(matchWakePhrase('open VS Code'), {
-    detected: false,
-    remainder: 'open VS Code',
-  });
-  assert.equal(matchWakePhrase('hello vyomaram').detected, false);
+  const events: string[] = [];
+
+  try {
+    runner.start(event => events.push(event.type));
+    assert.equal(await runner.stop({ silent: true }), true);
+    assert.equal(events.length, 0);
+
+    runner.start(event => events.push(event.type));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await runner.stop(), true);
+    assert.deepEqual(events, ['stopped']);
+  } finally {
+    await runner.stop({ silent: true });
+    await rm(directory, { recursive: true, force: true });
+  }
 });

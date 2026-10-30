@@ -115,19 +115,6 @@ function emitSpeechEvent(event: LocalWhisperEvent): void {
   }
 }
 
-function handleLocalWhisperEvent(event: LocalWhisperEvent): void {
-  emitSpeechEvent(event);
-  if (event.type !== 'wake-detected' || event.hasCommand) return;
-  const runner = getLocalWhisperRunner();
-  runner.setSpeaking(true);
-  void macSpeechRunner.speak('Haan, boliye.').catch(error => {
-    emitSpeechEvent({
-      type: 'error',
-      message: error instanceof Error ? error.message : 'Vyom could not acknowledge the wake phrase.',
-    });
-  }).finally(() => runner.setSpeaking(false));
-}
-
 function voicePreferencePath(): string {
   return join(app.getPath('userData'), 'voice-preferences.json');
 }
@@ -599,7 +586,7 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
     if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the local base speech model before enabling voice listening.');
     if (!resolveWhisperBinary()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
     try {
-      runner.start(handleLocalWhisperEvent);
+      runner.start(emitSpeechEvent);
       voiceListeningEnabled = true;
       await saveVoiceListeningPreference(true);
     } catch (error) {
@@ -622,13 +609,39 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
 });
 
 ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
-  localWhisperRunner?.setSpeaking(true);
+  const runner = localWhisperRunner;
+  const resumeListening = voiceListeningEnabled && runner?.isListening === true;
+  let listeningPaused = false;
   try {
+    if (resumeListening && runner) {
+      listeningPaused = await runner.stop({ silent: true });
+      if (!listeningPaused) {
+        throw new Error('The microphone could not be paused safely before Vyom speaks.');
+      }
+    }
     return await macSpeechRunner.speak(input);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
-    localWhisperRunner?.setSpeaking(false);
+    if (listeningPaused && voiceListeningEnabled && runner && resolveWhisperBinary()) {
+      try {
+        runner.start(emitSpeechEvent);
+      } catch (error) {
+        voiceListeningEnabled = false;
+        try {
+          await saveVoiceListeningPreference(false);
+        } catch (preferenceError) {
+          console.error(JSON.stringify({
+            event: 'speech.listening-preference-save-failed',
+            message: publicErrorMessage(preferenceError),
+          }));
+        }
+        emitSpeechEvent({
+          type: 'error',
+          message: `Local listening could not resume after speech output: ${publicErrorMessage(error)}`,
+        });
+      }
+    }
   }
 });
 

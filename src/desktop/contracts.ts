@@ -120,7 +120,6 @@ export type DesktopSpeechResult =
 
 export type DesktopSpeechRecognitionEvent =
   | { readonly type: 'listening' }
-  | { readonly type: 'wake-detected'; readonly hasCommand: boolean }
   | { readonly type: 'partial' | 'command'; readonly transcript: string }
   | { readonly type: 'stopped' }
   | { readonly type: 'model-progress'; readonly received: number; readonly total: number }

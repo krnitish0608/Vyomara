@@ -175,9 +175,19 @@ try {
     'the app fits the viewport and keeps conversation scrolling inside the message list',
   );
   assert(
-    await evaluate(`document.getElementById('prompt')?.placeholder.includes('Hello Vyom') &&
-      document.querySelector('.welcome-card')?.innerText.includes('Vyom will greet you')`),
-    'empty chat clearly asks the user to start with Hello Vyom',
+    await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
+      document.querySelector('.welcome-card')?.innerText.includes('Type or speak a message')`),
+    'empty chat accepts a typed or spoken message without a greeting barrier',
+  );
+  assert(
+    await evaluate(`(() => {
+      const button = document.querySelector('.composer .voice-input-button');
+      return button?.type === 'button' &&
+        button.getAttribute('aria-pressed') === 'false' &&
+        button.getAttribute('aria-label')?.includes('voice input') &&
+        button.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)};
+    })()`),
+    'composer exposes a stateful microphone button alongside Send',
   );
   assert(
     await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
@@ -187,27 +197,23 @@ try {
   await typeText('Can you help me?');
   await pressKey('Enter', 'Enter', 13);
   await waitFor(
-    () => evaluate('document.querySelector(".session-start-error")?.innerText.includes("Hello Vyom")'),
-    'enforcing the Hello Vyom first-message boundary',
-  );
-  assert(
-    await evaluate(`document.querySelectorAll('.message').length === 0 &&
-      !document.querySelector('.session-badge')`),
-    'a new conversation cannot bypass its greeting or create a session early',
-  );
-  await clickButton('New conversation');
-  await evaluate('document.getElementById("prompt").focus()');
-  await typeText('Hello Vyom');
-  await pressKey('Enter', 'Enter', 13);
-  await waitFor(
-    () => evaluate(`document.querySelector('.message-user .message-text')?.innerText === 'Hello Vyom' &&
+    () => evaluate(`document.querySelector('.message-user .message-text')?.innerText === 'Can you help me?' &&
       document.querySelector('.message-assistant .message-text') &&
       !document.querySelector('.pending-state')`),
-    'receiving Vyom’s greeting before continuing a new conversation',
+    'sending an arbitrary first message and receiving a reply without a greeting',
+  );
+  assert(
+    await evaluate(`document.querySelectorAll('.message-user').length === 1 &&
+      Boolean(document.querySelector('.session-badge'))`),
+    'creating a session from the first arbitrary message',
+  );
+  await waitFor(
+    () => evaluate('document.activeElement?.id === "prompt"'),
+    'restoring composer focus after the first response completes',
   );
   assert(
     await evaluate('document.activeElement?.id === "prompt"'),
-    'composer focus returns after sending the greeting with Enter',
+    'composer focus returns after sending the first message with Enter',
   );
   assert(
     await evaluate(`document.querySelector('.message-user')?.classList.contains('message-user') &&
@@ -223,6 +229,10 @@ try {
       !document.querySelector('.pending-state')`),
     'continuing the same chat with a normal follow-up message',
   );
+  await waitFor(
+    () => evaluate('document.activeElement?.id === "prompt"'),
+    'restoring composer focus after the follow-up response completes',
+  );
   assert(
     await evaluate('document.activeElement?.id === "prompt"'),
     'composer stays focused after an Enter-submitted follow-up',
@@ -234,6 +244,10 @@ try {
       document.querySelectorAll('.message-assistant').length === 3 &&
       !document.querySelector('.pending-state')`),
     'sending another chat message with the send button',
+  );
+  await waitFor(
+    () => evaluate('document.activeElement?.id === "prompt"'),
+    'restoring composer focus after clicking Send',
   );
   assert(
     await evaluate('document.activeElement?.id === "prompt"'),

@@ -8,7 +8,6 @@ import { join } from 'node:path';
 
 export type LocalWhisperEvent =
   | { readonly type: 'listening' }
-  | { readonly type: 'wake-detected'; readonly hasCommand: boolean }
   | { readonly type: 'partial'; readonly transcript: string }
   | { readonly type: 'command'; readonly transcript: string }
   | { readonly type: 'stopped' }
@@ -50,12 +49,6 @@ export function extractWhisperTranscriptions(output: string): string[] {
   return transcripts;
 }
 
-export function matchWakePhrase(transcript: string): { readonly detected: boolean; readonly remainder: string } {
-  const match = /^(?:hey|hi|hello|हेलो|हाय|नमस्ते)\s+(?:vyomara|vyom|व्योमारा|व्योम)(?=$|[\s,!.?;:-])[\s,!.?;:-]*/iu.exec(transcript.trim());
-  if (!match) return { detected: false, remainder: transcript };
-  return { detected: true, remainder: transcript.trim().slice(match[0].length).trim() };
-}
-
 async function fileSha1(path: string): Promise<string> {
   const hash = createHash('sha1');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
@@ -68,8 +61,8 @@ export class LocalWhisperRunner {
   readonly #binaryPath?: string;
   readonly #spawnProcess: typeof spawn;
   #child: ReturnType<typeof spawn> | undefined;
-  #awake = false;
-  #speaking = false;
+  #stoppingChild: ReturnType<typeof spawn> | undefined;
+  #silentStopChild: ReturnType<typeof spawn> | undefined;
   #stdoutBuffer = '';
   #inTranscription = false;
   #transcriptionLines: string[] = [];
@@ -80,6 +73,10 @@ export class LocalWhisperRunner {
     this.modelPath = join(options.modelDirectory, modelName);
     this.#binaryPath = options.binaryPath;
     this.#spawnProcess = options.spawnProcess ?? spawn;
+  }
+
+  get isListening(): boolean {
+    return this.#child !== undefined;
   }
 
   async modelAvailable(): Promise<boolean> {
@@ -134,8 +131,6 @@ export class LocalWhisperRunner {
   start(onEvent: (event: LocalWhisperEvent) => void): void {
     if (this.#child) throw new Error('Local voice listening is already active.');
     if (!this.#binaryPath) throw new LocalSpeechError('Local speech engine not found. Install whisper.cpp with `brew install whisper.cpp`, then restart Vyomara.');
-    this.#awake = false;
-    this.#speaking = false;
     this.#stdoutBuffer = '';
     this.#inTranscription = false;
     this.#transcriptionLines = [];
@@ -168,12 +163,18 @@ export class LocalWhisperRunner {
     let errorOutput = '';
     stderr.on('data', chunk => { errorOutput = (errorOutput + String(chunk)).slice(-4_096); });
     child.once('error', error => {
+      if (this.#stoppingChild === child) return;
       this.#finish();
       onEvent({ type: 'error', message: `Local speech engine could not start: ${error.message}` });
     });
     child.once('close', (code, signal) => {
-      const unexpected = this.#child === child;
+      const silentStop = this.#silentStopChild === child;
+      const intentionalStop = this.#stoppingChild === child;
+      if (intentionalStop) this.#stoppingChild = undefined;
+      if (silentStop) this.#silentStopChild = undefined;
+      const unexpected = this.#child === child && !intentionalStop;
       this.#finish();
+      if (silentStop) return;
       if (unexpected && code !== 0) {
         onEvent({
           type: 'error',
@@ -185,13 +186,11 @@ export class LocalWhisperRunner {
     });
   }
 
-  setSpeaking(speaking: boolean): void {
-    this.#speaking = speaking;
-  }
-
-  stop(): Promise<boolean> {
+  stop(options: { readonly silent?: boolean } = {}): Promise<boolean> {
     const child = this.#child;
     if (!child) return Promise.resolve(false);
+    this.#stoppingChild = child;
+    if (options.silent) this.#silentStopChild = child;
     return new Promise(resolve => {
       let forceKillTimer: NodeJS.Timeout | undefined;
       child.once('close', () => {
@@ -199,6 +198,8 @@ export class LocalWhisperRunner {
         resolve(true);
       });
       if (!child.kill('SIGTERM')) {
+        if (this.#stoppingChild === child) this.#stoppingChild = undefined;
+        if (this.#silentStopChild === child) this.#silentStopChild = undefined;
         if (this.#child !== child) {
           resolve(true);
           return;
@@ -253,16 +254,7 @@ export class LocalWhisperRunner {
   }
 
   #handleTranscript(transcript: string): void {
-    if (this.#speaking) return;
     this.#onEvent?.({ type: 'partial', transcript });
-    if (!this.#awake) {
-      const wake = matchWakePhrase(transcript);
-      if (!wake.detected) return;
-      this.#awake = true;
-      this.#onEvent?.({ type: 'wake-detected', hasCommand: Boolean(wake.remainder) });
-      if (wake.remainder) this.#onEvent?.({ type: 'command', transcript: wake.remainder });
-      return;
-    }
     this.#onEvent?.({ type: 'command', transcript });
   }
 }

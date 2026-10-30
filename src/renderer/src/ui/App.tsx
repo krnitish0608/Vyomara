@@ -62,10 +62,6 @@ function activityLabel(event: DiagnosticEvent): string | undefined {
   }
 }
 
-function startsWithVyomGreeting(message: string): boolean {
-  return /^hello\s+vyom(?=$|[\s,.!?;:])/i.test(message.trim());
-}
-
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
@@ -117,7 +113,6 @@ export function App() {
   const [editProposalNotice, setEditProposalNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
-  const [sessionStartError, setSessionStartError] = useState<string>();
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
   const [appActionProposal, setAppActionProposal] = useState<DesktopAppAction>();
@@ -127,13 +122,16 @@ export function App() {
   const [speechSetup, setSpeechSetup] = useState<DesktopSpeechSetupStatus>();
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceStarting, setVoiceStarting] = useState(false);
-  const [voiceAwake, setVoiceAwake] = useState(false);
   const [voiceDownloading, setVoiceDownloading] = useState(false);
   const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number>();
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string>();
   const [speakingMessageId, setSpeakingMessageId] = useState<number>();
   const [speechError, setSpeechError] = useState<string>();
+  const queuedVoiceCommands = useRef<string[]>([]);
+  const currentRequestPending = useRef(requestPending);
+  currentRequestPending.current = requestPending;
+  const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
   const messageList = useRef<HTMLDivElement>(null);
   const promptInput = useRef<HTMLTextAreaElement>(null);
   const shouldRestoreComposerFocus = useRef(false);
@@ -178,14 +176,9 @@ export function App() {
         setVoiceStarting(false);
         setVoiceListening(true);
       }
-      if (event.type === 'wake-detected') {
-        setVoiceAwake(true);
-        setVoiceTranscript('');
-      }
       if (event.type === 'stopped') {
         setVoiceStarting(false);
         setVoiceListening(false);
-        setVoiceAwake(false);
       }
       if (event.type === 'error') {
         setVoiceStarting(false);
@@ -195,8 +188,11 @@ export function App() {
       }
       if (event.type === 'command') {
         setVoiceTranscript(event.transcript);
-        setVoiceAwake(true);
-        void submitPrompt(event.transcript, true);
+        if (currentRequestPending.current) {
+          queuedVoiceCommands.current.push(event.transcript);
+        } else {
+          void submitVoicePrompt.current?.(event.transcript, true);
+        }
       }
     });
     void window.vyomara.getSpeechSetupStatus().then(status => {
@@ -227,6 +223,20 @@ export function App() {
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
     });
   }, [messages, requestPending]);
+
+  useEffect(() => {
+    if (
+      requestPending ||
+      checkLoading ||
+      appActionRunning ||
+      appActionProposal ||
+      editProposals.length > 0 ||
+      queuedVoiceCommands.current.length === 0
+    ) return;
+    const transcript = queuedVoiceCommands.current.shift();
+    if (!transcript) return;
+    void submitPrompt(transcript, true);
+  }, [appActionProposal, appActionRunning, checkLoading, editProposals.length, requestPending]);
 
   useEffect(() => {
     if (requestPending || !shouldRestoreComposerFocus.current) return;
@@ -314,11 +324,6 @@ export function App() {
   async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
     if (!trimmed || requestPending || checkLoading || appActionRunning || appActionProposal || editProposals.length > 0) return;
-    if (!sessionId && messages.length === 0 && !startsWithVyomGreeting(trimmed)) {
-      setSessionStartError('Every new chat starts with “Hello Vyom”. Say hello, and Vyom will greet you back.');
-      return;
-    }
-    setSessionStartError(undefined);
     setPrompt('');
     setRequestError(undefined);
     setAppActionProposal(undefined);
@@ -396,13 +401,20 @@ export function App() {
 
   }
 
+  submitVoicePrompt.current = submitPrompt;
+
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     const trimmed = prompt.trim();
-    shouldRestoreComposerFocus.current = Boolean(trimmed) && !detectDesktopAppAction(trimmed) &&
+    const restoreFocus = Boolean(trimmed) && !detectDesktopAppAction(trimmed) &&
       !(isCodeEditRequest(trimmed) && !checkProjectDirectory);
+    shouldRestoreComposerFocus.current = restoreFocus;
     setComposerFocusRequest(current => current + 1);
     await submitPrompt(prompt);
+    if (restoreFocus) {
+      shouldRestoreComposerFocus.current = false;
+      window.requestAnimationFrame(() => promptInput.current?.focus());
+    }
   }
 
   async function downloadVoiceModel(): Promise<void> {
@@ -435,7 +447,6 @@ export function App() {
       if (!status.listeningEnabled) {
         setVoiceStarting(false);
         setVoiceListening(false);
-        setVoiceAwake(false);
       }
     } catch (error) {
       setVoiceStarting(false);
@@ -698,7 +709,6 @@ export function App() {
     setSessionId(undefined);
     setMessages([]);
     setPrompt('');
-    setSessionStartError(undefined);
     setActivity([]);
     setRequestError(undefined);
     setHistoryOpen(false);
@@ -740,7 +750,6 @@ export function App() {
     try {
       const saved = await window.vyomara.loadSession(id);
       setSessionId(saved.sessionId);
-      setSessionStartError(undefined);
       setMessages(saved.messages.map((message, index) => ({
         id: index,
         role: message.role,
@@ -1193,9 +1202,8 @@ export function App() {
             {messages.length === 0 ? (
               <div className="welcome-card">
                 <div className="welcome-icon" aria-hidden="true">V</div>
-                <h2>A new conversation starts with hello.</h2>
-                <p>Type “Hello Vyom” to start. Vyom will greet you, and then you can chat naturally.</p>
-                {sessionStartError && <p className="session-start-error" role="alert">{sessionStartError}</p>}
+                <h2>What would you like to talk about?</h2>
+                <p>Type or speak a message to start chatting with Vyom.</p>
               </div>
             ) : messages.map(message => (
               <article
@@ -1319,9 +1327,8 @@ export function App() {
               value={prompt}
               onChange={event => {
                 setPrompt(event.target.value);
-                setSessionStartError(undefined);
               }}
-              placeholder={!sessionId && messages.length === 0 ? 'Start with “Hello Vyom”…' : 'Message Vyom…'}
+              placeholder="Message Vyom…"
               rows={2}
               maxLength={8000}
               disabled={requestPending || editProposals.length > 0}
@@ -1334,15 +1341,64 @@ export function App() {
             />
             <div className="composer-footer">
               <span>Enter to send · Shift + Enter for a new line</span>
-              <button
-                className="send-button"
-                type="submit"
-                disabled={requestPending || prompt.trim() === '' || editProposals.length > 0}
-                aria-label="Send message"
-              >
-                <span aria-hidden="true">↑</span>
-              </button>
+              <div className="composer-actions">
+                <button
+                  className={`voice-input-button${voiceListening ? ' voice-input-active' : ''}`}
+                  type="button"
+                  onClick={() => speechSetup?.modelReady ? void toggleVoiceListening() : void downloadVoiceModel()}
+                  disabled={
+                    !speechSetup?.runtimeAvailable ||
+                    voiceStarting ||
+                    voiceDownloading ||
+                    requestPending ||
+                    editProposals.length > 0
+                  }
+                  aria-label={
+                    voiceListening
+                      ? 'Turn voice listening off'
+                      : speechSetup?.modelReady
+                        ? 'Start voice input'
+                        : 'Download offline voice model and start voice input'
+                  }
+                  aria-pressed={voiceListening || voiceStarting}
+                  title={
+                    speechSetup?.runtimeAvailable === false
+                      ? 'Install whisper.cpp to enable offline voice input'
+                      : voiceListening
+                        ? 'Listening · click to turn off'
+                        : speechSetup?.modelReady
+                          ? 'Start offline voice input'
+                          : 'Download the offline voice model and start listening'
+                  }
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
+                  </svg>
+                </button>
+                <button
+                  className="send-button"
+                  type="submit"
+                  disabled={requestPending || prompt.trim() === '' || editProposals.length > 0}
+                  aria-label="Send message"
+                >
+                  <span aria-hidden="true">↑</span>
+                </button>
+              </div>
             </div>
+            {(voiceError || voiceDownloading || voiceStarting || voiceListening) && (
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}`} role={voiceError ? 'alert' : 'status'}>
+                {voiceError
+                  ? voiceError
+                  : voiceDownloading
+                    ? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`
+                    : voiceStarting
+                      ? 'Starting local microphone…'
+                      : voiceListening
+                        ? voiceTranscript || 'Listening—speak your message.'
+                        : ''}
+              </p>
+            )}
           </form>
           <p className="privacy-note" role={requestError || speechError ? 'alert' : 'status'}>
             {requestError
@@ -2011,7 +2067,7 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? voiceAwake ? 'Vyom is awake' : 'Waiting for Hello Vyomara' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening for your message' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
               <small>{voiceListening ? 'Microphone active · Listening Off disables it' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Download the offline model in Settings'}</small>
               {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>
