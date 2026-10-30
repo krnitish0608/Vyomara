@@ -42,6 +42,13 @@ function simpleTool(
   return {
     id: 'test.echo',
     effect: 'read',
+    description: 'Echo a string value.',
+    parameters: {
+      type: 'object',
+      properties: { value: { type: 'string', maxLength: 100 } },
+      required: ['value'],
+      additionalProperties: false,
+    },
     validateInput: (value): value is { value: string } =>
       typeof value === 'object' && value !== null &&
       'value' in value && typeof value.value === 'string',
@@ -137,6 +144,31 @@ test('CLI discloses the configured provider before processing a request', () => 
   assert.ok(result.stdout.indexOf('Provider:') < result.stdout.indexOf('[Placeholder provider]'));
 });
 
+test('CLI refuses unsupported shell requests without contacting the configured Ollama service', () => {
+  const result = spawnSync(process.execPath, [
+    '--disable-warning=ExperimentalWarning',
+    '--experimental-strip-types',
+    'src/cli.ts',
+    '--',
+    'Run the harmless command echo audit-check.',
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      VYOM_PROVIDER: 'ollama',
+      VYOM_ALLOWED_ROOTS: '[]',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /supported requests are sent to the configured local service/);
+  assert.match(result.stdout, /cannot run shell or terminal commands/i);
+  assert.match(result.stdout, /No command was executed/);
+  assert.doesNotMatch(result.stdout, /tool\.completed|audit-check passed/i);
+});
+
 test('placeholder provider is deterministic and clearly not an LLM', async () => {
   const provider = new PlaceholderProvider();
   const response = await provider.complete(
@@ -153,10 +185,31 @@ test('placeholder provider is deterministic and clearly not an LLM', async () =>
 test('session keeps temporary messages in memory and returns defensive copies', () => {
   const session = new Session();
   session.add({ role: 'user', content: 'hello' });
+  session.add({
+    role: 'assistant',
+    kind: 'tool-call',
+    content: '',
+    toolCalls: [{ toolId: 'test.echo', arguments: { value: 'original' } }],
+  });
   const messages = session.messages();
-  assert.deepEqual(messages, [{ role: 'user', content: 'hello' }]);
-  (messages as { role: 'user'; content: string }[])[0]!.content = 'changed';
+  assert.deepEqual(messages, [
+    { role: 'user', content: 'hello' },
+    {
+      role: 'assistant',
+      kind: 'tool-call',
+      content: '',
+      toolCalls: [{ toolId: 'test.echo', arguments: { value: 'original' } }],
+    },
+  ]);
+  const toolCalls = messages[1];
+  if (toolCalls?.role === 'assistant' && toolCalls.kind === 'tool-call') {
+    (toolCalls.toolCalls[0]?.arguments as { value: string }).value = 'changed';
+  }
   assert.equal(session.messages()[0]?.content, 'hello');
+  const stored = session.messages()[1];
+  assert.equal(stored?.role === 'assistant' && stored.kind === 'tool-call'
+    ? stored.toolCalls[0]?.arguments.value
+    : undefined, 'original');
 });
 
 test('tool registry rejects duplicate IDs', () => {
@@ -265,12 +318,21 @@ test('agent rejects malformed provider responses', async () => {
 });
 
 test('agent enforces the iteration limit', async () => {
+  let executed = false;
   const registry = new ToolRegistry();
-  registry.register(simpleTool());
+  registry.register(simpleTool({
+    async run(input) {
+      executed = true;
+      return input.value;
+    },
+  }));
   const provider: ModelProvider = {
     id: 'test.loop',
     async complete(): Promise<ProviderResponse> {
-      return { kind: 'tool-call', toolId: 'test.echo', input: { value: 'continue' } };
+      return {
+        kind: 'tool-calls',
+        calls: [{ toolId: 'test.echo', arguments: { value: 'continue' } }],
+      };
     },
   };
   await assert.rejects(
@@ -282,6 +344,7 @@ test('agent enforces the iteration limit', async () => {
     )),
     (error: unknown) => error instanceof AgentError && error.code === 'iteration-limit',
   );
+  assert.equal(executed, false);
 });
 
 test('provider timeout is enforced even if a provider ignores its signal', async () => {

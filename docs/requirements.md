@@ -164,8 +164,10 @@ These are non-negotiable design constraints for MVP and future phases:
 - How will filesystem roots be selected, displayed, persisted, and revoked?
 - Which small read-only tools are in the first deliverable, and what are their
   per-tool size and timeout limits?
-- Which local storage format, encryption approach, retention default, backup
-  policy, and deletion guarantees apply to history and memory?
+- **Decided in ADR-0005:** local SQLite history retained until user deletion,
+  owner-only macOS permissions, explicit-only memory, no app-level database
+  encryption, and no automatic backup/export. See
+  [ADR-0005](./adr/0005-persistence.md) for limitations.
 - What exact approval UX and action scope are required for future side effects?
 - What events and retention period are acceptable for audit logs, and which
   content, if any, may users explicitly opt into logging?

@@ -31,6 +31,102 @@ The application caps response body size and assistant text; other safe
 resource bounds are configurable through the `VYOM_MAX_*` variables validated
 at startup.
 
+## Read-only tool calling
+
+The Ollama `/api/chat` request advertises only tools in the existing registry
+whose effect is `read`. Each has an explicit function name, description, and
+closed JSON argument schema. The agent accepts only calls matching an
+advertised registered tool, processes a returned batch in order, and sends
+assistant `tool_calls` plus corresponding `tool` result messages on the next
+request. Calls go through the existing executor and policy gateway; no
+model-generated code is evaluated.
+
+The agent enforces the configured iteration and total tool-call limits.
+Arguments and results are bounded, tool input/output schemas are validated,
+and invalid arguments can receive one bounded correction attempt. The original
+validation remains authoritative; each correction is revalidated by the same
+executor and policy gateway. A structured tool error is returned to the model,
+and a failed correction stops the request with a clear error. Filesystem
+tools require explicitly allowed roots; the default `[]` grants no filesystem
+access. The desktop can select and revoke roots through its Folders panel,
+persisting those choices locally. `VYOM_ALLOWED_ROOTS` seeds desktop
+permissions only when its local permission list is first initialized; the CLI
+continues to read this environment variable directly. A file read result is sent to the configured local Ollama
+service as conversation context, so allow only roots whose contents you are
+willing to provide to that local model.
+
+Filesystem optional integer limits are advertised as optional and nullable.
+An actual JSON `null` for one of these optional fields is normalized to omission
+at the provider boundary, which uses the configured default. String numbers,
+the string `"null"`, out-of-range values, and other malformed values are not
+coerced. Tool descriptions recommend omitting optional limits when defaults are
+suitable; if a limit is supplied, it must be a JSON integer. Filesystem schema
+errors identify the argument problem (for example, an integer limit supplied
+as a string or a limit outside its advertised range) without echoing the
+supplied path or argument values. The model may make one bounded correction
+attempt; that call is passed through the same validation, allowed-root checks,
+and policy gateway. A failed correction is surfaced as an error, not a
+successful filesystem result.
+
+When exactly one filesystem tool call is returned and the user's request
+contains exactly one quoted absolute path, the agent uses that exact quoted
+path for execution instead of a path altered by the model. This narrow
+preservation rule supports paths containing spaces, punctuation, and Unicode;
+it does not apply to unquoted or multiple paths, or to batches of tool calls.
+The executor still enforces the absolute-path, configured-root, symlink, and
+tool-schema restrictions. Ambiguous paths are not guessed or pinned.
+
+Only a completed registered tool call with a validated result is evidence that
+an operation occurred. A model-generated claim or proposed call is not proof.
+Requests for unsupported shell, web, or file mutation capabilities are refused
+without asking the model to invent an execution result. Common English, Hindi,
+and Hinglish request phrases are recognized; this bounded phrase matching is
+not a general multilingual intent classifier. Final responses that claim an
+unsupported command, search, or file mutation was performed are replaced with
+a truthful status. Claims to have read a file or report its contents are replaced unless
+`filesystem.read-file` completed successfully. Claims to have listed a
+directory or generated a tree likewise require a successful matching tool.
+After a filesystem tool succeeds, Vyomara returns its validated serialized
+result rather than relying on a model-generated summary. This prevents a
+tool-completion event from being mistaken for proof that the model accurately
+interpreted the result. Claims without a matching result are also screened by
+bounded phrase patterns, not semantic verification. Treat file contents as
+untrusted prompt data: they cannot authorize new tools or override system
+policy. If Ollama returns a typed provider error or times out after a
+filesystem result has already been validated, Vyomara returns that bounded
+result and states that no model summary was generated. User cancellation and
+filesystem tool errors are still surfaced.
+Shell execution, web search, package installation, application launching,
+system-feature control, writes, and deletes are not implemented.
+
+Filesystem errors are returned with safe categories such as `not-found`,
+`invalid-path`, `outside-root`, and `permission-denied`; user-facing messages
+omit absolute paths and stack traces. Unexpected failures use a generic safe
+message and never imply success.
+
+## Request task and activity events
+
+Each CLI or desktop chat request receives an in-memory task ID and run ID. Structured events
+record the `queued -> planning -> running -> planning -> completed` lifecycle
+as applicable, with terminal `failed` or `cancelled` states on errors.
+Cancellations are reported separately from task failures. The activity stream
+distinguishes `tool.requested` (model proposal),
+`tool.invoked` (agent calls the executor), `tool.execution-started` (input and
+policy checks passed and the tool is about to run), `tool.completed` (validated
+result), and `tool.failed`. A bounded correction is recorded as
+`tool.retry-scheduled` with the next attempt number.
+If a later operation fails after a filesystem result has already been
+validated, Vyom returns that verified partial result with a safe failure
+notice and marks the task `needs_attention`; it does not flatten the run into
+success or discard the completed read.
+
+Events correlate task/run/tool-call IDs, attempt numbers, safe error codes,
+duration, and serialized output size. They do not log prompt text, argument
+values, file contents, or tool results. The desktop activity panel displays a short, request-scoped view of these
+events; it is not a durable task database or full user-facing timeline. The
+queue, approval-wait and pause states are reserved but not currently produced;
+concurrency, durable task history, and a full task timeline are not implemented.
+
 ## Troubleshooting
 
 - **Ollama unavailable:** start the local Ollama service and verify its local
@@ -44,7 +140,9 @@ at startup.
 
 Automated tests use an injected mock `fetch`; they verify request shape,
 response handling, errors, timeout, and cancellation without a running Ollama
-server or internet access. A live CLI request using the defaults succeeded
-against the local Ollama instance in this environment. The installed server
-version was not recorded, so compatibility with other Ollama versions remains
-unverified.
+server or internet access. Tool-call request/response messages are verified
+with mock responses. Live basic chat and read-only list, tree, and file-read
+tool calls have also been exercised with Ollama `0.40.11` and `llama3.2` in the
+development environment. Model argument compliance is not deterministic:
+invalid arguments are rejected, with at most one bounded correction attempt.
+Other Ollama versions and models remain unverified.

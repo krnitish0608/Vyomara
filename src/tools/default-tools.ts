@@ -10,7 +10,7 @@ interface EmptyInput {
 interface AppInfo {
   readonly app: 'Vyomara';
   readonly assistant: 'Vyom';
-  readonly provider: 'deterministic-placeholder';
+  readonly provider: 'ollama' | 'deterministic-placeholder';
 }
 
 const isEmptyInput = (value: unknown): value is EmptyInput =>
@@ -21,24 +21,30 @@ const isAppInfo = (value: unknown): value is AppInfo =>
   value !== null &&
   'app' in value && value.app === 'Vyomara' &&
   'assistant' in value && value.assistant === 'Vyom' &&
-  'provider' in value && value.provider === 'deterministic-placeholder';
-
-const appInfoTool: Tool<EmptyInput, AppInfo> = {
-  id: 'assistant.info',
-  effect: 'read',
-  validateInput: isEmptyInput,
-  validateOutput: isAppInfo,
-  async run() {
-    return {
-      app: 'Vyomara',
-      assistant: 'Vyom',
-      provider: 'deterministic-placeholder',
-    };
-  },
-};
+  'provider' in value &&
+  (value.provider === 'ollama' || value.provider === 'deterministic-placeholder');
 
 export function createDefaultToolRegistry(config: AppConfig): ToolRegistry {
   const registry = new ToolRegistry();
+  const appInfoTool: Tool<EmptyInput, AppInfo> = {
+    id: 'assistant.info',
+    effect: 'read',
+    description: 'Return the assistant and application identity.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    validateInput: isEmptyInput,
+    validateOutput: isAppInfo,
+    async run() {
+      return {
+        app: 'Vyomara',
+        assistant: 'Vyom',
+        provider: config.provider === 'ollama' ? 'ollama' : 'deterministic-placeholder',
+      };
+    },
+  };
   registry.register(appInfoTool);
   registerFilesystemTools(registry, config);
   return registry;

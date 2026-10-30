@@ -5,17 +5,31 @@
   "description": "Vyomara — a local-first personal AI assistant",
   "packageManager": "pnpm@12.16.1",
   "type": "module",
+  "main": "out/main/index.js",
   "scripts": {
     "dev": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/cli.ts",
     "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "desktop": "electron-vite dev",
+    "build:desktop": "electron-vite build",
+    "preview:desktop": "electron-vite preview"
   },
   "engines": {
     "node": ">=22.22.1"
   },
   "devDependencies": {
     "@types/node": "22.19.1",
-    "typescript": "5.9.3"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "45.1.0",
+    "electron-vite": "6.0.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.5"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   }
 }
