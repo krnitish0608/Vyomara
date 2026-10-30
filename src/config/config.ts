@@ -86,6 +86,7 @@ function allowedRoots(raw: string | undefined): readonly string[] {
       typeof root !== 'string' ||
       root.trim() === '' ||
       root !== root.trim() ||
+      root.includes('\0') ||
       !isAbsolute(root))
   ) {
     throw new Error('VYOM_ALLOWED_ROOTS must be a JSON array of at most 32 absolute directory paths.');
@@ -98,11 +99,14 @@ export function loadConfig(env: Environment): AppConfig {
   if (providerValue !== 'ollama' && providerValue !== 'placeholder') {
     throw new Error("VYOM_PROVIDER must be 'ollama' or 'placeholder'.");
   }
+  const usesOllama = providerValue === 'ollama';
 
   return {
     provider: providerValue,
-    ollamaBaseUrl: localOllamaBaseUrl(env.VYOM_OLLAMA_BASE_URL),
-    ollamaModel: modelName(env.VYOM_OLLAMA_MODEL),
+    ollamaBaseUrl: usesOllama
+      ? localOllamaBaseUrl(env.VYOM_OLLAMA_BASE_URL)
+      : 'http://127.0.0.1:11434',
+    ollamaModel: usesOllama ? modelName(env.VYOM_OLLAMA_MODEL) : 'llama3.2',
     filesystemAllowedRoots: allowedRoots(env.VYOM_ALLOWED_ROOTS),
     maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 3, 1, 10),
     maxToolCalls: boundedInteger(env, 'VYOM_MAX_TOOL_CALLS', 2, 0, 10),

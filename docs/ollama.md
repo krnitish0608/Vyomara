@@ -4,13 +4,18 @@ Vyomara defaults to a local Ollama provider at
 `http://127.0.0.1:11434` using model `llama3.2`. The provider uses Ollama's
 non-streaming `/api/chat` endpoint. Requests stay on loopback; the configured
 URL must use HTTP on `localhost`, `127.0.0.1`, or `::1`. No cloud fallback,
-Ollama package, API credential, or model download is performed by Vyomara.
+redirect following, Ollama package, API credential, or model download is
+performed by Vyomara.
 
 ## Configure and run
 
 Install Ollama separately and make sure the desired model is already available.
 `.env.example` documents the supported local settings; Vyomara does not
 automatically load `.env` files. Export variables in the shell before starting:
+
+Before a request is sent, the CLI identifies the selected provider and whether
+the request will go to the configured local Ollama service or use the
+no-model placeholder.
 
 ```sh
 export VYOM_PROVIDER=ollama

@@ -2,10 +2,15 @@
 
 ## Status
 
-This is a Phase 3 architecture proposal, not a description of implemented
-software. Decisions labeled **Accepted** in the [ADR index](./adr/README.md)
-are supported by current project requirements. Decisions labeled **Proposed**
-need user confirmation before they become implementation commitments.
+This architecture blueprint was created in Phase 3 and is updated selectively
+to reflect implementation status. As of Phases 1–6, the CLI, Ollama adapter,
+request-scoped in-memory session, tool registry/executor/policy gateway, and
+read-only filesystem tools are implemented. The diagram and component
+boundaries also describe proposed or future components; their implementation
+status is called out below. Decisions labeled **Accepted** in the
+[ADR index](./adr/README.md) are supported by current project requirements or
+explicit project direction. Decisions labeled **Proposed** still need user
+confirmation.
 
 ## Architecture at a glance
 
@@ -25,7 +30,7 @@ flowchart TD
     ToolRegistry[Tool registry and schemas]
     Policy[Policy and approval gateway]
     Tools[Read-only filesystem tools]
-    Roots[User-approved filesystem roots]
+    Roots[Explicitly configured filesystem roots]
     Store[Local persistence interface]
     History[Session history]
     Memory[Explicit memory]
@@ -47,12 +52,13 @@ flowchart TD
     Tools --> Audit
 ```
 
-The Ollama adapter, CLI, and first read-only filesystem tools are implemented.
-The diagram remains a component-level view; it does not imply persistence or
-future capabilities are implemented. The current Ollama adapter does not
-advertise or accept model tool calls. In MVP, policy denies side effects; the
-approval gateway is a fail-closed boundary for future approved capabilities,
-not permission to add them now.
+The persistence interface, durable history/memory, and approval interaction
+shown in the diagram are not implemented. Filesystem roots are configured
+through environment variables, not through an approval UI. The current Ollama
+adapter does not advertise or accept model tool calls; filesystem tools are
+registered for the executor but are not callable by the model. In MVP, policy
+denies side effects; the approval gateway is a fail-closed boundary for future
+approved capabilities, not permission to add them now.
 
 ## Components and boundaries
 
@@ -114,20 +120,24 @@ responses, cancellation, and typed errors. An adapter owns Ollama transport,
 serialization, endpoint/model compatibility, and local availability errors.
 No automatic cloud fallback is allowed.
 
-The compatible Ollama API/version, model, context budget, and connection
-defaults are not selected in Phase 2; see [ADR-0003](./adr/0003-model-provider.md)
-and the open decisions below. Do not add a provider framework or SDK until
-the compatibility target and need are confirmed.
+The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
+default model `llama3.2`, and loopback endpoint documented in
+[ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
+the installed Ollama version was not recorded. The adapter rejects tool-call
+responses, and no provider framework or SDK has been added.
 
 ## History and explicit memory data flow
 
 Session messages and saved memories are distinct data classes, even if a
-future implementation stores them in one local persistence engine. Session
-history records turns for review/deletion under an explicit retention policy.
-Memory is created only after an explicit user request and confirmation of the
-content; it must support inspect, review, and delete. The agent may receive
-selected relevant memory as context, but ordinary conversation context is
-temporary and is not itself durable memory.
+future implementation stores them in one local persistence engine. The
+current composition creates a temporary in-memory session for each request
+and discards it when the request finishes or fails; session history is not
+persisted. A future session-history implementation should support review and
+deletion under an explicit retention policy. Memory is created only after an
+explicit user request and confirmation of the content; it must support
+inspect, review, and delete. The agent may receive selected relevant memory
+as context, but ordinary conversation context is temporary and is not itself
+durable memory.
 
 Persistence technology, encryption, backup/export, retention defaults, and
 deletion guarantees are unresolved. Do not begin durable storage until these
@@ -189,6 +199,13 @@ provider-specific behavior inside adapters.
 
 ## MVP implementation sequence
 
+This is the original planning sequence, not a checklist of pending work.
+Phases 1–6 have implemented the core contracts and validation, policy and
+executor, Ollama adapter, request-scoped agent/session flow, and CLI
+composition. Durable persistence/memory, model-invoked tool calling,
+user-facing allowed-root management, and end-to-end evaluation remain future
+work.
+
 1. **Resolve Proposed choices** affecting public interfaces: runtime/language,
    text interface, Ollama compatibility target, persistence/privacy policy,
    configuration, diagnostics, test runner, and macOS baseline.
@@ -217,25 +234,24 @@ evaluation follows composition.
 
 ## Open decisions requiring user input
 
-The following are not silently resolved by this blueprint. Corresponding
-Proposed ADRs are linked:
+The following remain unresolved and are not silently treated as approved:
 
-- Confirm TypeScript as the implementation language (ADR-0002).
-- Choose CLI versus another minimal text interface (ADR-0004).
-- Select Ollama API/version, initial model, and context/resource limits
-  (ADR-0003).
-- Select persistence format, encryption, retention, backup/export, and deletion
-  guarantees (ADR-0005).
+- Select persistence format, encryption, retention, backup/export, and
+  deletion guarantees (Proposed ADR-0005).
 - Define approval presentation and action scoping before any side-effect
-  capability exists (ADR-0007).
-- Confirm configuration sources and secret-injection approach (ADR-0008).
-- Select audit format, retention, and any opt-in content logging (ADR-0009).
-- Confirm test runner and evaluation corpus/criteria (ADR-0010).
-- Set minimum macOS version, packaging/distribution, and confirm Node.js
-  `>=22.22.1` as the runtime baseline (ADR-0011).
-- Select initial read-only tools, allowed-root UX/persistence, per-tool
-  timeout/output limits, and local provider identity/data-flow disclosure per
-  the Phase 2 decisions.
+  capability exists (Accepted ADR-0007 records the boundary, not the UX).
+- Decide secret injection if a credential-bearing provider is proposed
+  (Accepted ADR-0008 defers that future choice).
+- Select diagnostic retention/rotation and any opt-in content logging
+  (Accepted ADR-0009).
+- Define model-evaluation corpus/criteria and benchmark environment
+  (Accepted ADR-0010).
+- Set minimum macOS version, packaging/distribution, and confirm whether
+  Node.js `>=22.22.1` is the production runtime baseline (Accepted ADR-0011).
+- Define user-facing allowed-root selection, display, and revocation. Current
+  roots are explicitly supplied through `VYOM_ALLOWED_ROOTS`; the default is
+  empty and no durable root configuration exists.
 
-Until these are resolved, the blueprint defines boundaries and safe ordering,
-not final implementation details.
+See the [ADR index](./adr/README.md) for all recorded decision statuses.
+Phase 2 requirements retain their original pre-implementation questions as
+historical requirements context; this list reflects the current status.
