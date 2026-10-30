@@ -113,8 +113,10 @@ fixed macOS app launches. Chrome searches display the exact query and
 disclose that Google receives it. Assistant replies can be spoken through the
 local macOS voice; voice input uses on-device recognition only and requests
 microphone and speech permissions only when listening starts. A bundled Swift
-helper checks native macOS language support locally. On the current development
-Mac, English (US) and English (India) are supported and Hindi (India) is not.
+helper checks native macOS language support locally. macOS Dictation must be
+enabled for Apple's recognizer; Vyomara explains this if recognition reports
+it disabled. On the current development Mac, English (US) and English (India)
+are supported and Hindi (India) is not.
 Earlier requirements and ADRs remain historical unless compatible with this
 direction.
 

@@ -72,7 +72,10 @@ final class SpeechCapture {
                 emit(result.isFinal ? "final" : "partial", ["transcript": result.bestTranscription.formattedString])
                 if result.isFinal { self.finish() }
             } else if let error {
-                emit("error", ["message": "On-device speech recognition failed: \(error.localizedDescription)"])
+                let message = error.localizedDescription.localizedCaseInsensitiveContains("Siri and Dictation are disabled")
+                    ? "macOS Dictation is turned off. Enable Dictation in System Settings > Keyboard > Dictation, then try again. Voice audio remains on this Mac."
+                    : "On-device speech recognition failed: \(error.localizedDescription)"
+                emit("error", ["message": message])
                 self.finish()
             }
         }

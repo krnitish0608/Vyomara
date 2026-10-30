@@ -147,7 +147,9 @@ opt-in, uses a bundled native macOS Speech helper with on-device recognition,
 and requests microphone and speech permissions only when listening starts.
 Language support is checked locally; online recognition is never used as a
 fallback. The helper is built during desktop builds with the local Swift
-toolchain.
+toolchain. macOS Dictation must be enabled in **System Settings > Keyboard >
+Dictation** for Apple's speech recognizer to work; Vyomara reports this
+requirement if macOS disables recognition.
 General control of app interfaces is not implemented.
 
 ## Local history and memory
