@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
-import type { OpenDialogOptions } from 'electron';
+import type { OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { AgentError } from '../agent/agent.ts';
 import {
@@ -7,6 +7,8 @@ import {
   initializeDesktopFilesystemRoots,
   deleteDesktopMemory,
   deleteDesktopSession,
+  exportDesktopSession,
+  exportDesktopMemory,
   initializeDesktopProviderSettings,
   readDesktopSession,
   readDesktopMemories,
@@ -37,6 +39,7 @@ import {
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
+import { exportToSelectedFile } from '../desktop/session-export.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
@@ -246,6 +249,36 @@ ipcMain.handle('vyomara:session-load', (_event, input: unknown) => {
   }
 });
 
+ipcMain.handle('vyomara:session-export', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before exporting a conversation.');
+  }
+
+  try {
+    const sessionId = parseDesktopSessionId(input);
+    const contents = exportDesktopSession(config, sessionId);
+    const options: SaveDialogOptions = {
+      title: 'Export complete Vyomara conversation',
+      buttonLabel: 'Export conversation',
+      defaultPath: `vyomara-session-${sessionId}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    };
+    const status = await exportToSelectedFile(contents, async () => {
+      const result = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    });
+    return { status };
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') {
+      throw new Error('That file already exists. Choose a new name; Vyomara will not overwrite exports.');
+    }
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
 ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
   if (activeRequest || activePermissionChange) {
@@ -319,6 +352,35 @@ ipcMain.handle('vyomara:memory-read', (_event, input: unknown) => {
   try {
     return readDesktopMemory(config, parseDesktopMemoryId(input));
   } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:memory-export', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest || activePermissionChange) {
+    throw new Error('Wait for the active operation to finish before exporting a memory.');
+  }
+  try {
+    const memoryId = parseDesktopMemoryId(input);
+    const contents = exportDesktopMemory(config, memoryId);
+    const options: SaveDialogOptions = {
+      title: 'Export saved Vyomara memory',
+      buttonLabel: 'Export memory',
+      defaultPath: `vyomara-memory-${memoryId}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    };
+    const status = await exportToSelectedFile(contents, async () => {
+      const result = mainWindow
+        ? await dialog.showSaveDialog(mainWindow, options)
+        : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    });
+    return { status };
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST') {
+      throw new Error('That file already exists. Choose a new name; Vyomara will not overwrite exports.');
+    }
     throw new Error(publicErrorMessage(error));
   }
 });

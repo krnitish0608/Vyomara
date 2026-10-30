@@ -95,6 +95,14 @@ export function App() {
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
   const endOfMessages = useRef<HTMLDivElement>(null);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const historyTrigger = useRef<HTMLButtonElement>(null);
+  const permissionsTrigger = useRef<HTMLButtonElement>(null);
+  const memoryTrigger = useRef<HTMLButtonElement>(null);
+  const settingsHeading = useRef<HTMLHeadingElement>(null);
+  const historyHeading = useRef<HTMLHeadingElement>(null);
+  const permissionsHeading = useRef<HTMLHeadingElement>(null);
+  const memoryHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -114,8 +122,40 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    endOfMessages.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    endOfMessages.current?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      block: 'end',
+    });
   }, [messages, requestPending]);
+
+  useEffect(() => {
+    if (settingsOpen) settingsHeading.current?.focus();
+    else if (historyOpen) historyHeading.current?.focus();
+    else if (permissionsOpen) permissionsHeading.current?.focus();
+    else if (memoryOpen) memoryHeading.current?.focus();
+  }, [historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
+
+  useEffect(() => {
+    function handleEscape(event: KeyboardEvent): void {
+      if (event.key !== 'Escape') return;
+      if (settingsOpen) {
+        setSettingsOpen(false);
+        settingsTrigger.current?.focus();
+      } else if (historyOpen) {
+        setHistoryOpen(false);
+        historyTrigger.current?.focus();
+      } else if (permissionsOpen) {
+        setPermissionsOpen(false);
+        permissionsTrigger.current?.focus();
+      } else if (memoryOpen) {
+        setMemoryOpen(false);
+        memoryTrigger.current?.focus();
+      }
+    }
+
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -183,7 +223,7 @@ export function App() {
 
   function toggleSettings(): void {
     if (settingsOpen) {
-      setSettingsOpen(false);
+      closePanel('settings');
       return;
     }
     setHistoryOpen(false);
@@ -195,6 +235,22 @@ export function App() {
     setSettingsNotice(undefined);
     setModelCheck(undefined);
     setSettingsOpen(true);
+  }
+
+  function closePanel(panel: 'history' | 'memory' | 'permissions' | 'settings'): void {
+    if (panel === 'settings') {
+      setSettingsOpen(false);
+      settingsTrigger.current?.focus();
+    } else if (panel === 'history') {
+      setHistoryOpen(false);
+      historyTrigger.current?.focus();
+    } else if (panel === 'permissions') {
+      setPermissionsOpen(false);
+      permissionsTrigger.current?.focus();
+    } else {
+      setMemoryOpen(false);
+      memoryTrigger.current?.focus();
+    }
   }
 
   async function checkModelAvailability(): Promise<void> {
@@ -329,6 +385,21 @@ export function App() {
       setSelectedHistorySession(await window.vyomara.loadSession(id));
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The selected conversation could not be reviewed.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function exportReviewedSession(): Promise<void> {
+    if (!selectedHistorySession || historyLoading || requestPending) return;
+    setHistoryLoading(true);
+    setHistoryError(undefined);
+    setHistoryNotice(undefined);
+    try {
+      const result = await window.vyomara.exportSession(selectedHistorySession.sessionId);
+      if (result.status === 'exported') setHistoryNotice('Conversation exported. The JSON file includes complete raw history.');
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'The conversation could not be exported.');
     } finally {
       setHistoryLoading(false);
     }
@@ -478,6 +549,23 @@ export function App() {
     }
   }
 
+  async function exportReviewedMemory(): Promise<void> {
+    if (!selectedMemory || memoryLoading) return;
+    setMemoryLoading(true);
+    setMemoryError(undefined);
+    setMemoryNotice(undefined);
+    try {
+      const result = await window.vyomara.exportMemory(selectedMemory.id);
+      if (result.status === 'exported') {
+        setMemoryNotice('Memory exported. The JSON file contains its complete content.');
+      }
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : 'The selected memory could not be exported.');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
   const providerTitle = provider
     ? provider.provider === 'ollama'
       ? `Local Ollama · ${provider.model}`
@@ -507,38 +595,46 @@ export function App() {
           )}
         </div>
         <button
+          ref={settingsTrigger}
           className="new-chat-button"
           type="button"
           onClick={toggleSettings}
           disabled={requestPending}
           aria-expanded={settingsOpen}
+          aria-controls={settingsOpen ? 'settings-panel' : undefined}
         >
           Settings
         </button>
         <button
+          ref={historyTrigger}
           className="new-chat-button"
           type="button"
           onClick={() => void toggleHistory()}
           disabled={requestPending}
           aria-expanded={historyOpen}
+          aria-controls={historyOpen ? 'history-panel' : undefined}
         >
           History
         </button>
         <button
+          ref={permissionsTrigger}
           className="new-chat-button"
           type="button"
           onClick={() => void togglePermissions()}
           disabled={requestPending}
           aria-expanded={permissionsOpen}
+          aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
         >
           Folders
         </button>
         <button
+          ref={memoryTrigger}
           className="new-chat-button"
           type="button"
           onClick={() => void toggleMemory()}
           disabled={requestPending}
           aria-expanded={memoryOpen}
+          aria-controls={memoryOpen ? 'memory-panel' : undefined}
         >
           Memory
         </button>
@@ -632,13 +728,13 @@ export function App() {
         </section>
 
         {memoryOpen ? (
-        <aside className="activity-panel history-panel memory-panel" aria-label="Explicit memory">
+        <aside id="memory-panel" className="activity-panel history-panel memory-panel" aria-label="Explicit memory">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">USER CONTROLLED</p>
-              <h2>Memory</h2>
+              <h2 ref={memoryHeading} tabIndex={-1}>Memory</h2>
             </div>
-            <button className="history-close" type="button" onClick={() => setMemoryOpen(false)}>
+            <button className="history-close" type="button" onClick={() => closePanel('memory')}>
               Close
             </button>
           </div>
@@ -715,6 +811,17 @@ export function App() {
             <div className="memory-review" aria-label="Selected saved memory">
               <p className="memory-review-title">Saved content</p>
               <pre className="memory-content">{selectedMemory.content}</pre>
+              <p className="history-privacy">
+                Export creates a new, unencrypted JSON file containing this memory. It uses owner-only file permissions and will not overwrite an existing file.
+              </p>
+              <button
+                className="permission-add"
+                type="button"
+                onClick={() => void exportReviewedMemory()}
+                disabled={memoryLoading}
+              >
+                {memoryLoading ? 'Preparing export…' : 'Export this memory as JSON'}
+              </button>
               <label className="memory-label" htmlFor="memory-delete-confirm">
                 Review the content, then type DELETE to remove it
               </label>
@@ -764,13 +871,13 @@ export function App() {
           <p className="history-privacy">Only the exact content you review and confirm is saved. Deletion requires reviewing the target and typing DELETE.</p>
         </aside>
         ) : permissionsOpen ? (
-        <aside className="activity-panel history-panel" aria-label="Filesystem permissions">
+        <aside id="permissions-panel" className="activity-panel history-panel" aria-label="Filesystem permissions">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">READ ONLY</p>
-              <h2>Folders</h2>
+              <h2 ref={permissionsHeading} tabIndex={-1}>Folders</h2>
             </div>
-            <button className="history-close" type="button" onClick={() => setPermissionsOpen(false)}>
+            <button className="history-close" type="button" onClick={() => closePanel('permissions')}>
               Close
             </button>
           </div>
@@ -814,13 +921,13 @@ export function App() {
           <p className="history-privacy">Revoking access applies to the next request. Current requests cannot change permissions.</p>
         </aside>
         ) : historyOpen ? (
-        <aside className="activity-panel history-panel" aria-label="Saved conversations">
+        <aside id="history-panel" className="activity-panel history-panel" aria-label="Saved conversations">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">ON THIS MAC</p>
-              <h2>History</h2>
+              <h2 ref={historyHeading} tabIndex={-1}>History</h2>
             </div>
-            <button className="history-close" type="button" onClick={() => setHistoryOpen(false)}>
+            <button className="history-close" type="button" onClick={() => closePanel('history')}>
               Close
             </button>
           </div>
@@ -851,7 +958,7 @@ export function App() {
                         onClick={() => void reviewSessionForDeletion(session.id)}
                         disabled={historyLoading || requestPending}
                       >
-                        Review to delete
+                        Review options
                       </button>
                     </div>
                   </li>
@@ -859,8 +966,8 @@ export function App() {
               </ol>
             )}
             {selectedHistorySession && (
-              <section className="session-review" aria-label="Review conversation before deletion">
-                <p className="memory-review-title">Review conversation before deleting</p>
+              <section className="session-review" aria-label="Review saved conversation">
+                <p className="memory-review-title">Review conversation</p>
                 <ol className="session-review-messages">
                   {selectedHistorySession.messages.length === 0 ? (
                     <li>No user or assistant messages are available to review.</li>
@@ -871,6 +978,18 @@ export function App() {
                     </li>
                   ))}
                 </ol>
+                <p className="history-privacy">
+                  Export includes all stored messages, including raw tool calls and results that may contain private file content.
+                  The JSON export is not encrypted; Vyomara will create a new file with owner-only permissions and will not overwrite an existing file.
+                </p>
+                <button
+                  className="permission-add"
+                  type="button"
+                  onClick={() => void exportReviewedSession()}
+                  disabled={historyLoading || requestPending}
+                >
+                  {historyLoading ? 'Preparing export…' : 'Export complete conversation as JSON'}
+                </button>
                 <label className="memory-label" htmlFor="history-delete-confirm">
                   Type DELETE to permanently remove this conversation
                 </label>
@@ -899,13 +1018,13 @@ export function App() {
           </p>
         </aside>
         ) : settingsOpen ? (
-        <aside className="activity-panel history-panel settings-panel" aria-label="Provider settings">
+        <aside id="settings-panel" className="activity-panel history-panel settings-panel" aria-label="Provider settings">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">LOCAL CONFIGURATION</p>
-              <h2>Settings</h2>
+              <h2 ref={settingsHeading} tabIndex={-1}>Settings</h2>
             </div>
-            <button className="history-close" type="button" onClick={() => setSettingsOpen(false)}>
+            <button className="history-close" type="button" onClick={() => closePanel('settings')}>
               Close
             </button>
           </div>

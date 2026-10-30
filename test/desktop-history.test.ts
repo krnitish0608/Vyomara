@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deleteDesktopSession, readDesktopSession, readDesktopSessions } from '../src/app/application.ts';
+import { deleteDesktopSession, exportDesktopSession, readDesktopSession, readDesktopSessions } from '../src/app/application.ts';
 import { loadConfig } from '../src/config/config.ts';
 import { SqliteStore } from '../src/storage/sqlite-store.ts';
 
@@ -42,6 +42,12 @@ test('desktop session history lists local chats and returns only user and final 
       { role: 'assistant', content: 'The folder contains two items.' },
     ],
   });
+  const exported = JSON.parse(exportDesktopSession(config, session.id));
+  assert.equal(exported.format, 'vyomara-session');
+  assert.equal(exported.version, 1);
+  assert.equal(exported.sessionId, session.id);
+  assert.ok(Number.isFinite(Date.parse(exported.exportedAt)));
+  assert.deepEqual(exported.messages, session.messages());
   assert.equal(deleteDesktopSession(config, session.id), true);
   assert.deepEqual(readDesktopSessions(config), []);
   assert.throws(() => readDesktopSession(config, session.id), /not found/i);

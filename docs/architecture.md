@@ -16,11 +16,16 @@ desktop settings for the local provider and Ollama model tag. Phase 16 adds an
 explicit read-only check for the configured model's local availability.
 Phase 17 adds a reset for the saved provider/model overrides. Phase 18 groups
 provider identity, Ollama reachability, and selected-model availability in
-the desktop Settings status view. The diagram and component
-boundaries also describe proposed or future components; their implementation
-status is called out below. Decisions labeled **Accepted** in the
-[ADR index](./adr/README.md) are supported by current project requirements or
-explicit project direction. Decisions labeled **Proposed** still need user
+the desktop Settings status view. Phase 19 improves keyboard focus, escape-key
+panel dismissal, and reduced-motion handling in the desktop shell. Phase 20
+adds explicit per-conversation JSON export to a new owner-only file, including
+the complete stored history. Phase 21 adds a repeatable Electron UI smoke
+check for keyboard navigation and reduced-motion behavior. Phase 22 adds
+explicit per-memory JSON export to new owner-only files. The diagram and
+component boundaries also describe proposed or future components; their
+implementation status is called out below. Decisions labeled **Accepted** in
+the [ADR index](./adr/README.md) are supported by current project requirements
+or explicit project direction. Decisions labeled **Proposed** still need user
 confirmation.
 
 ## Architecture at a glance
@@ -72,7 +77,11 @@ desktop shell uses the same application service and exposes chat, cancellation,
 provider configuration status, request-scoped activity, and filtered session
 history through a restricted preload bridge. Desktop history entries can be
 reviewed and deleted only after a typed confirmation; deleting the active
-history entry also clears it from the current view. Provider configuration
+history entry also clears it from the current view. A reviewed conversation
+can be explicitly exported as JSON to a new owner-only file; exports include
+complete raw history and are not encrypted. Reviewed memories can likewise be
+exported individually as unencrypted JSON files with owner-only permissions.
+Provider configuration
 is editable between the local Ollama adapter and deterministic placeholder;
 the model tag and provider choice are stored in the local app settings table.
 The user can remove those two overrides to restore the current process
