@@ -1251,6 +1251,9 @@ export function App() {
                       : voiceOrbLabel}
                   >
                     <span className="voice-orb-current" aria-hidden="true" />
+                    <span className="voice-orb-meteor" aria-hidden="true" />
+                    <span className="voice-orb-meteor voice-orb-meteor--two" aria-hidden="true" />
+                    <span className="voice-orb-meteor voice-orb-meteor--three" aria-hidden="true" />
                     <span className="voice-orb-mark" aria-hidden="true">
                       <VyomaraMark tile={false} />
                     </span>

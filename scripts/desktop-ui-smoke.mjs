@@ -196,10 +196,14 @@ try {
       const orb = document.querySelector('.welcome-card .voice-orb-button');
       const orbMark = orb?.querySelector('.voice-orb-mark svg');
       const current = orb?.querySelector('.voice-orb-current');
+      const meteors = [...(orb?.querySelectorAll('.voice-orb-meteor') ?? [])];
       const logoWave = document.querySelector('.topbar .brand-mark .mark-wave-bar');
       const orbit = getComputedStyle(orb, '::after');
       return Boolean(logoWave && orbMark?.querySelector('.mark-wave-bar') &&
         current &&
+        meteors.length === 3 &&
+        meteors.every(meteor => getComputedStyle(meteor).animationName === 'meteor-orbit-spin') &&
+        getComputedStyle(meteors[1]).animationDelay !== getComputedStyle(meteors[2]).animationDelay &&
         !orbMark.querySelector('rect[rx="18"]') &&
         !orb?.querySelector('.voice-orb-mic') &&
         getComputedStyle(logoWave).animationName === 'mark-wave' &&
@@ -219,6 +223,16 @@ try {
       `getComputedStyle(document.querySelector('.welcome-card .voice-orb-current')).transform !== ${JSON.stringify(firstCurrentTransform)}`,
     ),
     'a thin luminous current moves in a separate loop inside the larger orb',
+  );
+  const firstMeteorTransforms = await evaluate(
+    `JSON.stringify([...document.querySelectorAll('.welcome-card .voice-orb-meteor')].map(meteor => getComputedStyle(meteor).transform))`,
+  );
+  await delay(350);
+  assert(
+    await evaluate(
+      `JSON.stringify([...document.querySelectorAll('.welcome-card .voice-orb-meteor')].map(meteor => getComputedStyle(meteor).transform)) !== ${JSON.stringify(firstMeteorTransforms)}`,
+    ),
+    'three glowing meteors move at spaced intervals between the colored orb and its thin orbital line',
   );
   const firstOrbitTransform = await evaluate(
     `getComputedStyle(document.querySelector('.welcome-card .voice-orb-button'), '::after').transform`,
