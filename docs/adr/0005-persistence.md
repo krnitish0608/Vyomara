@@ -1,6 +1,6 @@
 # ADR-0005: Session history and explicit memory persistence
 
-- **Status:** Proposed
+- **Status:** Accepted
 
 ## Context and problem
 
@@ -11,44 +11,67 @@ loss behavior.
 
 ## Decision
 
-Accept the logical separation of session history and explicit memory, but do
-not select a storage engine or begin durable persistence until the user
-confirms the data-lifecycle choices. Propose a small local persistence
-interface with distinct history and memory operations; do not introduce a
-database dependency by default.
+Keep session history and explicit memory logically separate. Use Node's
+built-in `node:sqlite` `DatabaseSync` API with a versioned schema and
+migrations. Schema version 2 also stores selected desktop filesystem roots so
+grants and revocations persist across restarts. This avoids a native package
+dependency and is available on the
+declared Node.js `>=22.22.1` baseline. The API is experimental in this Node
+line, so pin the documented runtime baseline and keep storage behind an
+interface that can be replaced if compatibility changes.
+
+Store the database at
+`~/Library/Application Support/Vyomara/vyomara.sqlite` by default, with an
+absolute `VYOM_DATA_DIR` override for testing and advanced local setups. Use
+owner-only directory/file permissions (`0700`/`0600`) and SQLite foreign keys.
+History is retained until the user deletes it; there is no automatic expiry,
+application-managed backup, or cloud sync. macOS FileVault is recommended;
+the application does not provide database-level encryption, and operating
+system backups may include the database.
+
+Persist session messages locally for review and continuation; this includes
+user prompts, model replies, tool calls, and their returned data, which may
+contain private file contents. Disclose this behavior and provide session
+inspection and deletion. Ordinary session history is not memory. Save memory
+only through a dedicated, explicit user operation with confirmation; never
+extract it automatically from conversation. Keep prompts, message content,
+memory text, and tool results out of ordinary logs and audit events.
 
 ## Alternatives considered
 
 - JSON files/JSONL using Node built-ins: low dependency cost, but atomic updates,
   corruption recovery, concurrency, encryption, and deletion semantics need
   explicit design.
-- Embedded database: stronger query/transaction support, but adds a dependency
-  and migration/backup decisions without a current requirement for it.
+- Third-party embedded database: mature APIs, but native dependencies add
+  installation and eventual Electron ABI/packaging complexity; the current
+  Node baseline supplies an embedded SQLite API.
 - Keep all data only in process memory: private by default but fails the
   session-history persistence requirement.
 
 ## Consequences and trade-offs
 
-Deferring the engine prevents a premature data-format commitment. It blocks
-the durable-history and memory implementation until retention and deletion
-requirements are settled. Interfaces and in-memory test doubles can be
-developed first.
+The built-in database avoids an external dependency, but its experimental
+status must be monitored. Synchronous SQLite operations are appropriate for
+the current single-user CLI and bounded records; move behind the persistence
+interface before adding concurrent workers or long-running storage work.
 
 ## Security/privacy implications
 
 History is not memory. No ordinary conversation becomes durable memory without
-explicit user request and content confirmation. Select encryption, file
-permissions, backup behavior, retention, and deletion guarantees before
-persisting user data. Never store credentials in these records.
+explicit user request and content confirmation. Application-level encryption and backup/export are not provided. Restrict
+access to the current macOS user, recommend FileVault, retain until explicit
+deletion, cascade message deletion with its session, and never store
+credentials. A corrupted database must fail visibly; do not silently replace
+it or discard records.
 
 ## Implementation implications for Phase 4
 
-The Phase 4 skeleton may keep temporary session messages in process memory;
-this is not durable session history and is lost at exit. Do not implement
-durable history or long-term memory until the user decides format,
-migrations/versioning, encryption, retention defaults, export/backup,
-corruption recovery, and deletion behavior. Test inspect/review/delete paths
-separately before persistent storage is enabled.
+The Phase 4 skeleton kept temporary session messages in process memory. Phase
+9 adds local session history and separately managed explicit memory. Phase 12
+adds persistent desktop filesystem-root permissions. Test
+inspect/review/delete paths, migration, restart persistence, session isolation,
+permissions, and corruption handling. Do not claim application-level
+encryption or automatic backup.
 
 ## Evidence
 

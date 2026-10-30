@@ -3,9 +3,20 @@
 ## Status
 
 This architecture blueprint was created in Phase 3 and is updated selectively
-to reflect implementation status. As of Phases 1–6, the CLI, Ollama adapter,
-request-scoped in-memory session, tool registry/executor/policy gateway, and
-read-only filesystem tools are implemented. The diagram and component
+to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
+adapter, tool registry/executor/policy gateway, and read-only filesystem
+tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
+local session history and separately managed explicit memory through SQLite.
+Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
+local session-history browser and continuation from the desktop UI. Phase 12
+added a local Ollama reachability check and persistent, revocable desktop
+filesystem roots. Phase 13 adds explicit desktop memory management. Phase 14
+adds review-before-delete controls for desktop session history. Phase 15 adds
+desktop settings for the local provider and Ollama model tag. Phase 16 adds an
+explicit read-only check for the configured model's local availability.
+Phase 17 adds a reset for the saved provider/model overrides. Phase 18 groups
+provider identity, Ollama reachability, and selected-model availability in
+the desktop Settings status view. The diagram and component
 boundaries also describe proposed or future components; their implementation
 status is called out below. Decisions labeled **Accepted** in the
 [ADR index](./adr/README.md) are supported by current project requirements or
@@ -22,7 +33,9 @@ side-effect capability in the MVP.
 ```mermaid
 flowchart TD
     User[User]
-    UI[Text interaction adapter]
+    UI[CLI and React renderer]
+    Preload[Restricted Electron preload bridge]
+    Main[Electron main process]
     Session[Session and request coordinator]
     Agent[Primary agent]
     ProviderPort[Model provider interface]
@@ -36,7 +49,8 @@ flowchart TD
     Memory[Explicit memory]
     Audit[Diagnostic and audit sink]
 
-    User --> UI --> Session --> Agent
+    User --> UI --> Preload --> Main --> Session --> Agent
+    Main --> Preload --> UI
     Policy --> UI
     UI --> Policy
     Agent --> ProviderPort --> Ollama
@@ -52,19 +66,47 @@ flowchart TD
     Tools --> Audit
 ```
 
-The persistence interface, durable history/memory, and approval interaction
-shown in the diagram are not implemented. Filesystem roots are configured
-through environment variables, not through an approval UI. The current Ollama
-adapter does not advertise or accept model tool calls; filesystem tools are
-registered for the executor but are not callable by the model. In MVP, policy
-denies side effects; the approval gateway is a fail-closed boundary for future
-approved capabilities, not permission to add them now.
+The CLI stores local session history, supports review, continuation, and
+deletion, and offers separate explicitly confirmed memory operations. The
+desktop shell uses the same application service and exposes chat, cancellation,
+provider configuration status, request-scoped activity, and filtered session
+history through a restricted preload bridge. Desktop history entries can be
+reviewed and deleted only after a typed confirmation; deleting the active
+history entry also clears it from the current view. Provider configuration
+is editable between the local Ollama adapter and deterministic placeholder;
+the model tag and provider choice are stored in the local app settings table.
+The user can remove those two overrides to restore the current process
+environment defaults; unrelated app settings and filesystem permissions are
+preserved.
+The Ollama endpoint remains environment-configured and loopback-only. Provider
+configuration status is separate from reachability. The desktop can make
+explicit, loopback-only checks for service reachability and whether the
+selected model appears in Ollama's installed model list; both checks use a
+bounded GET to `/api/tags` and never download models. Memory is not currently
+injected into model context. Allowed filesystem roots are
+selected and revoked through the native folder picker, then persisted in the
+owner-only SQLite database. Memory content can be saved only after exact
+content review and typed confirmation, inspected, and deleted after review
+and typed confirmation; it is not automatically injected into requests. CLI
+roots are configured through environment
+variables. There is no interactive approval UI. The current Ollama
+adapter advertises explicitly registered read-only tools and accepts
+structured tool calls. Every requested call still passes through executor
+validation and the policy gateway. Invalid arguments receive at most one
+structured correction opportunity through the same executor and policy path.
+Unsupported shell, web, and filesystem mutation requests are refused without
+calling the provider; assistant claims about unsupported execution are not
+accepted as evidence. In MVP, policy denies side effects; the
+approval gateway is a fail-closed boundary for future approved capabilities,
+not permission to add them now.
 
 ## Components and boundaries
 
 | Component | Responsibility | Must not do |
 |---|---|---|
 | Text interaction adapter | Accept user input; display state, response, errors, and approval requests. | Call a model or tool directly. |
+| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/filesystem-permission IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
+| Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
 | Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |
 | Provider interface | Define normalized request, response, cancellation, and error contracts. | Expose provider-specific objects to agent or tools. |
@@ -76,6 +118,10 @@ approved capabilities, not permission to add them now.
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 
 These are logical boundaries within one process, not separate services.
+
+The desktop renderer runs with context isolation, sandboxing, disabled Node
+integration, and web security. It renders assistant output as text. No remote
+font or renderer-side provider request is used.
 
 ## Request and tool flows
 
@@ -93,6 +139,12 @@ These are logical boundaries within one process, not separate services.
 5. Session outcome and safe diagnostic metadata are recorded. Provider
    failures, timeouts, invalid output, and cancellation produce explicit
    states, never success-shaped fallbacks.
+6. Each request has a task ID and run ID. Structured events distinguish task
+   creation/state transitions, model-requested tools, executor invocation,
+   execution start after validation and policy authorization, validated
+   completion, failure, and bounded correction. Correlation metadata and
+   output size are recorded; prompts, argument values, and tool results are
+   not included in ordinary activity logs.
 
 ### Tool execution
 
@@ -123,25 +175,27 @@ No automatic cloud fallback is allowed.
 The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
 default model `llama3.2`, and loopback endpoint documented in
 [ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
-the installed Ollama version was not recorded. The adapter rejects tool-call
-responses, and no provider framework or SDK has been added.
+the installed Ollama version was not recorded. Tool definitions come from
+registered read-only tools; structured assistant tool-call and tool-result
+messages stay in the temporary session. No provider framework or SDK has been
+added.
 
 ## History and explicit memory data flow
 
-Session messages and saved memories are distinct data classes, even if a
-future implementation stores them in one local persistence engine. The
-current composition creates a temporary in-memory session for each request
-and discards it when the request finishes or fails; session history is not
-persisted. A future session-history implementation should support review and
-deletion under an explicit retention policy. Memory is created only after an
-explicit user request and confirmation of the content; it must support
-inspect, review, and delete. The agent may receive selected relevant memory
-as context, but ordinary conversation context is temporary and is not itself
-durable memory.
+Session messages and saved memories are distinct data classes in one local
+SQLite database. The CLI creates a new session or resumes one by ID. User
+prompts, assistant replies, tool calls, and returned tool data are persisted
+after a run, including failed runs where possible. History may contain private
+filesystem data and is retained until explicit deletion. Memory is stored
+separately and only after explicit confirmation; ordinary conversation is
+never converted automatically. Saved memory is currently inspectable and
+deletable but is not injected into model context.
 
-Persistence technology, encryption, backup/export, retention defaults, and
-deletion guarantees are unresolved. Do not begin durable storage until these
-decisions are made. See [ADR-0005](./adr/0005-persistence.md).
+The accepted [ADR-0005](./adr/0005-persistence.md) selects the built-in Node
+SQLite API, local user-only permissions, retention until explicit deletion,
+and explicit-only memory. The database is not application-encrypted, and
+automatic backup/export is not provided. macOS FileVault is recommended;
+operating-system backups may include the database.
 
 ## Trust boundaries and failure handling
 
@@ -200,11 +254,12 @@ provider-specific behavior inside adapters.
 ## MVP implementation sequence
 
 This is the original planning sequence, not a checklist of pending work.
-Phases 1–6 have implemented the core contracts and validation, policy and
-executor, Ollama adapter, request-scoped agent/session flow, and CLI
-composition. Durable persistence/memory, model-invoked tool calling,
-user-facing allowed-root management, and end-to-end evaluation remain future
-work.
+Phases 1–9 implemented the core contracts and validation, policy and executor,
+Ollama adapter, bounded agent/task lifecycle, read-only tools, and local SQLite
+history with separately managed explicit memory. Phase 10 starts the desktop
+interaction layer. User-facing allowed-root management, memory context
+injection, app packaging, project/session browsing, voice, and broader
+end-to-end evaluation remain future work.
 
 1. **Resolve Proposed choices** affecting public interfaces: runtime/language,
    text interface, Ollama compatibility target, persistence/privacy policy,
@@ -236,8 +291,6 @@ evaluation follows composition.
 
 The following remain unresolved and are not silently treated as approved:
 
-- Select persistence format, encryption, retention, backup/export, and
-  deletion guarantees (Proposed ADR-0005).
 - Define approval presentation and action scoping before any side-effect
   capability exists (Accepted ADR-0007 records the boundary, not the UX).
 - Decide secret injection if a credential-bearing provider is proposed

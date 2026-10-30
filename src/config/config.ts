@@ -1,10 +1,12 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { homedir } from 'node:os';
 
 export interface AppConfig {
   readonly provider: 'ollama' | 'placeholder';
   readonly ollamaBaseUrl: string;
   readonly ollamaModel: string;
   readonly filesystemAllowedRoots: readonly string[];
+  readonly dataDirectory: string;
   readonly maxAgentIterations: number;
   readonly maxToolCalls: number;
   readonly requestTimeoutMs: number;
@@ -63,12 +65,16 @@ function localOllamaBaseUrl(raw: string | undefined): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
-function modelName(raw: string | undefined): string {
-  const value = raw === undefined ? 'llama3.2' : raw.trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(value)) {
+export function validateOllamaModel(value: string): string {
+  const model = value.trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model) || model.includes('://')) {
     throw new Error('VYOM_OLLAMA_MODEL must be a non-empty model name of at most 128 valid characters.');
   }
-  return value;
+  return model;
+}
+
+function modelName(raw: string | undefined): string {
+  return validateOllamaModel(raw === undefined ? 'llama3.2' : raw);
 }
 
 function allowedRoots(raw: string | undefined): readonly string[] {
@@ -94,6 +100,14 @@ function allowedRoots(raw: string | undefined): readonly string[] {
   return parsed;
 }
 
+function dataDirectory(raw: string | undefined): string {
+  const value = raw ?? join(homedir(), 'Library', 'Application Support', 'Vyomara');
+  if (value.trim() !== value || value.includes('\0') || !isAbsolute(value)) {
+    throw new Error('VYOM_DATA_DIR must be an absolute local directory path.');
+  }
+  return value;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const providerValue = env.VYOM_PROVIDER?.trim() || 'ollama';
   if (providerValue !== 'ollama' && providerValue !== 'placeholder') {
@@ -108,6 +122,7 @@ export function loadConfig(env: Environment): AppConfig {
       : 'http://127.0.0.1:11434',
     ollamaModel: usesOllama ? modelName(env.VYOM_OLLAMA_MODEL) : 'llama3.2',
     filesystemAllowedRoots: allowedRoots(env.VYOM_ALLOWED_ROOTS),
+    dataDirectory: dataDirectory(env.VYOM_DATA_DIR),
     maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 3, 1, 10),
     maxToolCalls: boundedInteger(env, 'VYOM_MAX_TOOL_CALLS', 2, 0, 10),
     requestTimeoutMs: boundedInteger(env, 'VYOM_REQUEST_TIMEOUT_MS', 120_000, 1_000, 300_000),

@@ -4,8 +4,10 @@ import type { Dir, Dirent, Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
+import { ToolFailure } from './contracts.ts';
 import type { Tool } from './contracts.ts';
 import type { ToolRegistry } from './contracts.ts';
+import type { ToolFailureCode } from './contracts.ts';
 
 type EntryType = 'file' | 'directory' | 'symlink' | 'other';
 
@@ -74,9 +76,9 @@ export interface FilesystemToolOperations {
   readonly openFile?: (path: string, flags: number) => Promise<ReadFileHandle>;
 }
 
-class FilesystemToolError extends Error {
-  constructor(message: string) {
-    super(message);
+class FilesystemToolError extends ToolFailure {
+  constructor(message: string, code: ToolFailureCode = 'tool-failed') {
+    super(message, code);
     this.name = 'FilesystemToolError';
   }
 }
@@ -101,6 +103,34 @@ function validPath(value: unknown): value is string {
 function boundedOptionalInteger(value: unknown, maximum: number): boolean {
   return value === undefined ||
     (Number.isSafeInteger(value) && typeof value === 'number' && value >= 1 && value <= maximum);
+}
+
+function inputError(
+  value: unknown,
+  allowedFields: readonly string[],
+  limits: Readonly<Record<string, number>>,
+): string {
+  if (!isRecord(value)) return 'Arguments must be an object containing an absolute path.';
+  if (!exactKeys(value, allowedFields)) {
+    return `Use only these arguments: ${allowedFields.join(', ')}.`;
+  }
+  if (!Object.hasOwn(value, 'path')) return 'The required path argument is missing.';
+  if (typeof value.path !== 'string') return 'Path must be a string.';
+  if (value.path.length === 0) return 'Path must not be empty.';
+  if (!validPath(value.path)) {
+    return 'Path must be an absolute path without parent-directory traversal.';
+  }
+  for (const [name, maximum] of Object.entries(limits)) {
+    const candidate = value[name];
+    if (candidate === undefined) continue;
+    if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)) {
+      return `${name} must be an integer number; omit it to use the configured default.`;
+    }
+    if (candidate < 1 || candidate > maximum) {
+      return `${name} must be between 1 and ${maximum}.`;
+    }
+  }
+  return 'Tool arguments did not match the filesystem tool schema.';
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -135,20 +165,23 @@ function publicFilesystemError(error: unknown): FilesystemToolError {
     ? error.code
     : undefined;
   if (code === 'ENOENT' || code === 'ENOTDIR') {
-    return new FilesystemToolError('Requested filesystem path does not exist.');
+    return new FilesystemToolError('The requested file or directory was not found.', 'not-found');
   }
   if (code === 'EACCES' || code === 'EPERM') {
-    return new FilesystemToolError('Filesystem path is not accessible.');
+    return new FilesystemToolError('The filesystem path is not accessible.', 'permission-denied');
   }
   if (code === 'ELOOP') {
-    return new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    return new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
-  return new FilesystemToolError('Filesystem operation failed safely.');
+  return new FilesystemToolError('The filesystem operation failed safely.', 'tool-failed');
 }
 
 async function canonicalRoots(roots: readonly string[], signal: AbortSignal): Promise<CanonicalRoot[]> {
   if (roots.length === 0) {
-    throw new FilesystemToolError('Filesystem access is disabled; no allowed roots are configured.');
+    throw new FilesystemToolError(
+      'Filesystem access is unavailable because no allowed roots are configured.',
+      'permission-denied',
+    );
   }
   const result: CanonicalRoot[] = [];
   for (const configuredRoot of roots) {
@@ -156,7 +189,7 @@ async function canonicalRoots(roots: readonly string[], signal: AbortSignal): Pr
     try {
       const root = await realpath(configuredRoot);
       if (!(await stat(root)).isDirectory()) {
-        throw new FilesystemToolError('A configured filesystem root is not a directory.');
+        throw new FilesystemToolError('A configured filesystem root is not a directory.', 'invalid-path');
       }
       result.push({ configured: configuredRoot, canonical: root });
     } catch (error) {
@@ -174,7 +207,10 @@ async function resolveAllowedPath(
   signal: AbortSignal,
 ): Promise<ResolvedPath> {
   if (!validPath(inputPath)) {
-    throw new FilesystemToolError('Filesystem paths must be absolute, valid, and contain no parent traversal.');
+    throw new FilesystemToolError(
+      'The filesystem path is invalid; use an absolute path without parent traversal.',
+      'invalid-path',
+    );
   }
   const normalized = resolve(inputPath);
   const matchingRoots = roots
@@ -192,7 +228,7 @@ async function resolveAllowedPath(
     });
   const matchedRoot = matchingRoots[0];
   if (!matchedRoot) {
-    throw new FilesystemToolError('Requested path is outside the configured allowed roots.');
+    throw new FilesystemToolError('The requested path is outside the allowed filesystem roots.', 'outside-root');
   }
 
   const lexicalRoot = isWithin(matchedRoot.configured, normalized)
@@ -208,10 +244,10 @@ async function resolveAllowedPath(
     throw publicFilesystemError(error);
   }
   if (!isWithin(root, actualTarget)) {
-    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
   if (actualTarget !== expectedTarget) {
-    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+    throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
   }
 
   const segments = relative(root, expectedTarget).split(sep).filter(Boolean);
@@ -220,32 +256,32 @@ async function resolveAllowedPath(
   try {
     currentStats = await lstat(root);
     if (currentStats.isSymbolicLink() || !currentStats.isDirectory()) {
-      throw new FilesystemToolError('Configured filesystem root is not a safe directory.');
+      throw new FilesystemToolError('Configured filesystem root is not a safe directory.', 'invalid-path');
     }
     for (const segment of segments) {
       checkCancelled(signal);
       current = resolve(current, segment);
       currentStats = await lstat(current);
       if (currentStats.isSymbolicLink()) {
-        throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+        throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
       }
     }
     const canonicalTarget = await realpath(current);
     if (!isWithin(root, canonicalTarget)) {
-      throw new FilesystemToolError('Requested path is outside the configured allowed roots.');
+      throw new FilesystemToolError('The requested path is outside the allowed filesystem roots.', 'outside-root');
     }
     if (canonicalTarget !== expectedTarget) {
-      throw new FilesystemToolError('Symbolic links are not allowed in requested paths.');
+      throw new FilesystemToolError('Symbolic links are not allowed in requested paths.', 'invalid-path');
     }
   } catch (error) {
     throw publicFilesystemError(error);
   }
 
   if (kind === 'file' && !currentStats.isFile()) {
-    throw new FilesystemToolError('Requested path is not a regular file.');
+    throw new FilesystemToolError('The requested path is not a regular file.', 'invalid-path');
   }
   if (kind === 'directory' && !currentStats.isDirectory()) {
-    throw new FilesystemToolError('Requested path is not a directory.');
+    throw new FilesystemToolError('The requested path is not a directory.', 'invalid-path');
   }
   return { root, target: current, stats: currentStats };
 }
@@ -568,11 +604,32 @@ export function registerFilesystemTools(
   const listDirectoryTool: Tool<ListInput, ListOutput> = {
     id: 'filesystem.list-directory',
     effect: 'read',
+    description: 'List direct children only (not recursively). Required path is the exact absolute path inside an allowed root; preserve it including spaces and Unicode. Optional maxEntries is a JSON integer; omit for the configured default. Never use tree-only arguments.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
+        maxEntries: {
+          type: 'integer',
+          description: 'Optional maximum returned entries; omit to use the configured default.',
+          nullable: true,
+          minimum: 1,
+          maximum: config.maxDirectoryEntries,
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is ListInput {
       return isRecord(value) &&
         exactKeys(value, ['path', 'maxEntries']) &&
         validPath(value.path) &&
         boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
+    },
+    inputError(value) {
+      return inputError(value, ['path', 'maxEntries'], {
+        maxEntries: config.maxDirectoryEntries,
+      });
     },
     validateOutput: isListOutput,
     run(input, signal) {
@@ -582,8 +639,20 @@ export function registerFilesystemTools(
   const readFileTool: Tool<PathInput, ReadOutput> = {
     id: 'filesystem.read-file',
     effect: 'read',
+    description: 'Read one bounded UTF-8 text file. Required path is the exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is PathInput {
       return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
+    },
+    inputError(value) {
+      return inputError(value, ['path'], {});
     },
     validateOutput: isReadOutput,
     run(input, signal) {
@@ -593,12 +662,41 @@ export function registerFilesystemTools(
   const tree: Tool<TreeInput, TreeOutput> = {
     id: 'filesystem.directory-tree',
     effect: 'read',
+    description: 'Return a recursive tree (not a direct-child listing). Required path is the exact absolute path inside an allowed root; preserve spaces and Unicode. Optional maxDepth and maxEntries are JSON integers; omit either for its configured default. Does not follow symlinks.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
+        maxDepth: {
+          type: 'integer',
+          description: 'Optional maximum tree depth; omit to use the configured default.',
+          nullable: true,
+          minimum: 1,
+          maximum: config.maxTreeDepth,
+        },
+        maxEntries: {
+          type: 'integer',
+          description: 'Optional maximum total tree entries; omit to use the configured default.',
+          nullable: true,
+          minimum: 1,
+          maximum: config.maxDirectoryEntries,
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
     validateInput(value): value is TreeInput {
       return isRecord(value) &&
         exactKeys(value, ['path', 'maxDepth', 'maxEntries']) &&
         validPath(value.path) &&
         boundedOptionalInteger(value.maxDepth, config.maxTreeDepth) &&
         boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
+    },
+    inputError(value) {
+      return inputError(value, ['path', 'maxDepth', 'maxEntries'], {
+        maxDepth: config.maxTreeDepth,
+        maxEntries: config.maxDirectoryEntries,
+      });
     },
     validateOutput: isTreeOutput,
     run(input, signal) {
