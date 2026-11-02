@@ -2,7 +2,13 @@ import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 export interface DesktopChatRequest {
   readonly prompt: string;
+  readonly requestId: string;
   readonly sessionId?: string;
+}
+
+export interface DesktopChatTextChunk {
+  readonly requestId: string;
+  readonly text: string;
 }
 
 export interface DesktopChatResponse {
@@ -143,6 +149,7 @@ export interface VyomaraDesktopApi {
   checkProviderConnection(): Promise<DesktopProviderConnectionResult>;
   checkProviderModel(model: string): Promise<DesktopProviderModelCheckResult>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
+  onChatText(listener: (chunk: DesktopChatTextChunk) => void): () => void;
   applyEditProposal(id: string): Promise<DesktopEditApplyResult>;
   rejectEditProposal(id: string): Promise<boolean>;
   cancelRequest(): Promise<boolean>;

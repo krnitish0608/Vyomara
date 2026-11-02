@@ -26,6 +26,13 @@ const api: VyomaraDesktopApi = {
   sendMessage(request: DesktopChatRequest) {
     return ipcRenderer.invoke('vyomara:chat-send', request);
   },
+  onChatText(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, chunk: { requestId: string; text: string }): void => {
+      listener(chunk);
+    };
+    ipcRenderer.on('vyomara:chat-text', handler);
+    return () => ipcRenderer.removeListener('vyomara:chat-text', handler);
+  },
   applyEditProposal(id: string) {
     return ipcRenderer.invoke('vyomara:edit-apply', id);
   },

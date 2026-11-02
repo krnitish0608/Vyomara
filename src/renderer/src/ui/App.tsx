@@ -22,7 +22,7 @@ import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictatio
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
 interface ChatMessage {
-  readonly id: number;
+  readonly id: number | string;
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly failed?: boolean;
@@ -202,6 +202,7 @@ export function App() {
   const composerDictationBase = useRef('');
   const currentRequestPending = useRef(requestPending);
   currentRequestPending.current = requestPending;
+  const activeChatRequestId = useRef<string | undefined>(undefined);
   const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
   const messageList = useRef<HTMLDivElement>(null);
   const promptInput = useRef<HTMLTextAreaElement>(null);
@@ -304,9 +305,23 @@ export function App() {
     if (!list) return;
     list.scrollTo({
       top: list.scrollHeight,
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      behavior: requestPending || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
     });
   }, [messages, requestPending]);
+
+  useEffect(() => window.vyomara.onChatText(({ requestId, text }) => {
+    if (activeChatRequestId.current !== requestId) return;
+    setMessages(current => {
+      const existing = current.some(message => message.id === requestId);
+      return existing
+        ? current.map(message => message.id === requestId
+          ? { ...message, content: message.content + text }
+          : message)
+        : [...current, { id: requestId, role: 'assistant', content: text }];
+    });
+  }), []);
 
   useEffect(() => {
     if (messages.length === 0) {
@@ -498,17 +513,24 @@ export function App() {
 
     setRequestPending(true);
     setEditProposalNotice(undefined);
+    const requestId = crypto.randomUUID();
+    activeChatRequestId.current = requestId;
     try {
       const result = await window.vyomara.sendMessage({
         prompt: trimmed,
+        requestId,
         ...(sessionId ? { sessionId } : {}),
       });
       setSessionId(result.sessionId);
-      setMessages(current => [...current, {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: result.response,
-      }]);
+      setMessages(current => current.some(message => message.id === requestId)
+        ? current.map(message => message.id === requestId
+          ? { ...message, content: result.response }
+          : message)
+        : [...current, {
+          id: requestId,
+          role: 'assistant',
+          content: result.response,
+        }]);
       if (speakResponse) {
         void window.vyomara.speakText(result.response).catch(error => {
           setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
@@ -530,13 +552,18 @@ export function App() {
         ? error.message
         : 'Request failed safely. No success is implied.';
       setRequestError(message);
-      setMessages(current => [...current, {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: message,
-        failed: true,
-      }]);
+      setMessages(current => current.some(item => item.id === requestId)
+        ? current.map(item => item.id === requestId
+          ? { ...item, content: message, failed: true }
+          : item)
+        : [...current, {
+          id: requestId,
+          role: 'assistant',
+          content: message,
+          failed: true,
+        }]);
     } finally {
+      if (activeChatRequestId.current === requestId) activeChatRequestId.current = undefined;
       setRequestPending(false);
     }
 

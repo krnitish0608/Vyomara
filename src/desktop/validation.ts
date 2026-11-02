@@ -199,17 +199,21 @@ export function parseDesktopChatRequest(
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
   if (
-    keys.some(key => key !== 'prompt' && key !== 'sessionId') ||
+    keys.some(key => key !== 'prompt' && key !== 'sessionId' && key !== 'requestId') ||
     typeof record.prompt !== 'string' ||
     record.prompt.trim() === '' ||
     record.prompt.length > maxInputChars ||
+    typeof record.requestId !== 'string' ||
+    !uuidPattern.test(record.requestId) ||
     (record.sessionId !== undefined &&
       (typeof record.sessionId !== 'string' || !uuidPattern.test(record.sessionId)))
   ) {
     throw new Error('Chat request is invalid or exceeds the configured input limit.');
   }
 
-  return record.sessionId === undefined
-    ? { prompt: record.prompt }
-    : { prompt: record.prompt, sessionId: record.sessionId };
+  return {
+    prompt: record.prompt,
+    requestId: record.requestId,
+    ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+  };
 }

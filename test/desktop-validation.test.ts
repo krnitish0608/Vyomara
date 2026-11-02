@@ -15,15 +15,16 @@ import {
 } from '../src/desktop/validation.ts';
 
 const validSessionId = 'c523a2a9-8619-4cf4-8e0a-5e1bfab013f0';
+const validRequestId = '6b2fe741-94f9-4ad0-9c7d-16f474cb338e';
 
-test('desktop IPC accepts only bounded chat requests and optional UUID session IDs', () => {
+test('desktop IPC accepts bounded chat requests with a request UUID and optional session UUID', () => {
   assert.deepEqual(
-    parseDesktopChatRequest({ prompt: 'Explain this file.' }, 100),
-    { prompt: 'Explain this file.' },
+    parseDesktopChatRequest({ prompt: 'Explain this file.', requestId: validRequestId }, 100),
+    { prompt: 'Explain this file.', requestId: validRequestId },
   );
   assert.deepEqual(
-    parseDesktopChatRequest({ prompt: 'Continue', sessionId: validSessionId }, 100),
-    { prompt: 'Continue', sessionId: validSessionId },
+    parseDesktopChatRequest({ prompt: 'Continue', requestId: validRequestId, sessionId: validSessionId }, 100),
+    { prompt: 'Continue', requestId: validRequestId, sessionId: validSessionId },
   );
   for (const invalid of [
     null,
@@ -31,6 +32,8 @@ test('desktop IPC accepts only bounded chat requests and optional UUID session I
     {},
     { prompt: '  ' },
     { prompt: 'x'.repeat(101) },
+    { prompt: 'valid' },
+    { prompt: 'valid', requestId: '../request' },
     { prompt: 'valid', sessionId: '../outside' },
     { prompt: 'valid', unexpected: true },
   ]) {

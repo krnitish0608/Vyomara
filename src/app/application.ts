@@ -301,6 +301,7 @@ export async function runRequest(
   logger: Logger,
   sessionId?: string,
   editProposals?: EditProposalManager,
+  onText?: (text: string) => void,
 ): Promise<RequestResult> {
   const store = new SqliteStore(config.dataDirectory);
   try {
@@ -337,6 +338,7 @@ export async function runRequest(
         config,
         session,
         logger: taskLogger,
+        onText,
       });
     } catch (error) {
       requestError = error;

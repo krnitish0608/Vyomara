@@ -175,6 +175,29 @@ test('Ollama chat sends a system prompt, configured model, and conversation; ret
   }]);
 });
 
+test('Ollama streams assistant text chunks while preserving the complete final response', async () => {
+  let requestBody: Record<string, unknown> | undefined;
+  const fetchImplementation: FetchImplementation = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const chunks = [
+      { message: { role: 'assistant', content: 'Hello ' }, done: false },
+      { message: { role: 'assistant', content: 'from Vyom.' }, done: false },
+      { message: { role: 'assistant', content: '' }, done: true },
+    ];
+    return new Response(`${chunks.map(chunk => JSON.stringify(chunk)).join('\n')}\n`);
+  };
+  const received: string[] = [];
+  const result = await provider(fetchImplementation).complete(
+    [{ role: 'user', content: 'Say hello.' }],
+    new AbortController().signal,
+    [],
+    text => received.push(text),
+  );
+  assert.equal(requestBody?.stream, true);
+  assert.deepEqual(received, ['Hello ', 'from Vyom.']);
+  assert.deepEqual(result, { kind: 'final', text: 'Hello from Vyom.' });
+});
+
 test('Ollama represents nullable optional limits and omits null wire values only', async () => {
   let requestBody: Record<string, unknown> | undefined;
   const fetchImplementation: FetchImplementation = async (_input, init) => {

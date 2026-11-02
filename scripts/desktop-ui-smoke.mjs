@@ -359,6 +359,22 @@ try {
   );
   await pressKey('Enter', 'Enter', 13);
   await waitFor(
+    () => evaluate(`Boolean(document.querySelector('.message-assistant .message-text')?.innerText.length > 0 &&
+      document.querySelector('.pending-state'))`),
+    'showing the first streamed assistant text before the response completes',
+  );
+  const firstStreamedText = await evaluate(`document.querySelector('.message-assistant .message-text').innerText`);
+  await waitFor(
+    () => evaluate(`Boolean(document.querySelector('.message-assistant .message-text')?.innerText !== ${JSON.stringify(firstStreamedText)} &&
+      document.querySelector('.pending-state'))`),
+    'appending later generated text while the assistant is still responding',
+  );
+  assert(
+    await evaluate(`document.querySelector('.message-assistant .message-text')?.innerText.length > ${firstStreamedText.length} &&
+      Boolean(document.querySelector('.pending-state'))`),
+    'assistant response grows incrementally while generation remains active',
+  );
+  await waitFor(
     () => evaluate(`document.querySelector('.message-user .message-text')?.innerText === 'Can you help me?' &&
       document.querySelector('.message-assistant .message-text') &&
       !document.querySelector('.pending-state')`),

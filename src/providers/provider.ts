@@ -18,6 +18,7 @@ export interface ModelProvider {
     messages: readonly SessionMessage[],
     signal: AbortSignal,
     tools?: readonly ModelToolDefinition[],
+    onText?: (text: string) => void,
   ): Promise<unknown>;
 }
 
@@ -204,6 +205,86 @@ async function readBoundedBody(
   }
 }
 
+async function readOllamaStream(
+  response: Response,
+  maxBytes: number,
+  maxChars: number,
+  signal: AbortSignal,
+  onText: (text: string) => void,
+): Promise<string> {
+  if (!response.body) throw new ProviderError('malformed-response');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let totalBytes = 0;
+  let pending = '';
+  let content = '';
+  let toolCalls: unknown;
+  let done = false;
+  const cancelReader = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  const processLine = (line: string): void => {
+    if (line.trim() === '') return;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new ProviderError('malformed-response');
+    }
+    if (!isRecord(value) || !isRecord(value.message) ||
+        value.message.role !== 'assistant' ||
+        typeof value.message.content !== 'string' ||
+        typeof value.done !== 'boolean') {
+      throw new ProviderError('malformed-response');
+    }
+    const text = value.message.content;
+    if (content.length + text.length > maxChars) throw new ProviderError('response-too-large');
+    content += text;
+    if (text !== '') onText(text);
+    if (Object.hasOwn(value.message, 'tool_calls')) toolCalls = value.message.tool_calls;
+    done ||= value.done;
+  };
+  signal.addEventListener('abort', cancelReader, { once: true });
+  try {
+    while (true) {
+      if (signal.aborted) throw new ProviderError('cancelled');
+      const { done: ended, value } = await reader.read();
+      if (ended) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new ProviderError('response-too-large');
+      }
+      pending += decoder.decode(value, { stream: true });
+      let newline = pending.indexOf('\n');
+      while (newline !== -1) {
+        processLine(pending.slice(0, newline));
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf('\n');
+      }
+    }
+    pending += decoder.decode();
+    if (pending.trim() !== '') processLine(pending);
+    if (signal.aborted) throw new ProviderError('cancelled');
+    if (!done) throw new ProviderError('malformed-response');
+    if (content.trim() === '' && toolCalls === undefined) throw new ProviderError('malformed-response');
+    return JSON.stringify({
+      message: {
+        role: 'assistant',
+        content,
+        ...(toolCalls === undefined ? {} : { tool_calls: toolCalls }),
+      },
+    });
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    if (signal.aborted) throw new ProviderError('cancelled');
+    throw new ProviderError('malformed-response');
+  } finally {
+    signal.removeEventListener('abort', cancelReader);
+    reader.releaseLock();
+  }
+}
+
 export class OllamaProvider implements ModelProvider {
   readonly id = 'ollama';
   private readonly fetchImplementation: FetchImplementation;
@@ -308,6 +389,7 @@ export class OllamaProvider implements ModelProvider {
     messages: readonly SessionMessage[],
     signal: AbortSignal,
     tools: readonly ModelToolDefinition[] = [],
+    onText?: (text: string) => void,
   ): Promise<ProviderResponse> {
     if (signal.aborted) throw new ProviderError('cancelled');
 
@@ -315,7 +397,7 @@ export class OllamaProvider implements ModelProvider {
     try {
       requestBody = JSON.stringify({
         model: this.model,
-        stream: false,
+        stream: onText !== undefined,
         messages: [
           { role: 'system', content: promptForTools(tools) },
           ...messages.map(ollamaMessage),
@@ -346,7 +428,9 @@ export class OllamaProvider implements ModelProvider {
 
     let body: string;
     try {
-      body = await readBoundedBody(response, this.maxResponseBytes, signal);
+      body = response.ok && onText
+        ? await readOllamaStream(response, this.maxResponseBytes, this.maxResponseChars, signal, onText)
+        : await readBoundedBody(response, this.maxResponseBytes, signal);
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       if (signal.aborted) throw new ProviderError('cancelled');
@@ -429,11 +513,21 @@ export class PlaceholderProvider implements ModelProvider {
   async complete(
     _messages: readonly SessionMessage[],
     signal: AbortSignal,
+    _tools?: readonly ModelToolDefinition[],
+    onText?: (text: string) => void,
   ): Promise<ProviderResponse> {
     if (signal.aborted) throw new Error('Request cancelled.');
+    const text = '[Placeholder provider] No language model is configured; this is a deterministic skeleton response.';
+    if (onText) {
+      for (let index = 0; index < text.length; index += 10) {
+        if (signal.aborted) throw new ProviderError('cancelled');
+        onText(text.slice(index, index + 10));
+        await new Promise(resolve => setTimeout(resolve, 60));
+      }
+    }
     return {
       kind: 'final',
-      text: '[Placeholder provider] No language model is configured; this is a deterministic skeleton response.',
+      text,
     };
   }
 }

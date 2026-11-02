@@ -306,6 +306,14 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
       createDesktopLogger(),
       request.sessionId,
       editProposals,
+      text => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('vyomara:chat-text', {
+            requestId: request.requestId,
+            text,
+          });
+        }
+      },
     );
     if (editProposals && editProposals.list().length > 0) pendingEditProposals = editProposals;
     return result;

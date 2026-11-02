@@ -253,6 +253,7 @@ export interface AgentOptions {
   readonly config: AppConfig;
   readonly session: Session;
   readonly logger: Logger;
+  readonly onText?: (text: string) => void;
 }
 
 function safeErrorCode(error: unknown, fallback = 'internal-error'): string {
@@ -344,6 +345,7 @@ async function runAgentTask(
           options.session.messages(),
           providerSignal,
           toolCalls < options.config.maxToolCalls ? options.tools.modelTools() : [],
+          options.onText,
         ),
         options.config.requestTimeoutMs,
         signal,
