@@ -181,15 +181,15 @@ try {
         logo.getAttribute('alt') === 'Vyomara' &&
         logo.complete &&
         logo.naturalWidth > 500 &&
-        logo.parentElement?.querySelector('small')?.textContent === 'AI Twins. One Orbit. Your Control.';
+        !logo.parentElement?.querySelector('small');
     })()`),
-    'the top bar pairs the supplied Vyomara wordmark with the approved tagline',
+    'the top bar keeps the Vyomara wordmark without extra tagline text',
   );
   assert(
-    await evaluate(`document.querySelector('.conversation-heading h1')?.innerText === 'Your voice. Your orbit.' &&
+    await evaluate(`!document.querySelector('.conversation-heading') &&
       document.querySelector('.welcome-card .voice-orb-button') &&
       document.querySelectorAll('.welcome-card .voice-waveform').length === 2`),
-    'welcome screen combines the voice orb, animated waveform, and Vyomara identity',
+    'welcome screen shows the logo orb and paired waveforms without welcome copy',
   );
   assert(
     await evaluate(`(() => {
@@ -234,6 +234,29 @@ try {
     ),
     'three glowing meteors move at spaced intervals between the colored orb and its thin orbital line',
   );
+  assert(
+    await evaluate(`(() => [...document.querySelectorAll('.voice-waveform i')].every(bar =>
+      getComputedStyle(bar).animationName === 'none'))()`),
+    'side waveform bars stay still before voice listening starts',
+  );
+  const firstWaveformTransforms = await evaluate(`(() => {
+    const orbit = document.querySelector('.welcome-card .voice-orbit');
+    orbit.classList.add('voice-orbit-listening');
+    return JSON.stringify([...orbit.querySelectorAll('.voice-waveform i')].map(bar => getComputedStyle(bar).transform));
+  })()`);
+  assert(
+    await evaluate(`(() => [...document.querySelectorAll('.voice-waveform i')].every(bar =>
+      getComputedStyle(bar).animationName === 'voice-wave'))()`),
+    'both side waveforms animate only in the listening state',
+  );
+  await delay(350);
+  assert(
+    await evaluate(
+      `JSON.stringify([...document.querySelectorAll('.welcome-card .voice-waveform i')].map(bar => getComputedStyle(bar).transform)) !== ${JSON.stringify(firstWaveformTransforms)}`,
+    ),
+    'both side waveforms visibly move while listening',
+  );
+  await evaluate(`document.querySelector('.welcome-card .voice-orbit').classList.remove('voice-orbit-listening')`);
   const firstOrbitTransform = await evaluate(
     `getComputedStyle(document.querySelector('.welcome-card .voice-orb-button'), '::after').transform`,
   );
@@ -251,8 +274,10 @@ try {
     'the app fits the viewport and keeps conversation scrolling inside the message list',
   );
   assert(
-    await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
-      document.querySelector('.welcome-card')?.innerText.includes('Start with your voice or type below')`),
+    await evaluate(`document.getElementById('prompt')?.placeholder === '' &&
+      document.querySelector('.welcome-card .voice-orbit-status')?.classList.contains('visually-hidden') &&
+      document.querySelector('.composer-footer > span')?.classList.contains('visually-hidden') &&
+      document.querySelector('.privacy-note')?.classList.contains('visually-hidden')`),
     'empty chat accepts a typed or spoken message without a greeting barrier',
   );
   assert(
@@ -261,9 +286,29 @@ try {
       return button?.type === 'button' &&
         button.getAttribute('aria-pressed') === 'false' &&
         button.getAttribute('aria-label')?.includes('listening') &&
-        button.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)};
+        button.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)} &&
+        getComputedStyle(button).cursor === (button.disabled ? 'not-allowed' : 'pointer') &&
+        getComputedStyle(button).touchAction === 'manipulation';
     })()`),
-    'welcome voice orb exposes the same safe, stateful offline listening control',
+    'welcome orb is a tactile, accessible button for safe offline voice listening',
+  );
+  const orbBounds = await evaluate(`(() => {
+    const { x, y, width, height } = document.querySelector('.welcome-card .voice-orb-button').getBoundingClientRect();
+    return { x: x + width / 2, y: y + height / 2 };
+  })()`);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: orbBounds.x,
+    y: orbBounds.y,
+  });
+  assert(
+    await evaluate(`(() => {
+      const button = document.querySelector('.welcome-card .voice-orb-button');
+      return button.matches(':hover') &&
+        getComputedStyle(button).transform !== 'none' &&
+        getComputedStyle(button, '::before').boxShadow !== 'none';
+    })()`),
+    'orb gives clear visual feedback when hovered like an interactive button',
   );
   assert(
     await evaluate(`(() => {

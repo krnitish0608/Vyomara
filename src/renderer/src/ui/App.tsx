@@ -1112,10 +1112,7 @@ export function App() {
       <header className="topbar">
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
-          <span className="topbar-brand-copy">
-            <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
-            <small>AI Twins. One Orbit. Your Control.</small>
-          </span>
+          <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
         </a>
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
@@ -1222,21 +1219,20 @@ export function App() {
         </nav>
 
         <section className="conversation" aria-label="Conversation">
-          <div className="conversation-heading">
-            <div>
-              <p className="eyebrow">VYOMARA · LOCAL AI COMPANION</p>
-              <h1>Your voice. Your orbit.</h1>
-              <p className="intro">I&apos;m Vyom, ready when you are.</p>
+          {messages.length > 0 && (
+            <div className="conversation-heading">
+              <div>
+                <p className="eyebrow">VYOMARA · LOCAL AI COMPANION</p>
+                <h1>Your voice. Your orbit.</h1>
+                <p className="intro">I&apos;m Vyom, ready when you are.</p>
+              </div>
+              {sessionId && <span className="session-badge">Session saved locally</span>}
             </div>
-            {sessionId && <span className="session-badge">Session saved locally</span>}
-          </div>
+          )}
 
           <div className="message-list" ref={messageList} aria-live="polite">
             {messages.length === 0 ? (
-              <div className="welcome-card">
-                <p className="welcome-kicker">A PERSONAL AI, RIGHT HERE ON YOUR MAC</p>
-                <h2>What&apos;s on your mind?</h2>
-                <p className="welcome-copy">Start with your voice or type below. Your voice stays on this Mac.</p>
+              <div className="welcome-card" aria-label="Vyomara voice orb">
                 <div className={`voice-orbit${voiceListening ? ' voice-orbit-listening' : ''}`} aria-label="Offline voice input">
                   <VoiceWave side="left" />
                   <button
@@ -1261,7 +1257,7 @@ export function App() {
                   <VoiceWave side="right" />
                 </div>
                 <p
-                  className={`voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
+                  className={`${voiceError ? '' : 'visually-hidden '}voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
                   role={voiceError ? 'alert' : 'status'}
                   aria-live="polite"
                 >
@@ -1403,7 +1399,7 @@ export function App() {
               onChange={event => {
                 setPrompt(event.target.value);
               }}
-              placeholder="Message Vyom…"
+              placeholder={messages.length === 0 ? undefined : 'Message Vyom…'}
               rows={2}
               maxLength={8000}
               disabled={requestPending || editProposals.length > 0}
@@ -1415,7 +1411,7 @@ export function App() {
               }}
             />
             <div className="composer-footer">
-              <span>Enter to send · Shift + Enter for a new line</span>
+              <span className={messages.length === 0 ? 'visually-hidden' : undefined}>Enter to send · Shift + Enter for a new line</span>
               <div className="composer-actions">
                 <button
                   className={`voice-input-button${voiceListening ? ' voice-input-active' : ''}`}
@@ -1462,7 +1458,7 @@ export function App() {
               </div>
             </div>
             {(voiceError || voiceDownloading || voiceStarting || voiceListening) && (
-              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}`} role={voiceError ? 'alert' : 'status'}>
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${messages.length === 0 && !voiceError ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
                 {voiceError
                   ? voiceError
                   : voiceDownloading
@@ -1475,7 +1471,7 @@ export function App() {
               </p>
             )}
           </form>
-          <p className="privacy-note" role={requestError || speechError ? 'alert' : 'status'}>
+          <p className={`privacy-note${messages.length === 0 && !requestError && !speechError ? ' visually-hidden' : ''}`} role={requestError || speechError ? 'alert' : 'status'}>
             {requestError
               ? 'Request failed; no success is implied.'
               : speechError ?? 'Your conversation is stored locally on this Mac. Speech output uses the on-device macOS voice.'}
