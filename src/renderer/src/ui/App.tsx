@@ -1398,6 +1398,7 @@ export function App() {
 
         <section className="conversation" aria-label="Conversation" ref={conversation}>
           <div className="message-list" ref={messageList} aria-live="polite">
+            <div className="message-list-content">
             {messages.length === 0 ? (
               <div className="welcome-card" aria-label="Vyomara voice orb">
                 <div className="welcome-intro">
@@ -1536,6 +1537,7 @@ export function App() {
                 <button type="button" onClick={() => void cancel()}>Cancel</button>
               </div>
             )}
+            </div>
           </div>
 
           <form className="composer" onSubmit={event => void submit(event)}>

@@ -278,15 +278,34 @@ try {
       document.querySelector('.message-list').scrollHeight <= document.querySelector('.message-list').clientHeight`),
     'the app fits the viewport and keeps conversation scrolling inside the message list',
   );
-  assert(
-    await evaluate(`(() => {
+  const scrollbarLayout = await evaluate(`(() => {
       const list = document.querySelector('.message-list');
-      return getComputedStyle(list).overflowY === 'auto' &&
-        getComputedStyle(list).overflowX === 'hidden' &&
-        getComputedStyle(list).scrollbarWidth === 'thin' &&
-        getComputedStyle(list, '::-webkit-scrollbar').width === '4px';
-    })()`),
-    'the conversation scroll indicator stays thin and confined to the message list',
+      const content = document.querySelector('.message-list-content');
+      const conversation = document.querySelector('.conversation');
+      const conversationStyle = getComputedStyle(conversation);
+      const dividerEdge = conversation.getBoundingClientRect().right -
+        Number.parseFloat(conversationStyle.borderRightWidth);
+      const listStyle = getComputedStyle(list);
+      return {
+        overflowY: listStyle.overflowY,
+        overflowX: listStyle.overflowX,
+        scrollbarWidth: listStyle.scrollbarWidth,
+        webkitWidth: getComputedStyle(list, '::-webkit-scrollbar').width,
+        listPaddingRight: listStyle.paddingRight,
+        contentPaddingRight: getComputedStyle(content).paddingRight,
+        listRight: list.getBoundingClientRect().right,
+        dividerEdge,
+      };
+    })()`);
+  assert(
+    scrollbarLayout.overflowY === 'auto' &&
+      scrollbarLayout.overflowX === 'hidden' &&
+      scrollbarLayout.scrollbarWidth === 'thin' &&
+      scrollbarLayout.webkitWidth === '2px' &&
+      Number.parseFloat(scrollbarLayout.listPaddingRight) === 0 &&
+      Number.parseFloat(scrollbarLayout.contentPaddingRight) > 20 &&
+      Math.abs(scrollbarLayout.listRight - scrollbarLayout.dividerEdge) < 1,
+    `the 2px scrollbar sits at the divider while message padding stays inside the scroll content: ${JSON.stringify(scrollbarLayout)}`,
   );
   assert(
     await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
