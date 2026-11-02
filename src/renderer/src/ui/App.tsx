@@ -196,6 +196,7 @@ export function App() {
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string>();
   const [speechError, setSpeechError] = useState<string>();
+  const [orbRailGeometry, setOrbRailGeometry] = useState<{ readonly width: number; readonly center: number; readonly span: number }>();
   const queuedVoiceCommands = useRef<string[]>([]);
   const composerDictationRef = useRef(false);
   const composerDictationBase = useRef('');
@@ -204,6 +205,9 @@ export function App() {
   const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
   const messageList = useRef<HTMLDivElement>(null);
   const promptInput = useRef<HTMLTextAreaElement>(null);
+  const topbar = useRef<HTMLElement>(null);
+  const conversation = useRef<HTMLElement>(null);
+  const orbitalHeaderRails = useRef<SVGSVGElement>(null);
   const shouldRestoreComposerFocus = useRef(false);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
@@ -303,6 +307,53 @@ export function App() {
       behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
     });
   }, [messages, requestPending]);
+
+  useEffect(() => {
+    if (messages.length === 0) {
+      setOrbRailGeometry(undefined);
+      return;
+    }
+
+    const header = topbar.current;
+    const conversationSection = conversation.current;
+    const rails = orbitalHeaderRails.current;
+    if (!header || !conversationSection || !rails) return;
+
+    let frame = 0;
+    const updateGeometry = (): void => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const bounds = rails.getBoundingClientRect();
+        const conversationBounds = conversationSection.getBoundingClientRect();
+        const width = bounds.width;
+        const center = conversationBounds.left + conversationBounds.width / 2 - bounds.left;
+        const span = Math.min(108, center - 8, width - center - 8);
+        if (width <= 0 || span <= 0) return;
+
+        const next = {
+          width: Math.round(width * 100) / 100,
+          center: Math.round(center * 100) / 100,
+          span: Math.round(span * 100) / 100,
+        };
+        setOrbRailGeometry(current =>
+          current?.width === next.width && current.center === next.center && current.span === next.span
+            ? current
+            : next,
+        );
+      });
+    };
+
+    const observer = new ResizeObserver(updateGeometry);
+    observer.observe(header);
+    observer.observe(conversationSection);
+    window.addEventListener('resize', updateGeometry);
+    updateGeometry();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', updateGeometry);
+    };
+  }, [messages.length]);
 
   useEffect(() => {
     if (
@@ -1171,7 +1222,7 @@ export function App() {
 
   return (
     <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ''}`}>
-      <header className="topbar">
+      <header className="topbar" ref={topbar}>
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
           <span className="topbar-brand-copy">
@@ -1180,7 +1231,12 @@ export function App() {
           </span>
         </a>
         {messages.length > 0 && (
-          <svg className="orbital-header-rails" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true">
+          <svg
+            ref={orbitalHeaderRails}
+            className={`orbital-header-rails${orbRailGeometry ? '' : ' orbital-header-rails-pending'}`}
+            viewBox={`0 0 ${orbRailGeometry?.width ?? 1000} 40`}
+            aria-hidden="true"
+          >
             <defs>
               <linearGradient id="orbital-header-gradient">
                 <stop offset="0%" stopColor="#278bff" stopOpacity=".78" />
@@ -1188,9 +1244,12 @@ export function App() {
                 <stop offset="100%" stopColor="#b84aff" stopOpacity=".78" />
               </linearGradient>
             </defs>
-            <g transform="translate(-50 0)">
-              <path className="orbital-header-rail" d="M-1000 5 H404 C452 5 454 26 500 26 C546 26 548 5 596 5 H2000" />
-            </g>
+            {orbRailGeometry && (
+              <path
+                className="orbital-header-rail"
+                d={`M0 5 H${orbRailGeometry.center - orbRailGeometry.span} C${orbRailGeometry.center - orbRailGeometry.span / 2} 5 ${orbRailGeometry.center - orbRailGeometry.span / 2} 32 ${orbRailGeometry.center} 32 C${orbRailGeometry.center + orbRailGeometry.span / 2} 32 ${orbRailGeometry.center + orbRailGeometry.span / 2} 5 ${orbRailGeometry.center + orbRailGeometry.span} 5 H${orbRailGeometry.width}`}
+              />
+            )}
           </svg>
         )}
         {messages.length > 0 && (
@@ -1310,7 +1369,7 @@ export function App() {
           </div>
         </nav>
 
-        <section className="conversation" aria-label="Conversation">
+        <section className="conversation" aria-label="Conversation" ref={conversation}>
           {messages.length > 0 && (
             <div className="conversation-heading">
               <div>

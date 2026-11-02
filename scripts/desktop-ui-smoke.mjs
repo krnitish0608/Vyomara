@@ -372,7 +372,7 @@ try {
       const workspace = document.querySelector('.workspace');
       const orb = document.querySelector('.topbar-orbit .voice-orb-button');
       const rails = document.querySelectorAll('.orbital-header-rails path');
-      if (!shell || !topbar || !workspace || !orb) return null;
+      if (!shell || !topbar || !workspace || !orb || document.querySelector('.orbital-header-rails-pending')) return null;
       const topbarBounds = topbar.getBoundingClientRect();
       const workspaceBounds = workspace.getBoundingClientRect();
       const conversationBounds = document.querySelector('.conversation').getBoundingClientRect();
@@ -381,14 +381,19 @@ try {
       const rail = rails[0];
       const railStart = rail.getPointAtLength(0);
       const railEnd = rail.getPointAtLength(rail.getTotalLength());
-      const railCenter = rail.getPointAtLength(rail.getTotalLength() / 2);
       const railMatrix = rail.getScreenCTM();
-      const railCenterX = railMatrix.a * railCenter.x + railMatrix.c * railCenter.y + railMatrix.e;
       const railStartX = railMatrix.a * railStart.x + railMatrix.c * railStart.y + railMatrix.e;
       const railEndX = railMatrix.a * railEnd.x + railMatrix.c * railEnd.y + railMatrix.e;
+      let railCenter = railStart;
+      for (let index = 1; index <= 1000; index++) {
+        const point = rail.getPointAtLength(rail.getTotalLength() * index / 1000);
+        if (point.y > railCenter.y) railCenter = point;
+      }
+      const railCenterX = railMatrix.a * railCenter.x + railMatrix.c * railCenter.y + railMatrix.e;
       const conversationCenterX = conversationBounds.left + conversationBounds.width / 2;
       const topbarBorderLeft = Number.parseFloat(getComputedStyle(topbar).borderLeftWidth);
       const topbarBorderRight = Number.parseFloat(getComputedStyle(topbar).borderRightWidth);
+      const curveGap = railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f - orbBounds.bottom;
       return {
         active: shell.classList.contains('app-shell-chat-active'),
         welcomeHidden: !document.querySelector('.welcome-card'),
@@ -399,12 +404,10 @@ try {
         railCentered: Math.abs(railCenterX - conversationCenterX) < 1,
         railSpansHeader: Math.abs(railsBounds.left - (topbarBounds.left + topbarBorderLeft)) < 1 &&
           Math.abs(railsBounds.right - (topbarBounds.right - topbarBorderRight)) < 1 &&
-          railStartX < railsBounds.left && railEndX > railsBounds.right,
+          Math.abs(railStartX - railsBounds.left) < 1 && Math.abs(railEndX - railsBounds.right) < 1,
         curveBelowDivider: railCenter.y > railStart.y,
-        curveNearOrb: railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f -
-          orbBounds.bottom >= 0 &&
-          railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f -
-          orbBounds.bottom < 12,
+        curveGap,
+        curveNearOrb: curveGap >= 8 && curveGap < 20,
         orbLift: orbBounds.top + orbBounds.height / 2 - (topbarBounds.bottom - 24),
         overlapsWorkspace: orbBounds.bottom > workspaceBounds.top,
         zOrder: [getComputedStyle(topbar).zIndex, getComputedStyle(workspace).zIndex],
@@ -417,6 +420,63 @@ try {
       Math.abs(orbLayout.orbLift) < 1 && orbLayout.overlapsWorkspace &&
       Number(orbLayout.zOrder[0]) > Number(orbLayout.zOrder[1])),
     `the straight divider becomes one centered curve below the orb when chat begins: ${JSON.stringify(orbLayout)}`,
+  );
+  const originalViewport = await evaluate('({ width: window.innerWidth, height: window.innerHeight })');
+  const responsiveCurveResults = [];
+  for (const width of [1440, 1024, 800]) {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: originalViewport.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    const responsiveLayout = await waitFor(
+      async () => {
+        const layout = await evaluate(`(() => {
+        const topbar = document.querySelector('.topbar');
+        const orb = document.querySelector('.topbar-orbit .voice-orb-button');
+        const rail = document.querySelector('.orbital-header-rails path');
+        const svg = document.querySelector('.orbital-header-rails');
+        const conversation = document.querySelector('.conversation');
+        if (!topbar || !orb || !rail || !svg || !conversation ||
+          svg.classList.contains('orbital-header-rails-pending') || window.innerWidth !== ${width}) return null;
+        const orbBounds = orb.getBoundingClientRect();
+        const conversationBounds = conversation.getBoundingClientRect();
+        const svgBounds = svg.getBoundingClientRect();
+        const matrix = rail.getScreenCTM();
+        const start = rail.getPointAtLength(0);
+        const end = rail.getPointAtLength(rail.getTotalLength());
+        let deepest = start;
+        for (let index = 1; index <= 500; index++) {
+          const point = rail.getPointAtLength(rail.getTotalLength() * index / 500);
+          if (point.y > deepest.y) deepest = point;
+        }
+        const centerX = matrix.a * deepest.x + matrix.c * deepest.y + matrix.e;
+        const curveY = matrix.b * deepest.x + matrix.d * deepest.y + matrix.f;
+        const startX = matrix.a * start.x + matrix.c * start.y + matrix.e;
+        const endX = matrix.a * end.x + matrix.c * end.y + matrix.e;
+        return {
+          width: window.innerWidth,
+          geometryMatches: Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) < 1,
+          centered: Math.abs(centerX - conversationBounds.left - conversationBounds.width / 2) < 2,
+          endpoints: Math.abs(startX - svgBounds.left) < 1 && Math.abs(endX - svgBounds.right) < 1,
+          nearOrb: curveY - orbBounds.bottom >= 8 && curveY - orbBounds.bottom < 20,
+        };
+      })()`);
+        return layout?.geometryMatches ? layout : null;
+      },
+      `waiting for the orb curve at ${width}px`,
+    );
+    responsiveCurveResults.push(responsiveLayout);
+  }
+  await send('Emulation.clearDeviceMetricsOverride');
+  await waitFor(
+    () => evaluate(`window.innerWidth === ${originalViewport.width}`),
+    'restoring the original desktop viewport',
+  );
+  assert(
+    responsiveCurveResults.every(layout => layout.centered && layout.endpoints && layout.nearOrb),
+    `the responsive curve stays centered and connected at narrow and wide sizes: ${JSON.stringify(responsiveCurveResults)}`,
   );
   await waitFor(
     () => evaluate('document.activeElement?.id === "prompt"'),
