@@ -181,9 +181,9 @@ try {
         logo.getAttribute('alt') === 'Vyomara' &&
         logo.complete &&
         logo.naturalWidth > 500 &&
-        !logo.parentElement?.querySelector('small');
+        logo.parentElement?.querySelector('small')?.textContent === 'AI Twins. One Orbit. Your Control.';
     })()`),
-    'the top bar keeps the Vyomara wordmark without extra tagline text',
+    'the top bar pairs the Vyomara wordmark with its tagline',
   );
   assert(
     await evaluate(`!document.querySelector('.conversation-heading') &&
@@ -274,9 +274,9 @@ try {
     'the app fits the viewport and keeps conversation scrolling inside the message list',
   );
   assert(
-    await evaluate(`document.getElementById('prompt')?.placeholder === '' &&
+    await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
       document.querySelector('.welcome-card .voice-orbit-status')?.classList.contains('visually-hidden') &&
-      document.querySelector('.composer-footer > span')?.classList.contains('visually-hidden') &&
+      !document.querySelector('.composer-footer > span') &&
       document.querySelector('.privacy-note')?.classList.contains('visually-hidden')`),
     'empty chat accepts a typed or spoken message without a greeting barrier',
   );
@@ -312,20 +312,46 @@ try {
   );
   assert(
     await evaluate(`(() => {
-      const button = document.querySelector('.composer .voice-input-button');
-      return button?.type === 'button' &&
-        button.getAttribute('aria-pressed') === 'false' &&
-        button.getAttribute('aria-label')?.includes('voice input') &&
-        button.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)};
+      const microphone = document.querySelector('.composer .voice-input-button');
+      return microphone?.type === 'button' &&
+        !document.querySelector('.composer .send-button') &&
+        microphone.getAttribute('aria-pressed') === 'false' &&
+        microphone.getAttribute('aria-label')?.includes('dictation') &&
+        microphone.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)} &&
+        microphone.getBoundingClientRect().width === 40 &&
+        microphone.getBoundingClientRect().height === 40 &&
+        document.querySelector('.composer').getBoundingClientRect().height <= 104 &&
+        document.querySelector('#prompt').getBoundingClientRect().height <= 40;
     })()`),
-    'composer exposes a stateful microphone button alongside Send',
+    'composer starts compact with only the microphone action when the message is empty',
   );
+  const microphonePosition = await evaluate(`(() => {
+    const { x, y, width, height } = document.querySelector('.composer .voice-input-button').getBoundingClientRect();
+    return { x, y, width, height };
+  })()`);
   assert(
     await evaluate(`document.querySelector('.tool-execution-card')?.innerText.includes('No task running')`),
     'current task panel reports the truthful idle state',
   );
   await evaluate('document.getElementById("prompt").focus()');
   await typeText('Can you help me?');
+  assert(
+    await evaluate(`(() => {
+      const send = document.querySelector('.composer .send-button');
+      if (!send || document.querySelector('.composer .voice-input-button') || send.disabled) return false;
+      const { x, y, width, height } = send.getBoundingClientRect();
+      const microphone = ${JSON.stringify(microphonePosition)};
+      return width === microphone.width && height === microphone.height &&
+        Math.abs(x - microphone.x) < 1 && Math.abs(y - microphone.y) < 1;
+    })()`),
+    'typing replaces the microphone with a same-size Send button in the same aligned position',
+  );
+  assert(
+    await evaluate(`document.querySelectorAll('.message-user').length === 0 &&
+      !document.querySelector('.pending-state') &&
+      document.getElementById('prompt').value === 'Can you help me?'`),
+    'typed drafts remain in the composer until explicitly sent',
+  );
   await pressKey('Enter', 'Enter', 13);
   await waitFor(
     () => evaluate(`document.querySelector('.message-user .message-text')?.innerText === 'Can you help me?' &&
@@ -335,7 +361,9 @@ try {
   );
   assert(
     await evaluate(`document.querySelectorAll('.message-user').length === 1 &&
-      Boolean(document.querySelector('.session-badge'))`),
+      Boolean(document.querySelector('.session-badge')) &&
+      document.querySelector('.composer .voice-input-button') &&
+      !document.querySelector('.composer .send-button')`),
     'creating a session from the first arbitrary message',
   );
   await waitFor(
@@ -430,9 +458,10 @@ try {
     'rejecting an app action performs no launch',
   );
   assert(
-    await evaluate(`Boolean(document.querySelector('.message-speak') &&
-      document.querySelector('.message-speak').innerText.includes('Speak aloud'))`),
-    'assistant replies offer explicit on-device speech output',
+    await evaluate(`!document.querySelector('.message-speak') &&
+      ![...document.querySelectorAll('.message-content button')].some(button =>
+        button.innerText.includes('Speak aloud'))`),
+    'received assistant messages do not show a Speak aloud control',
   );
 
   await evaluate('document.getElementById("prompt").focus()');

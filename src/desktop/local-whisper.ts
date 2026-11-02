@@ -40,9 +40,14 @@ export function extractWhisperTranscriptions(output: string): string[] {
   for (const [, body] of blocks) {
     if (!body) continue;
     const text = body.split('\n')
-      .map(line => line.replace(/\x1b\[[0-9;]*m/g, '').replace(/^\[[^\]]+ --> [^\]]+\]\s*/, '').trim())
+      .map(line => line
+        .replace(/\x1b\[[0-9;]*m/g, '')
+        .replace(/^\[[^\]]+ --> [^\]]+\]\s*/, '')
+        .replace(/\[BLANK_AUDIO\]/gi, '')
+        .trim())
       .filter(Boolean)
       .join(' ')
+      .replace(/\s+/g, ' ')
       .trim();
     if (text) transcripts.push(text);
   }

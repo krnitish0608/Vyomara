@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -586,6 +586,16 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
     if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the local base speech model before enabling voice listening.');
     if (!resolveWhisperBinary()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
     try {
+      const microphoneStatus = systemPreferences.getMediaAccessStatus('microphone');
+      const microphoneGranted = microphoneStatus === 'granted' ||
+        (microphoneStatus === 'not-determined' && await systemPreferences.askForMediaAccess('microphone'));
+      if (!microphoneGranted) {
+        throw new LocalSpeechError(
+          microphoneStatus === 'denied' || microphoneStatus === 'restricted'
+            ? 'Microphone access is blocked. Enable it for Vyomara in System Settings > Privacy & Security > Microphone, then restart Vyomara.'
+            : 'Microphone access was not granted. Allow it in the macOS prompt to use voice listening.',
+        );
+      }
       runner.start(emitSpeechEvent);
       voiceListeningEnabled = true;
       await saveVoiceListeningPreference(true);

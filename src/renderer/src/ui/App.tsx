@@ -18,6 +18,7 @@ import type {
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
 import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
+import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
 interface ChatMessage {
@@ -146,14 +147,16 @@ export function App() {
   const [appActionResult, setAppActionResult] = useState<DesktopAppActionResult>();
   const [speechSetup, setSpeechSetup] = useState<DesktopSpeechSetupStatus>();
   const [voiceListening, setVoiceListening] = useState(false);
+  const [composerDictation, setComposerDictation] = useState(false);
   const [voiceStarting, setVoiceStarting] = useState(false);
   const [voiceDownloading, setVoiceDownloading] = useState(false);
   const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number>();
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceError, setVoiceError] = useState<string>();
-  const [speakingMessageId, setSpeakingMessageId] = useState<number>();
   const [speechError, setSpeechError] = useState<string>();
   const queuedVoiceCommands = useRef<string[]>([]);
+  const composerDictationRef = useRef(false);
+  const composerDictationBase = useRef('');
   const currentRequestPending = useRef(requestPending);
   currentRequestPending.current = requestPending;
   const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
@@ -188,7 +191,11 @@ export function App() {
       if (label) setActivity(current => [...current, label].slice(-12));
     });
     const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
-      if (event.type === 'partial') setVoiceTranscript(event.transcript);
+      if (event.type === 'partial') {
+        setVoiceTranscript(event.transcript);
+        const action = resolveVoiceTranscriptAction('partial', composerDictationRef.current, event.transcript);
+        if (action.type === 'draft') setPrompt(appendVoiceDraft(composerDictationBase.current, action.transcript));
+      }
       if (event.type === 'model-progress' && event.total > 0) {
         setVoiceDownloadProgress(Math.min(100, Math.round(event.received / event.total * 100)));
       }
@@ -204,20 +211,26 @@ export function App() {
       if (event.type === 'stopped') {
         setVoiceStarting(false);
         setVoiceListening(false);
+        composerDictationRef.current = false;
+        setComposerDictation(false);
       }
       if (event.type === 'error') {
         setVoiceStarting(false);
         setVoiceListening(false);
         setVoiceDownloading(false);
+        composerDictationRef.current = false;
+        setComposerDictation(false);
         setVoiceError(event.message);
       }
       if (event.type === 'command') {
         setVoiceTranscript(event.transcript);
-        if (currentRequestPending.current) {
+        const action = resolveVoiceTranscriptAction('command', composerDictationRef.current, event.transcript);
+        if (action.type === 'draft') {
+          composerDictationBase.current = appendVoiceDraft(composerDictationBase.current, action.transcript);
+          setPrompt(composerDictationBase.current);
+        } else if (currentRequestPending.current) {
           queuedVoiceCommands.current.push(event.transcript);
-        } else {
-          void submitVoicePrompt.current?.(event.transcript, true);
-        }
+        } else if (action.type === 'submit') void submitVoicePrompt.current?.(action.transcript, true);
       }
     });
     void window.vyomara.getSpeechSetupStatus().then(status => {
@@ -262,6 +275,16 @@ export function App() {
     if (!transcript) return;
     void submitPrompt(transcript, true);
   }, [appActionProposal, appActionRunning, checkLoading, editProposals.length, requestPending]);
+
+  useEffect(() => {
+    const input = promptInput.current;
+    if (!input) return;
+    const maxHeight = Math.round(window.innerHeight * 0.28);
+    input.style.height = '36px';
+    const contentHeight = input.scrollHeight;
+    input.style.height = `${Math.min(Math.max(contentHeight, 36), maxHeight)}px`;
+    input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+  }, [prompt]);
 
   useEffect(() => {
     if (requestPending || !shouldRestoreComposerFocus.current) return;
@@ -430,6 +453,7 @@ export function App() {
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (composerDictationRef.current) return;
     const trimmed = prompt.trim();
     const restoreFocus = Boolean(trimmed) && !detectDesktopAppAction(trimmed) &&
       !(isCodeEditRequest(trimmed) && !checkProjectDirectory);
@@ -456,6 +480,10 @@ export function App() {
     } catch (error) {
       setVoiceDownloading(false);
       setVoiceStarting(false);
+      if (composerDictationRef.current) {
+        composerDictationRef.current = false;
+        setComposerDictation(false);
+      }
       setVoiceError(error instanceof Error ? error.message : 'The offline speech model could not be installed.');
     }
   }
@@ -465,7 +493,7 @@ export function App() {
     setVoiceError(undefined);
     setVoiceTranscript('');
     if (!voiceListening && !speechSetup.modelReady) return;
-    setVoiceStarting(!voiceListening);
+    setVoiceStarting(true);
     try {
       const status = await window.vyomara.setSpeechListening(!voiceListening);
       setSpeechSetup(status);
@@ -475,35 +503,24 @@ export function App() {
       }
     } catch (error) {
       setVoiceStarting(false);
+      if (composerDictationRef.current) {
+        composerDictationRef.current = false;
+        setComposerDictation(false);
+      }
       setVoiceError(error instanceof Error ? error.message : 'Voice listening could not be changed.');
     }
   }
 
-  async function speakMessage(message: ChatMessage): Promise<void> {
-    if (speakingMessageId === message.id) {
-      await stopSpeaking();
+  function toggleComposerDictation(): void {
+    if (composerDictation) {
+      void toggleVoiceListening();
       return;
     }
-    if (speakingMessageId !== undefined || message.failed) return;
-    setSpeechError(undefined);
-    setSpeakingMessageId(message.id);
-    try {
-      const result = await window.vyomara.speakText(message.content);
-      if (result.status === 'cancelled') setSpeechError('Speech stopped.');
-    } catch (error) {
-      setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
-    } finally {
-      setSpeakingMessageId(undefined);
-    }
-  }
-
-  async function stopSpeaking(): Promise<void> {
-    try {
-      const stopped = await window.vyomara.stopSpeaking();
-      if (!stopped) setSpeechError('There is no active speech to stop.');
-    } catch (error) {
-      setSpeechError(error instanceof Error ? error.message : 'Local speech could not be stopped.');
-    }
+    composerDictationBase.current = prompt.trimEnd();
+    composerDictationRef.current = true;
+    setComposerDictation(true);
+    if (speechSetup?.modelReady) void toggleVoiceListening();
+    else void downloadVoiceModel();
   }
 
   async function cancel(): Promise<void> {
@@ -1112,7 +1129,10 @@ export function App() {
       <header className="topbar">
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
-          <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
+          <span className="topbar-brand-copy">
+            <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
+            <small>AI Twins. One Orbit. Your Control.</small>
+          </span>
         </a>
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
@@ -1286,16 +1306,6 @@ export function App() {
                 </div>
                 <div className="message-content">
                   <p className="message-text">{message.content}</p>
-                  {message.role === 'assistant' && !message.failed && (
-                    <button
-                      className="message-speak"
-                      type="button"
-                      onClick={() => void speakMessage(message)}
-                      disabled={speakingMessageId !== undefined && speakingMessageId !== message.id}
-                    >
-                      {speakingMessageId === message.id ? '■ Stop speaking' : '♩ Speak aloud'}
-                    </button>
-                  )}
                 </div>
               </article>
             ))}
@@ -1399,66 +1409,88 @@ export function App() {
               onChange={event => {
                 setPrompt(event.target.value);
               }}
-              placeholder={messages.length === 0 ? undefined : 'Message Vyom…'}
-              rows={2}
+              placeholder="Message Vyom…"
+              rows={1}
               maxLength={8000}
               disabled={requestPending || editProposals.length > 0}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
+                  if (composerDictationRef.current) {
+                    toggleComposerDictation();
+                    return;
+                  }
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
             />
             <div className="composer-footer">
-              <span className={messages.length === 0 ? 'visually-hidden' : undefined}>Enter to send · Shift + Enter for a new line</span>
               <div className="composer-actions">
-                <button
-                  className={`voice-input-button${voiceListening ? ' voice-input-active' : ''}`}
-                  type="button"
-                  onClick={() => speechSetup?.modelReady ? void toggleVoiceListening() : void downloadVoiceModel()}
-                  disabled={
-                    !speechSetup?.runtimeAvailable ||
-                    voiceStarting ||
-                    voiceDownloading ||
-                    requestPending ||
-                    editProposals.length > 0
-                  }
-                  aria-label={
-                    voiceListening
-                      ? 'Turn voice listening off'
-                      : speechSetup?.modelReady
-                        ? 'Start voice input'
-                        : 'Download offline voice model and start voice input'
-                  }
-                  aria-pressed={voiceListening || voiceStarting}
-                  title={
-                    speechSetup?.runtimeAvailable === false
-                      ? 'Install whisper.cpp to enable offline voice input'
-                      : voiceListening
-                        ? 'Listening · click to turn off'
-                        : speechSetup?.modelReady
-                          ? 'Start offline voice input'
-                          : 'Download the offline voice model and start listening'
-                  }
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <rect x="9" y="2.5" width="6" height="12" rx="3" />
-                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
-                  </svg>
-                </button>
-                <button
-                  className="send-button"
-                  type="submit"
-                  disabled={requestPending || prompt.trim() === '' || editProposals.length > 0}
-                  aria-label="Send message"
-                >
-                  <span aria-hidden="true">↑</span>
-                </button>
+                {prompt.trim() && !composerDictation ? (
+                  <button
+                    className="send-button"
+                    type="submit"
+                    disabled={requestPending || editProposals.length > 0}
+                    aria-label="Send message"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 19V5m-7 7 7-7 7 7" />
+                    </svg>
+                  </button>
+                ) : (
+                  <button
+                    className={`voice-input-button${voiceListening ? ' voice-input-active' : ''}${composerDictation ? ' voice-input-dictating' : ''}`}
+                    type="button"
+                    onClick={toggleComposerDictation}
+                    disabled={
+                      !speechSetup?.runtimeAvailable ||
+                      voiceStarting ||
+                      voiceDownloading ||
+                      requestPending ||
+                      editProposals.length > 0
+                    }
+                    aria-label={
+                      composerDictation
+                        ? voiceListening
+                          ? 'Stop voice dictation'
+                          : voiceDownloading
+                            ? 'Preparing voice dictation'
+                            : 'Starting voice dictation'
+                        : voiceListening
+                          ? 'Turn voice listening off'
+                          : speechSetup?.modelReady
+                            ? 'Start voice dictation'
+                            : 'Download offline voice model and start dictation'
+                    }
+                    aria-pressed={voiceListening || voiceStarting}
+                    title={
+                      speechSetup?.runtimeAvailable === false
+                        ? 'Install whisper.cpp to enable offline voice input'
+                        : composerDictation
+                          ? 'Stop dictation and review the transcript before sending'
+                          : voiceListening
+                            ? 'Listening · click to turn off'
+                            : speechSetup?.modelReady
+                              ? 'Start dictation into the message box'
+                              : 'Download the offline voice model and start dictation'
+                    }
+                  >
+                    {composerDictation && voiceListening ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="8" y="8" width="8" height="8" rx="1.5" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
+                      </svg>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
             {(voiceError || voiceDownloading || voiceStarting || voiceListening) && (
-              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${messages.length === 0 && !voiceError ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${(messages.length === 0 || (composerDictation && voiceListening)) && !voiceError ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
                 {voiceError
                   ? voiceError
                   : voiceDownloading
@@ -1466,7 +1498,7 @@ export function App() {
                     : voiceStarting
                       ? 'Starting local microphone…'
                       : voiceListening
-                        ? voiceTranscript || 'Listening—speak your message.'
+                        ? composerDictation ? 'Listening for a draft…' : voiceTranscript || 'Listening—speak your message.'
                         : ''}
               </p>
             )}

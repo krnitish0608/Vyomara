@@ -14,11 +14,18 @@ test('Whisper transcription parser extracts clean lines from VAD output', () => 
     '### Transcription 1 START',
     '[00:00:02.000 --> 00:00:02.500] Search for weather.',
     '### Transcription 1 END',
+    '### Transcription 2 START',
+    '[00:00:03.000 --> 00:00:03.500] [BLANK_AUDIO]',
+    '### Transcription 2 END',
+    '### Transcription 3 START',
+    '[00:00:04.000 --> 00:00:05.000] Tell [BLANK_AUDIO] me more.',
+    '### Transcription 3 END',
   ].join('\n');
 
   assert.deepEqual(extractWhisperTranscriptions(output), [
     'Hello Vyomara, open VS Code.',
     'Search for weather.',
+    'Tell me more.',
   ]);
 });
 

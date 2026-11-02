@@ -101,6 +101,9 @@ button { color: inherit; }
 .brand-mark .mark-wave-bar { transform-box: fill-box; transform-origin: center; animation: mark-wave 1.05s ease-in-out infinite; }
 .brand-mark .mark-wave-bar-1, .brand-mark .mark-wave-bar-5 { animation-delay: -650ms; }
 .brand-mark .mark-wave-bar-2, .brand-mark .mark-wave-bar-4 { animation-delay: -320ms; }
+.topbar-brand-copy { display: grid; align-content: center; gap: 1px; }
+.topbar-brand-copy small { color: #8d9cbd; font-family: 'DM Sans', sans-serif; font-size: 8px; font-weight: 500; letter-spacing: 0.075em; line-height: 1; white-space: nowrap; }
+.topbar-wordmark { display: block; width: 140px; height: 24px; object-fit: contain; object-position: left center; mix-blend-mode: lighten; }
 
 .provider-status {
   display: flex;
@@ -197,7 +200,6 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .message-content { min-width: 0; max-width: min(100%, 720px); }
 .message-user .message-content { padding: 10px 13px; border: 1px solid rgba(71, 105, 194, .28); border-radius: 14px 4px 14px 14px; background: rgba(15, 31, 65, .76); }
 .message-assistant .message-content { padding: 10px 13px; border: 1px solid rgba(80, 107, 171, .18); border-radius: 4px 14px 14px 14px; background: rgba(12, 19, 34, .58); }
-.message-speak { margin-top: 7px; padding: 4px 7px; border: 1px solid rgba(80, 107, 171, .26); border-radius: 6px; background: rgba(11, 24, 53, .58); color: #a9b9e2; font-size: 8px; cursor: pointer; }
 .message-speak:disabled { opacity: .5; cursor: wait; }
 .message-author { margin: 3px 0 6px; color: #d6dbe4; font-size: 11px; font-weight: 700; }
 .message-text { margin: 0; color: #c4cbd4; font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -211,24 +213,31 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .thinking-indicator i:nth-child(3) { animation-delay: 0.4s; }
 @keyframes pulse { from { opacity: 0.35; transform: translateY(1px); } to { opacity: 1; transform: translateY(-2px); } }
 
-.composer { padding: 13px 15px 10px; border: 1px solid #303846; border-radius: 13px; background: #151b24; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.15); }
+.composer { padding: 8px 10px 9px; border: 1px solid #303846; border-radius: 13px; background: #151b24; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.15); }
 .composer:focus-within { border-color: rgba(119, 151, 238, 0.64); box-shadow: 0 0 0 2px rgba(78, 118, 224, 0.1); }
-.composer textarea { width: 100%; min-height: 45px; max-height: 28vh; resize: none; overflow-y: auto; border: 0; outline: 0; background: transparent; color: #e7eaf0; font-size: 13px; line-height: 1.55; }
+.composer textarea { display: block; width: 100%; height: 36px; min-height: 36px; max-height: 28vh; padding: 7px 4px 5px; resize: none; overflow-y: hidden; border: 0; outline: 0; background: transparent; color: #e7eaf0; font-size: 13px; line-height: 1.55; }
 .composer textarea:focus-visible { outline: 0; }
 .composer textarea::placeholder { color: #778291; }
 .composer textarea:disabled { opacity: 0.6; }
-.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #6f7a88; font-size: 10px; }
-.composer-actions { display: flex; align-items: center; gap: 8px; }
-.voice-input-button { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid rgba(107, 143, 235, .28); border-radius: 50%; background: rgba(15, 31, 65, .64); color: #a9b9e2; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+.composer-footer { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #6f7a88; font-size: 10px; }
+.composer-actions { width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; margin-left: auto; }
+.voice-input-button { width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(107, 143, 235, .34); border-radius: 50%; background: rgba(15, 31, 65, .64); color: #a9b9e2; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease; }
 .voice-input-button:hover:not(:disabled) { border-color: rgba(126, 158, 238, .72); background: rgba(38, 63, 120, .72); color: #eef3ff; }
 .voice-input-button:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
+.voice-input-button:active:not(:disabled) { transform: scale(.94); }
 .voice-input-button:disabled { opacity: .48; cursor: not-allowed; }
-.voice-input-button.voice-input-active { border-color: rgba(248, 112, 132, .75); background: rgba(115, 36, 58, .38); color: #ffb5c0; box-shadow: 0 0 0 3px rgba(248, 112, 132, .1); }
+.voice-input-button.voice-input-active { border-color: rgba(248, 112, 132, .75); background: rgba(115, 36, 58, .38); color: #ffb5c0; box-shadow: 0 0 0 3px rgba(248, 112, 132, .1); animation: mic-recording-pulse 1.5s ease-out infinite; }
+.voice-input-button.voice-input-dictating svg rect { fill: currentColor; stroke: none; }
 .voice-input-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.send-button { width: 31px; height: 31px; border: 0; border-radius: 9px; background: linear-gradient(135deg, #b999f5, #9770df); color: #191322; font-size: 20px; font-weight: 600; cursor: pointer; }
+.send-button { width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: linear-gradient(135deg, #29a8ff, #4d56fa); color: white; cursor: pointer; transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; }
+.send-button:hover:not(:disabled) { filter: brightness(1.12); box-shadow: 0 0 18px rgba(54, 133, 255, .36); }
+.send-button:active:not(:disabled) { transform: scale(.94); }
+.send-button:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
 .send-button:disabled { background: #343a45; color: #737d89; cursor: not-allowed; }
+.send-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
 .composer-voice-status { margin: 8px 0 0; color: #aebfe4; font-size: 10px; line-height: 1.5; }
 .composer-voice-error { color: #f0a8ae; }
+@keyframes mic-recording-pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(248, 112, 132, .1); } 50% { box-shadow: 0 0 0 6px rgba(248, 112, 132, .2); } }
 .privacy-note { min-height: 13px; margin: 9px 0 0; color: #697583; font-size: 9px; text-align: center; }
 
 .activity-panel { min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 24px 16px 16px; border-left: 1px solid rgba(80, 107, 171, 0.2); background: rgba(3, 10, 27, 0.58); }
@@ -397,7 +406,6 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 @keyframes orb-breathe { 0%, 100% { box-shadow: 0 0 0 5px rgba(42, 91, 245, .16), 0 0 28px rgba(56, 83, 255, .4), inset 0 0 18px rgba(148, 127, 255, .62); } 50% { box-shadow: 0 0 0 9px rgba(42, 91, 245, .2), 0 0 42px rgba(91, 83, 255, .65), inset 0 0 24px rgba(169, 148, 255, .72); } }
 .conversation .composer { border-color: rgba(71, 105, 194, .38); border-radius: 20px; background: rgba(7, 18, 45, .94); box-shadow: 0 0 20px rgba(19, 61, 171, .12); }
 .conversation .composer:focus-within { border-color: rgba(107, 143, 235, .7); box-shadow: 0 0 0 2px rgba(51, 101, 240, .1); }
-.conversation .send-button { border-radius: 50%; background: linear-gradient(135deg, #29a8ff, #4d56fa); color: white; }
 .conversation .privacy-note { font-size: 8px; }
 
 .activity-panel { gap: 12px; }
@@ -450,7 +458,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
   .activity-panel:not(.history-panel) { display: none; }
   .activity-panel.history-panel { position: absolute; z-index: 2; inset: 0; border-left: 0; }
   .topbar { padding: 0 14px; }
-  .topbar-wordmark { width: 124px; height: 29px; }
+  .topbar-wordmark { width: 124px; height: 22px; }
   .topbar-brand .brand-mark { width: 31px; height: 31px; }
   .provider-status { font-size: 10px; }
   .status-note { display: none; }
