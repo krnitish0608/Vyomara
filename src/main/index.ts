@@ -69,6 +69,18 @@ let checkProjectDirectory: string | undefined;
 let pendingRestoreBackupPath: string | undefined;
 let config: AppConfig | undefined;
 let environmentConfig: AppConfig | undefined;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+} else {
+  app.quit();
+}
 
 function publicErrorMessage(error: unknown): string {
   if (
@@ -786,6 +798,7 @@ ipcMain.handle('vyomara:memory-delete', (_event, input: unknown) => {
 });
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const audioOnlyRequest = 'mediaTypes' in details &&

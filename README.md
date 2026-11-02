@@ -71,8 +71,9 @@ The launcher builds the desktop app and opens a local, ad-hoc-signed
 `Vyomara.app` bundle through macOS LaunchServices. This is required so macOS
 attributes microphone and speech permissions to Vyomara, rather than to the
 terminal or editor that started it. The launcher applies the Vyomara orbiter
-mark as the macOS app icon. Release signing and distribution are not
-implemented.
+mark as the macOS app icon. If Vyomara is already running, launching it again
+brings the existing window forward instead of opening another instance.
+Release signing and distribution are not implemented.
 
 By default, the app uses local Ollama. Start Ollama separately; use the
 provider status controls in **Settings** to check local service reachability

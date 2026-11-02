@@ -58,4 +58,4 @@ run('/usr/libexec/PlistBuddy', [
 ]);
 run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', '--identifier', 'app.vyomara.desktop', appBundle]);
 run('/usr/bin/codesign', ['--verify', '--deep', '--strict', appBundle]);
-run('/usr/bin/open', ['-n', appBundle, '--args', root]);
+run('/usr/bin/open', ['-a', appBundle, '--args', root]);

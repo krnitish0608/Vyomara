@@ -279,6 +279,16 @@ try {
     'the app fits the viewport and keeps conversation scrolling inside the message list',
   );
   assert(
+    await evaluate(`(() => {
+      const list = document.querySelector('.message-list');
+      return getComputedStyle(list).overflowY === 'auto' &&
+        getComputedStyle(list).overflowX === 'hidden' &&
+        getComputedStyle(list).scrollbarWidth === 'thin' &&
+        getComputedStyle(list, '::-webkit-scrollbar').width === '4px';
+    })()`),
+    'the conversation scroll indicator stays thin and confined to the message list',
+  );
+  assert(
     await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
       document.querySelector('.welcome-card .voice-orbit-status')?.classList.contains('visually-hidden') &&
       !document.querySelector('.composer-footer > span') &&
