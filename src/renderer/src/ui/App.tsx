@@ -1221,7 +1221,7 @@ export function App() {
     : voiceOrbLabel;
 
   return (
-    <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ''}`}>
+    <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ' app-shell-welcome'}`}>
       <header className="topbar" ref={topbar}>
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
@@ -1379,6 +1379,7 @@ export function App() {
                   <p className="welcome-copy">
                     Ask a question, plan your next move, or get help with a task—by voice or text. Vyom keeps you in control and shows its work.
                   </p>
+                  <p className="welcome-brand-line">AI Twins. One Orbit. Your Control.</p>
                 </div>
                 <VoiceOrb
                   listening={voiceListening}

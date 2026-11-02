@@ -181,9 +181,10 @@ try {
         logo.getAttribute('alt') === 'Vyomara' &&
         logo.complete &&
         logo.naturalWidth > 500 &&
-        logo.parentElement?.querySelector('small')?.textContent === 'AI Twins. One Orbit. Your Control.';
+        getComputedStyle(logo.parentElement?.querySelector('small')).display === 'none' &&
+        document.querySelector('.welcome-brand-line')?.textContent === 'AI Twins. One Orbit. Your Control.';
     })()`),
-    'the top bar pairs the Vyomara wordmark with its tagline',
+    'welcome screen displays the brand tagline prominently once, not under the logo',
   );
   assert(
     await evaluate(`document.querySelector('.welcome-intro .welcome-kicker')?.textContent === 'YOUR PERSONAL AI ASSISTANT' &&
@@ -368,6 +369,7 @@ try {
       !document.querySelector('.session-badge') &&
       !document.querySelector('.conversation-heading') &&
       !document.querySelector('.welcome-intro') &&
+      getComputedStyle(document.querySelector('.topbar-brand-copy small')).display !== 'none' &&
       document.querySelector('.topbar-brand-copy small')?.textContent === 'AI Twins. One Orbit. Your Control.' &&
       document.querySelector('.composer .voice-input-button') &&
       !document.querySelector('.composer .send-button')`),
