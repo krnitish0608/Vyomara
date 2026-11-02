@@ -366,6 +366,39 @@ try {
       !document.querySelector('.composer .send-button')`),
     'creating a session from the first arbitrary message',
   );
+  const orbLayout = await evaluate(`(() => {
+      const shell = document.querySelector('.app-shell');
+      const topbar = document.querySelector('.topbar');
+      const workspace = document.querySelector('.workspace');
+      const orb = document.querySelector('.topbar-orbit .voice-orb-button');
+      const rails = document.querySelectorAll('.orbital-header-rails path');
+      if (!shell || !topbar || !workspace || !orb) return null;
+      const topbarBounds = topbar.getBoundingClientRect();
+      const workspaceBounds = workspace.getBoundingClientRect();
+      const conversationBounds = document.querySelector('.conversation').getBoundingClientRect();
+      const orbBounds = orb.getBoundingClientRect();
+      const railCurve = rails[0];
+      const railPoint = railCurve.getPointAtLength(railCurve.getTotalLength() / 2);
+      const railMatrix = railCurve.getScreenCTM();
+      const railCenterX = railMatrix.a * railPoint.x + railMatrix.c * railPoint.y + railMatrix.e;
+      const conversationCenterX = conversationBounds.left + conversationBounds.width / 2;
+      return {
+        active: shell.classList.contains('app-shell-chat-active'),
+        welcomeHidden: !document.querySelector('.welcome-card'),
+        railCount: rails.length,
+        orbCentered: Math.abs(orbBounds.left + orbBounds.width / 2 - conversationCenterX) < 1,
+        railsCentered: Math.abs(railCenterX - conversationCenterX) < 1,
+        orbLift: orbBounds.top + orbBounds.height / 2 - (topbarBounds.bottom - 24),
+        overlapsWorkspace: orbBounds.bottom > workspaceBounds.top,
+        zOrder: [getComputedStyle(topbar).zIndex, getComputedStyle(workspace).zIndex],
+      };
+    })()`);
+  assert(
+    Boolean(orbLayout?.active && orbLayout.welcomeHidden && orbLayout.railCount === 2 &&
+      orbLayout.orbCentered && orbLayout.railsCentered && Math.abs(orbLayout.orbLift) < 1 && orbLayout.overlapsWorkspace &&
+      Number(orbLayout.zOrder[0]) > Number(orbLayout.zOrder[1])),
+    `the voice orb moves above the chat with centered curved rails when chat begins: ${JSON.stringify(orbLayout)}`,
+  );
   await waitFor(
     () => evaluate('document.activeElement?.id === "prompt"'),
     'restoring composer focus after the first response completes',

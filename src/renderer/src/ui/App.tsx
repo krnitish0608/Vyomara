@@ -52,6 +52,48 @@ function VoiceWave({ side }: { readonly side: 'left' | 'right' }) {
   );
 }
 
+function VoiceOrb({
+  listening,
+  pressed,
+  disabled,
+  label,
+  title,
+  compact = false,
+  onActivate,
+}: {
+  readonly listening: boolean;
+  readonly pressed: boolean;
+  readonly disabled: boolean;
+  readonly label: string;
+  readonly title: string;
+  readonly compact?: boolean;
+  readonly onActivate: () => void;
+}) {
+  return (
+    <div className={`voice-orbit${listening ? ' voice-orbit-listening' : ''}${compact ? ' voice-orbit-compact' : ''}`} aria-label="Offline voice input">
+      <VoiceWave side="left" />
+      <button
+        className="voice-orb-button"
+        type="button"
+        onClick={onActivate}
+        disabled={disabled}
+        aria-label={label}
+        aria-pressed={pressed}
+        title={title}
+      >
+        <span className="voice-orb-current" aria-hidden="true" />
+        <span className="voice-orb-meteor" aria-hidden="true" />
+        <span className="voice-orb-meteor voice-orb-meteor--two" aria-hidden="true" />
+        <span className="voice-orb-meteor voice-orb-meteor--three" aria-hidden="true" />
+        <span className="voice-orb-mark" aria-hidden="true">
+          <VyomaraMark tile={false} />
+        </span>
+      </button>
+      <VoiceWave side="right" />
+    </div>
+  );
+}
+
 function activityLabel(event: DiagnosticEvent): string | undefined {
   switch (event.event) {
     case 'task.created':
@@ -1123,9 +1165,12 @@ export function App() {
       ? 'Start offline voice listening'
       : 'Download offline voice model and start listening';
   const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
+  const voiceOrbTitle = speechSetup?.runtimeAvailable === false
+    ? 'Install whisper.cpp to enable offline voice'
+    : voiceOrbLabel;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ''}`}>
       <header className="topbar">
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
           <span className="brand-mark"><VyomaraMark /></span>
@@ -1134,6 +1179,34 @@ export function App() {
             <small>AI Twins. One Orbit. Your Control.</small>
           </span>
         </a>
+        {messages.length > 0 && (
+          <svg className="orbital-header-rails" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="orbital-header-gradient">
+                <stop offset="0%" stopColor="#278bff" stopOpacity=".78" />
+                <stop offset="50%" stopColor="#6476ff" stopOpacity=".38" />
+                <stop offset="100%" stopColor="#b84aff" stopOpacity=".78" />
+              </linearGradient>
+            </defs>
+            <g>
+              <path d="M-100 1 H416 C454 1 454 29 500 29 C546 29 546 1 584 1 H1100" />
+              <path d="M-100 6 H421 C457 6 458 24 500 24 C542 24 543 6 579 6 H1100" />
+            </g>
+          </svg>
+        )}
+        {messages.length > 0 && (
+          <div className="topbar-orbit">
+            <VoiceOrb
+              listening={voiceListening}
+              pressed={voiceListening || voiceStarting}
+              disabled={voiceOrbDisabled}
+              label={voiceOrbLabel}
+              title={voiceOrbTitle}
+              compact
+              onActivate={() => void voiceOrbAction()}
+            />
+          </div>
+        )}
         <div className="provider-status" title="Only a local Ollama endpoint is checked">
           <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
@@ -1253,29 +1326,14 @@ export function App() {
           <div className="message-list" ref={messageList} aria-live="polite">
             {messages.length === 0 ? (
               <div className="welcome-card" aria-label="Vyomara voice orb">
-                <div className={`voice-orbit${voiceListening ? ' voice-orbit-listening' : ''}`} aria-label="Offline voice input">
-                  <VoiceWave side="left" />
-                  <button
-                    className="voice-orb-button"
-                    type="button"
-                    onClick={() => void voiceOrbAction()}
-                    disabled={voiceOrbDisabled}
-                    aria-label={voiceOrbLabel}
-                    aria-pressed={voiceListening || voiceStarting}
-                    title={speechSetup?.runtimeAvailable === false
-                      ? 'Install whisper.cpp to enable offline voice'
-                      : voiceOrbLabel}
-                  >
-                    <span className="voice-orb-current" aria-hidden="true" />
-                    <span className="voice-orb-meteor" aria-hidden="true" />
-                    <span className="voice-orb-meteor voice-orb-meteor--two" aria-hidden="true" />
-                    <span className="voice-orb-meteor voice-orb-meteor--three" aria-hidden="true" />
-                    <span className="voice-orb-mark" aria-hidden="true">
-                      <VyomaraMark tile={false} />
-                    </span>
-                  </button>
-                  <VoiceWave side="right" />
-                </div>
+                <VoiceOrb
+                  listening={voiceListening}
+                  pressed={voiceListening || voiceStarting}
+                  disabled={voiceOrbDisabled}
+                  label={voiceOrbLabel}
+                  title={voiceOrbTitle}
+                  onActivate={() => void voiceOrbAction()}
+                />
                 <p
                   className={`${voiceError ? '' : 'visually-hidden '}voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
                   role={voiceError ? 'alert' : 'status'}
