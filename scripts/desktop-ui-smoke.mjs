@@ -377,27 +377,46 @@ try {
       const workspaceBounds = workspace.getBoundingClientRect();
       const conversationBounds = document.querySelector('.conversation').getBoundingClientRect();
       const orbBounds = orb.getBoundingClientRect();
-      const railCurve = rails[0];
-      const railPoint = railCurve.getPointAtLength(railCurve.getTotalLength() / 2);
-      const railMatrix = railCurve.getScreenCTM();
-      const railCenterX = railMatrix.a * railPoint.x + railMatrix.c * railPoint.y + railMatrix.e;
+      const railsBounds = document.querySelector('.orbital-header-rails').getBoundingClientRect();
+      const rail = rails[0];
+      const railStart = rail.getPointAtLength(0);
+      const railEnd = rail.getPointAtLength(rail.getTotalLength());
+      const railCenter = rail.getPointAtLength(rail.getTotalLength() / 2);
+      const railMatrix = rail.getScreenCTM();
+      const railCenterX = railMatrix.a * railCenter.x + railMatrix.c * railCenter.y + railMatrix.e;
+      const railStartX = railMatrix.a * railStart.x + railMatrix.c * railStart.y + railMatrix.e;
+      const railEndX = railMatrix.a * railEnd.x + railMatrix.c * railEnd.y + railMatrix.e;
       const conversationCenterX = conversationBounds.left + conversationBounds.width / 2;
+      const topbarBorderLeft = Number.parseFloat(getComputedStyle(topbar).borderLeftWidth);
+      const topbarBorderRight = Number.parseFloat(getComputedStyle(topbar).borderRightWidth);
       return {
         active: shell.classList.contains('app-shell-chat-active'),
         welcomeHidden: !document.querySelector('.welcome-card'),
         railCount: rails.length,
+        dividerHidden: getComputedStyle(topbar).borderBottomColor === 'rgba(0, 0, 0, 0)' ||
+          Number.parseFloat(getComputedStyle(topbar).borderBottomColor.split(',').at(-1)) === 0,
         orbCentered: Math.abs(orbBounds.left + orbBounds.width / 2 - conversationCenterX) < 1,
-        railsCentered: Math.abs(railCenterX - conversationCenterX) < 1,
+        railCentered: Math.abs(railCenterX - conversationCenterX) < 1,
+        railSpansHeader: Math.abs(railsBounds.left - (topbarBounds.left + topbarBorderLeft)) < 1 &&
+          Math.abs(railsBounds.right - (topbarBounds.right - topbarBorderRight)) < 1 &&
+          railStartX < railsBounds.left && railEndX > railsBounds.right,
+        curveBelowDivider: railCenter.y > railStart.y,
+        curveNearOrb: railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f -
+          orbBounds.bottom >= 0 &&
+          railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f -
+          orbBounds.bottom < 12,
         orbLift: orbBounds.top + orbBounds.height / 2 - (topbarBounds.bottom - 24),
         overlapsWorkspace: orbBounds.bottom > workspaceBounds.top,
         zOrder: [getComputedStyle(topbar).zIndex, getComputedStyle(workspace).zIndex],
       };
     })()`);
   assert(
-    Boolean(orbLayout?.active && orbLayout.welcomeHidden && orbLayout.railCount === 2 &&
-      orbLayout.orbCentered && orbLayout.railsCentered && Math.abs(orbLayout.orbLift) < 1 && orbLayout.overlapsWorkspace &&
+    Boolean(orbLayout?.active && orbLayout.welcomeHidden && orbLayout.railCount === 1 &&
+      orbLayout.dividerHidden && orbLayout.orbCentered && orbLayout.railCentered && orbLayout.curveBelowDivider &&
+      orbLayout.railSpansHeader && orbLayout.curveNearOrb &&
+      Math.abs(orbLayout.orbLift) < 1 && orbLayout.overlapsWorkspace &&
       Number(orbLayout.zOrder[0]) > Number(orbLayout.zOrder[1])),
-    `the voice orb moves above the chat with centered curved rails when chat begins: ${JSON.stringify(orbLayout)}`,
+    `the straight divider becomes one centered curve below the orb when chat begins: ${JSON.stringify(orbLayout)}`,
   );
   await waitFor(
     () => evaluate('document.activeElement?.id === "prompt"'),

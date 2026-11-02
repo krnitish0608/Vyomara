@@ -1184,13 +1184,12 @@ export function App() {
             <defs>
               <linearGradient id="orbital-header-gradient">
                 <stop offset="0%" stopColor="#278bff" stopOpacity=".78" />
-                <stop offset="50%" stopColor="#6476ff" stopOpacity=".38" />
+                <stop offset="50%" stopColor="#6476ff" stopOpacity=".52" />
                 <stop offset="100%" stopColor="#b84aff" stopOpacity=".78" />
               </linearGradient>
             </defs>
-            <g>
-              <path d="M-100 1 H416 C454 1 454 29 500 29 C546 29 546 1 584 1 H1100" />
-              <path d="M-100 6 H421 C457 6 458 24 500 24 C542 24 543 6 579 6 H1100" />
+            <g transform="translate(-50 0)">
+              <path className="orbital-header-rail" d="M-1000 5 H404 C452 5 454 26 500 26 C546 26 548 5 596 5 H2000" />
             </g>
           </svg>
         )}
