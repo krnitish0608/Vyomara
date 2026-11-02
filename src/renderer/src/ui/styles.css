@@ -181,7 +181,6 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .message-list {
   flex: 1;
   min-height: 0;
-  display: flex;
   overflow-x: hidden;
   overflow-y: auto;
   margin-right: calc(clamp(24px, 3vw, 46px) * -1);
@@ -191,6 +190,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 }
 
 .message-list-content {
+  width: 100%;
   min-height: 100%;
   display: flex;
   flex-direction: column;

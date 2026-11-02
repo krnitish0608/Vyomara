@@ -286,6 +286,13 @@ try {
       const dividerEdge = conversation.getBoundingClientRect().right -
         Number.parseFloat(conversationStyle.borderRightWidth);
       const listStyle = getComputedStyle(list);
+      const welcome = document.querySelector('.welcome-card').getBoundingClientRect();
+      const listBounds = list.getBoundingClientRect();
+      const contentBounds = content.getBoundingClientRect();
+      const contentStyle = getComputedStyle(content);
+      const contentCenter = contentBounds.left + Number.parseFloat(contentStyle.paddingLeft) +
+        (contentBounds.width - Number.parseFloat(contentStyle.paddingLeft) -
+          Number.parseFloat(contentStyle.paddingRight)) / 2;
       return {
         overflowY: listStyle.overflowY,
         overflowX: listStyle.overflowX,
@@ -293,6 +300,11 @@ try {
         webkitWidth: getComputedStyle(list, '::-webkit-scrollbar').width,
         listPaddingRight: listStyle.paddingRight,
         contentPaddingRight: getComputedStyle(content).paddingRight,
+        contentWidth: content.getBoundingClientRect().width,
+        listClientWidth: list.clientWidth,
+        welcomeCenter: welcome.left + welcome.width / 2,
+        contentCenter,
+        listCenter: listBounds.left + listBounds.width / 2,
         listRight: list.getBoundingClientRect().right,
         dividerEdge,
       };
@@ -304,8 +316,10 @@ try {
       scrollbarLayout.webkitWidth === '2px' &&
       Number.parseFloat(scrollbarLayout.listPaddingRight) === 0 &&
       Number.parseFloat(scrollbarLayout.contentPaddingRight) > 20 &&
-      Math.abs(scrollbarLayout.listRight - scrollbarLayout.dividerEdge) < 1,
-    `the 2px scrollbar sits at the divider while message padding stays inside the scroll content: ${JSON.stringify(scrollbarLayout)}`,
+      Math.abs(scrollbarLayout.listRight - scrollbarLayout.dividerEdge) < 1 &&
+      Math.abs(scrollbarLayout.contentWidth - scrollbarLayout.listClientWidth) < 1 &&
+      Math.abs(scrollbarLayout.welcomeCenter - scrollbarLayout.contentCenter) < 1,
+    `the 2px scrollbar aligns to the divider while the welcome content stays centered: ${JSON.stringify(scrollbarLayout)}`,
   );
   assert(
     await evaluate(`document.getElementById('prompt')?.placeholder === 'Message Vyom…' &&
