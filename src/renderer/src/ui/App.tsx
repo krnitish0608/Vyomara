@@ -1370,20 +1370,16 @@ export function App() {
         </nav>
 
         <section className="conversation" aria-label="Conversation" ref={conversation}>
-          {messages.length > 0 && (
-            <div className="conversation-heading">
-              <div>
-                <p className="eyebrow">VYOMARA · LOCAL AI COMPANION</p>
-                <h1>Your voice. Your orbit.</h1>
-                <p className="intro">I&apos;m Vyom, ready when you are.</p>
-              </div>
-              {sessionId && <span className="session-badge">Session saved locally</span>}
-            </div>
-          )}
-
           <div className="message-list" ref={messageList} aria-live="polite">
             {messages.length === 0 ? (
               <div className="welcome-card" aria-label="Vyomara voice orb">
+                <div className="welcome-intro">
+                  <p className="welcome-kicker">YOUR PERSONAL AI ASSISTANT</p>
+                  <h2>Tell Vyom what you need.</h2>
+                  <p className="welcome-copy">
+                    Ask a question, plan your next move, or get help with a task—by voice or text. Vyom keeps you in control and shows its work.
+                  </p>
+                </div>
                 <VoiceOrb
                   listening={voiceListening}
                   pressed={voiceListening || voiceStarting}
@@ -1393,7 +1389,7 @@ export function App() {
                   onActivate={() => void voiceOrbAction()}
                 />
                 <p
-                  className={`${voiceError ? '' : 'visually-hidden '}voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
+                  className={`${voiceError || voiceDownloading || voiceStarting || voiceListening ? '' : 'visually-hidden '}voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
                   role={voiceError ? 'alert' : 'status'}
                   aria-live="polite"
                 >
@@ -1406,10 +1402,8 @@ export function App() {
                         : voiceListening
                           ? voiceTranscript || 'Listening… speak naturally'
                           : speechSetup?.runtimeAvailable === false
-                            ? 'Offline voice engine unavailable'
-                            : speechSetup?.modelReady
-                              ? 'Tap the orb to speak'
-                              : 'Tap the orb to set up offline voice'}
+                            ? 'Offline voice unavailable—type below.'
+                            : ''}
                 </p>
               </div>
             ) : messages.map(message => (

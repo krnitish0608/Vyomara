@@ -172,14 +172,11 @@ button { color: inherit; }
   background: radial-gradient(ellipse at 50% 32%, rgba(25, 58, 143, 0.16), transparent 50%);
 }
 
-.conversation-heading { display: flex; justify-content: space-between; align-items: end; gap: 16px; }
 .eyebrow { margin: 0 0 9px; color: #9980c7; font-size: 9px; font-weight: 700; letter-spacing: 0.17em; }
 h1, h2, h3, p { margin-top: 0; }
 h1, .panel-heading h2 { margin-bottom: 0; font-family: Manrope, sans-serif; letter-spacing: -0.045em; }
 h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .intro { margin: 10px 0 0; color: var(--text-muted); font-size: 13px; }
-.session-badge { flex: 0 0 auto; padding: 6px 9px; border: 1px solid rgba(103, 216, 173, 0.2); border-radius: 20px; color: #92d9bd; font-size: 10px; }
-
 .message-list {
   flex: 1;
   min-height: 0;
@@ -352,15 +349,12 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .sidebar-provider small i { width: 5px; height: 5px; border-radius: 50%; background: #36d99a; }
 .sidebar-provider-menu { margin-left: auto; color: #7385aa; }
 
-.conversation-heading { justify-content: center; text-align: center; }
-.conversation-heading h1 { font-size: clamp(25px, 3vw, 34px); }
-.conversation-heading .eyebrow { margin-bottom: 8px; }
-.conversation-heading .intro { font-size: 12px; }
 .welcome-card { width: min(100%, 600px); padding: 0 24px; }
-.welcome-kicker { margin: 0 auto 10px !important; color: #8299de !important; font-size: 9px !important; font-weight: 750; letter-spacing: .18em; }
-.welcome-card h2 { font-size: clamp(18px, 2vw, 22px); }
-.welcome-copy { max-width: 380px !important; }
-.voice-orbit { display: flex; align-items: center; justify-content: center; gap: clamp(10px, 2vw, 23px); min-height: 174px; margin: 13px auto 3px; }
+.welcome-intro { max-width: 500px; margin: 0 auto; }
+.welcome-kicker { margin: 0 auto 13px !important; color: #91a9e8 !important; font-size: 9px !important; font-weight: 750; letter-spacing: .2em; }
+.welcome-card h2 { margin-bottom: 11px; color: #f0f3ff; font-size: clamp(24px, 2.8vw, 32px); line-height: 1.2; }
+.welcome-copy { max-width: 460px !important; color: #a4b1cc !important; font-size: 13px !important; line-height: 1.75 !important; }
+.voice-orbit { display: flex; align-items: center; justify-content: center; gap: clamp(10px, 2vw, 23px); min-height: 166px; margin: 8px auto 0; }
 .voice-orbit-listening .voice-orb-button { animation: orb-breathe 2.4s ease-in-out infinite; }
 .voice-orb-button { position: relative; z-index: 0; width: 112px; height: 112px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border: 1px solid rgba(91, 126, 255, .88); border-radius: 50%; background: radial-gradient(circle at 50% 34%, #534aff 0, #3427dc 39%, #11175b 78%); box-shadow: 0 0 0 5px rgba(42, 91, 245, .16), 0 0 28px rgba(56, 83, 255, .4), inset 0 0 18px rgba(148, 127, 255, .62); color: #f5f7ff; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease, opacity .18s ease; }
 .voice-orb-button::before, .voice-orb-button::after { position: absolute; z-index: -1; content: ""; pointer-events: none; }
@@ -405,7 +399,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .voice-waveform i:nth-child(3), .voice-waveform i:nth-child(7) { height: 32px; animation-delay: 160ms; }
 .voice-waveform i:nth-child(4), .voice-waveform i:nth-child(6) { height: 43px; animation-delay: 240ms; }
 .voice-waveform i:nth-child(5) { height: 54px; animation-delay: 320ms; }
-.voice-orbit-status { min-height: 0; margin: 0 auto; color: #b7c8f6; font-size: 11px; line-height: 1.5; }
+.voice-orbit-status { min-height: 17px; margin: 0 auto; color: #8192b6; font-size: 10px; line-height: 1.5; }
 .voice-orbit-error { color: #ff9fab !important; }
 @keyframes voice-wave { from { transform: scaleY(.32); opacity: .48; } to { transform: scaleY(1.14); opacity: 1; } }
 @keyframes mark-wave { 0%, 100% { transform: scaleY(.52); opacity: .75; } 50% { transform: scaleY(1.12); opacity: 1; } }

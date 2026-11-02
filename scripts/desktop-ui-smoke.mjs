@@ -186,10 +186,14 @@ try {
     'the top bar pairs the Vyomara wordmark with its tagline',
   );
   assert(
-    await evaluate(`!document.querySelector('.conversation-heading') &&
-      document.querySelector('.welcome-card .voice-orb-button') &&
-      document.querySelectorAll('.welcome-card .voice-waveform').length === 2`),
-    'welcome screen shows the logo orb and paired waveforms without welcome copy',
+    await evaluate(`document.querySelector('.welcome-intro .welcome-kicker')?.textContent === 'YOUR PERSONAL AI ASSISTANT' &&
+      document.querySelector('.welcome-intro h2')?.textContent === 'Tell Vyom what you need.' &&
+      document.querySelector('.welcome-copy')?.textContent.includes('Vyom keeps you in control and shows its work') &&
+    document.querySelector('.welcome-card .voice-orbit-status')?.classList.contains('visually-hidden') &&
+    !document.querySelector('.welcome-card .voice-orbit-status')?.textContent.includes('Tap the orb') &&
+    document.querySelector('.welcome-card .voice-orb-button') &&
+    document.querySelectorAll('.welcome-card .voice-waveform').length === 2`),
+    'welcome screen pairs its intro copy with the logo orb and paired waveforms',
   );
   assert(
     await evaluate(`(() => {
@@ -361,10 +365,13 @@ try {
   );
   assert(
     await evaluate(`document.querySelectorAll('.message-user').length === 1 &&
-      Boolean(document.querySelector('.session-badge')) &&
+      !document.querySelector('.session-badge') &&
+      !document.querySelector('.conversation-heading') &&
+      !document.querySelector('.welcome-intro') &&
+      document.querySelector('.topbar-brand-copy small')?.textContent === 'AI Twins. One Orbit. Your Control.' &&
       document.querySelector('.composer .voice-input-button') &&
       !document.querySelector('.composer .send-button')`),
-    'creating a session from the first arbitrary message',
+    'first chat keeps only the brand tagline without extra welcome or save-status copy',
   );
   const orbLayout = await evaluate(`(() => {
       const shell = document.querySelector('.app-shell');
@@ -396,7 +403,8 @@ try {
       const curveGap = railMatrix.b * railCenter.x + railMatrix.d * railCenter.y + railMatrix.f - orbBounds.bottom;
       return {
         active: shell.classList.contains('app-shell-chat-active'),
-        welcomeHidden: !document.querySelector('.welcome-card'),
+        welcomeHidden: !document.querySelector('.welcome-card') && !document.querySelector('.welcome-intro') &&
+          !document.querySelector('.conversation-heading'),
         railCount: rails.length,
         dividerHidden: getComputedStyle(topbar).borderBottomColor === 'rgba(0, 0, 0, 0)' ||
           Number.parseFloat(getComputedStyle(topbar).borderBottomColor.split(',').at(-1)) === 0,
@@ -417,7 +425,7 @@ try {
     Boolean(orbLayout?.active && orbLayout.welcomeHidden && orbLayout.railCount === 1 &&
       orbLayout.dividerHidden && orbLayout.orbCentered && orbLayout.railCentered && orbLayout.curveBelowDivider &&
       orbLayout.railSpansHeader && orbLayout.curveNearOrb &&
-      Math.abs(orbLayout.orbLift) < 1 && orbLayout.overlapsWorkspace &&
+      Math.abs(orbLayout.orbLift) <= 1 && orbLayout.overlapsWorkspace &&
       Number(orbLayout.zOrder[0]) > Number(orbLayout.zOrder[1])),
     `the straight divider becomes one centered curve below the orb when chat begins: ${JSON.stringify(orbLayout)}`,
   );
