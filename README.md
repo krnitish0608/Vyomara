@@ -20,8 +20,10 @@ workspace, and Settings panels are not part of the current desktop workflow.
 Desktop chat can search and inspect files across the machine without manual
 project selection. File/folder creation and text edits require an explicit
 per-operation review; each deletion requires typing `DELETE` and moves the
-item to Trash. Protected system and credential paths are unavailable. The CLI
-continues to use its separately configured, read-only filesystem tools.
+item to Trash. On macOS, launching an app from a small allowlist requires an
+explicit request and confirmation every time. Protected system and credential
+paths are unavailable. The CLI continues to use its separately configured,
+read-only filesystem tools.
 Requests have correlated task/run lifecycle events and are stored as local,
 inspectable sessions. The session history includes user prompts, assistant
 replies, tool calls, and returned tool data, which may contain private content.
@@ -104,8 +106,8 @@ Escape closes the open side panel and returns focus to its toolbar button.
 Reduced-motion preferences disable animated progress and smooth scrolling.
 Run `pnpm test:desktop-ui` on macOS Apple Silicon to build the desktop shell
 and exercise its keyboard navigation, focus, and reduced-motion behavior in
-Electron. an
-in-app confirmation before Vyomara launches the existing macOS application.
+Electron. Launching a supported macOS app requires in-app confirmation each
+time.
 Chrome searches display the exact query and disclose that Google receives it.
 Assistant replies can be spoken with the local macOS voice. Voice input uses
 the multilingual `whisper.cpp` base model and runs locally; it does not depend

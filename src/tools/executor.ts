@@ -80,7 +80,7 @@ export class ToolExecutor {
       );
     }
 
-    const decision = this.options.policy.authorize(tool.effect);
+    const decision = this.options.policy.authorize(tool.effect, toolId, input);
     if (!decision.allowed) {
       this.options.logger.emit({
         event: 'tool.denied',

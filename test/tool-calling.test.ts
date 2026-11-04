@@ -14,6 +14,8 @@ import { createDefaultToolRegistry } from '../src/tools/default-tools.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
 import { PolicyGateway } from '../src/tools/policy.ts';
 import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
+import { registerApplicationTools } from '../src/tools/application-tools.ts';
+import type { ApplicationId } from '../src/tools/application-tools.ts';
 
 interface ValueInput {
   readonly value: string;
@@ -521,6 +523,69 @@ test('recursive project listing uses the verified search path instead of a malfo
   );
 });
 
+test('deep-dive analysis with a common analyze typo reads source and tests', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-analysis-routing-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const allowedRoot = await realpath(root);
+  const projectPath = join(allowedRoot, 'debug-fixture');
+  const source = join(projectPath, 'src', 'index.ts');
+  const testFile = join(projectPath, 'tests', 'index.test.ts');
+  await mkdir(join(projectPath, 'src'), { recursive: true });
+  await mkdir(join(projectPath, 'tests'));
+  await writeFile(source, 'export const answer = 42;\n');
+  await writeFile(testFile, 'assert.equal(answer, 42);\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [allowedRoot],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  let analysisCorrectionSeen = false;
+  let fileReadCorrectionSeen = false;
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.directory-tree',
+        arguments: { path: projectPath },
+      }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: source } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: testFile } }],
+    },
+    { kind: 'final', text: 'The entry point exports a constant named answer with value 42.' },
+  ], (messages, tools) => {
+    advertised.push((tools ?? []).map(tool => tool.id));
+    analysisCorrectionSeen ||= messages?.some(message =>
+      message.role === 'user' && message.content.startsWith('You have verified the project file names')) ?? false;
+    fileReadCorrectionSeen ||= messages?.some(message =>
+      message.role === 'user' && message.content.startsWith('The user asked about tests')) ?? false;
+  }), registry, config);
+
+  const response = await app.run(
+    undefined,
+    `Deep dive inside this repo and anlyse what project it is at ${projectPath}, including the source and tests.`,
+  );
+  assert.match(response, /exports a constant named answer/u);
+  assert.deepEqual(advertised[0], ['filesystem.directory-tree']);
+  assert.deepEqual(advertised[1], ['filesystem.read-file']);
+  assert.deepEqual(advertised[2], ['filesystem.read-file']);
+  assert.deepEqual(advertised[3], []);
+  assert.equal(analysisCorrectionSeen, true);
+  assert.equal(fileReadCorrectionSeen, true);
+  assert.deepEqual(
+    app.session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? message.toolId : undefined),
+    ['filesystem.directory-tree', 'filesystem.read-file', 'filesystem.read-file'],
+  );
+});
+
 test('agent expands a home-relative model search path before filesystem validation', async () => {
   const config = {
     ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
@@ -779,6 +844,88 @@ test('unsupported shell request is refused without calling the provider or loggi
   assert.match(response, /No command was executed/);
   assert.equal(providerCalls, 0);
   assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
+});
+
+test('opening an application is exposed only for an explicit request and reports verified success', async () => {
+  const launched: ApplicationId[] = [];
+  const registry = new ToolRegistry();
+  registerApplicationTools(registry, {
+    async launch(application) {
+      launched.push(application);
+    },
+  }, { async request() { return true; } });
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'application.open',
+        arguments: { application: 'Calculator' },
+      }],
+    },
+    { kind: 'final', text: 'I opened Calculator.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, {}, new PolicyGateway({
+    authorizedApplication: 'calculator',
+  }));
+
+  const response = await app.run(new AbortController().signal, 'Open Calculator.');
+
+  assert.equal(response, 'I opened Calculator.');
+  assert.deepEqual(launched, ['calculator']);
+  assert.deepEqual(advertised, [['application.open'], ['application.open']]);
+});
+
+test('the agent never claims an application opened without a successful tool result', async () => {
+  const launched: ApplicationId[] = [];
+  const registry = new ToolRegistry();
+  registerApplicationTools(registry, {
+    async launch(application) {
+      launched.push(application);
+    },
+  }, { async request() { return true; } });
+  const app = harness(sequenceProvider([
+    { kind: 'final', text: 'I opened Calculator.' },
+  ]), registry, {}, new PolicyGateway({ authorizedApplication: 'calculator' }));
+
+  const response = await app.run(new AbortController().signal, 'Open Calculator.');
+
+  assert.match(response, /cannot confirm the application opened/i);
+  assert.deepEqual(launched, []);
+});
+
+test('the agent does not claim an application opened after confirmation is rejected', async () => {
+  const launched: ApplicationId[] = [];
+  const registry = new ToolRegistry();
+  registerApplicationTools(registry, {
+    async launch(application) {
+      launched.push(application);
+    },
+  }, { async request() { return false; } });
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{
+      toolId: 'application.open',
+      arguments: { application: 'Calculator' },
+    }] },
+    { kind: 'final', text: 'I opened Calculator.' },
+  ]), registry, {}, new PolicyGateway({ authorizedApplication: 'calculator' }));
+
+  const response = await app.run(new AbortController().signal, 'Open Calculator.');
+
+  assert.match(response, /cannot confirm the application opened/i);
+  assert.deepEqual(launched, []);
+});
+
+test('application launcher is hidden for unrelated chat', async () => {
+  const registry = new ToolRegistry();
+  registerApplicationTools(registry, { async launch() {} }, { async request() { return true; } });
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    { kind: 'final', text: 'I can help with that.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry);
+
+  await app.run(new AbortController().signal, 'What is the capital of France?');
+
+  assert.deepEqual(advertised, [[]]);
 });
 
 test('unsupported web and filesystem mutation requests are refused before provider invocation', async () => {

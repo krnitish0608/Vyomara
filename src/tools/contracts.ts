@@ -1,4 +1,4 @@
-export type ToolEffect = 'read' | 'propose' | 'write' | 'delete' | 'shell' | 'network';
+export type ToolEffect = 'read' | 'propose' | 'launch' | 'write' | 'delete' | 'shell' | 'network';
 
 export type ToolFailureCode =
   | 'not-found'
@@ -130,7 +130,8 @@ export class ToolRegistry {
 
   modelTools(): readonly ModelToolDefinition[] {
     return [...this.#tools.values()]
-      .filter(tool => tool.effect === 'read' || tool.effect === 'propose')
+      .filter(tool =>
+        tool.effect === 'read' || tool.effect === 'propose' || tool.effect === 'launch')
       .map(({ id, description, parameters }) => ({
         id,
         description,

@@ -1,4 +1,5 @@
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
+import type { ApplicationId } from '../tools/application-tools.ts';
 
 export interface DesktopChatRequest {
   readonly prompt: string;
@@ -35,6 +36,11 @@ export interface DesktopFileOperationProposal {
   readonly targetType: 'file' | 'directory';
   readonly currentContent?: string;
   readonly proposedContent?: string;
+}
+
+export interface DesktopApplicationLaunchProposal {
+  readonly id: string;
+  readonly application: ApplicationId;
 }
 
 export type FileOperationResult =
@@ -96,6 +102,9 @@ export interface VyomaraDesktopApi {
   onFileOperationProposal(listener: (proposal: DesktopFileOperationProposal) => void): () => void;
   approveFileOperation(id: string, confirmation?: string): Promise<void>;
   rejectFileOperation(id: string): Promise<void>;
+  onApplicationLaunchProposal(listener: (proposal: DesktopApplicationLaunchProposal) => void): () => void;
+  approveApplicationLaunch(id: string): Promise<void>;
+  rejectApplicationLaunch(id: string): Promise<void>;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;

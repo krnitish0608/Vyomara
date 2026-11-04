@@ -32,8 +32,10 @@ required.
   changed. Deletions are revalidated before moving to Trash.
 - Pending operations are in-memory and bound to the active chat request.
   Cancellation, timeout, rejection, or application restart cannot imply
-  success. Direct writes, shell, arbitrary commands, package installation,
-  network access, and application control remain unavailable.
+  success. Direct writes, shell, arbitrary commands, package installation, and
+  network access remain unavailable. The separate, narrowly allowlisted macOS
+  app-launch capability requires explicit per-launch confirmation; arbitrary
+  application control remains unavailable.
 
 ## Consequences
 

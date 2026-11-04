@@ -30,6 +30,11 @@ import {
   FileOperationApprovalError,
   FileOperationApprovalManager,
 } from '../desktop/file-operation-approval.ts';
+import {
+  ApplicationLaunchApprovalError,
+  ApplicationLaunchApprovalManager,
+} from '../desktop/application-launch-approval.ts';
+import { MacApplicationLauncher } from '../desktop/mac-application-launcher.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
@@ -37,7 +42,11 @@ import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
 let activeFileOperationApproval: FileOperationApprovalManager | undefined;
+let activeApplicationLaunchApproval: ApplicationLaunchApprovalManager | undefined;
 const macSpeechRunner = new MacSpeechRunner();
+const macApplicationLauncher = process.platform === 'darwin'
+  ? new MacApplicationLauncher()
+  : undefined;
 let localWhisperRunner: LocalWhisperRunner | undefined;
 let voiceListeningEnabled = false;
 let config: AppConfig | undefined;
@@ -62,7 +71,8 @@ function publicErrorMessage(error: unknown): string {
     error instanceof PersistenceError ||
     error instanceof MacSpeechError ||
     error instanceof LocalSpeechError ||
-    error instanceof FileOperationApprovalError
+    error instanceof FileOperationApprovalError ||
+    error instanceof ApplicationLaunchApprovalError
   ) {
     return error.message;
   }
@@ -150,7 +160,10 @@ function createWindow(): BrowserWindow {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = undefined;
+    if (mainWindow === window) {
+      mainWindow = undefined;
+      activeRequest?.abort();
+    }
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -198,6 +211,17 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     moveToTrash: path => shell.trashItem(path),
   });
   activeFileOperationApproval = approvals;
+  const applicationApprovals = new ApplicationLaunchApprovalManager({
+    onProposal(proposal) {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new ApplicationLaunchApprovalError(
+          'The approval window is unavailable; no application was opened.',
+        );
+      }
+      mainWindow.webContents.send('vyomara:application-launch-proposed', proposal);
+    },
+  });
+  activeApplicationLaunchApproval = applicationApprovals;
   try {
     return await runRequest(
       request.prompt,
@@ -212,12 +236,15 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
       },
       true,
       approvals,
+      macApplicationLauncher,
+      applicationApprovals,
     );
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
     activeRequest = undefined;
     activeFileOperationApproval = undefined;
+    activeApplicationLaunchApproval = undefined;
   }
 });
 
@@ -241,6 +268,34 @@ ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
   }
   try {
     activeFileOperationApproval.reject(parseDesktopSessionId(input));
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:application-launch-approve', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) {
+    throw new Error('Application launch approval request is invalid.');
+  }
+  if (!activeRequest || !activeApplicationLaunchApproval) {
+    throw new Error('There is no active application launch to approve.');
+  }
+  try {
+    activeApplicationLaunchApproval.approve(parseDesktopSessionId(input));
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:application-launch-reject', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) {
+    throw new Error('Application launch approval request is invalid.');
+  }
+  if (!activeRequest || !activeApplicationLaunchApproval) {
+    throw new Error('There is no active application launch to reject.');
+  }
+  try {
+    activeApplicationLaunchApproval.reject(parseDesktopSessionId(input));
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }

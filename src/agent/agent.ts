@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isApplicationLaunchRequest, requestedApplicationId } from './intents.ts';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -27,8 +28,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function unsupportedCapability(prompt: string, canProposeEdits: boolean): string | undefined {
-  if (!canProposeEdits && /\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b[\s\S]{0,80}\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b|\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b[\s\S]{0,80}\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b/i.test(prompt)) {
+function unsupportedCapability(
+  prompt: string,
+  canProposeEdits: boolean,
+  canOpenApplications: boolean,
+): string | undefined {
+  const fileIntentPrompt = prompt
+    .replace(/(["'`])\/[^\r\n]*?\1/g, ' ')
+    .replace(/\/[^\s"'`]+/g, ' ');
+  if (!canProposeEdits && /\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b[\s\S]{0,80}\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b|\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b[\s\S]{0,80}\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b/i.test(fileIntentPrompt)) {
     return 'File creation, editing, and deletion are not available in this session. No files were changed.';
   }
   if (!canProposeEdits && (
@@ -45,7 +53,7 @@ function unsupportedCapability(prompt: string, canProposeEdits: boolean): string
     return 'Web browsing and web search are not available. No search was performed.';
   }
   if (!canProposeEdits && (
-    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदल(?:ो| दो)|हटा(?:ओ| दो)|मिटा(?:ओ| दो)|डिलीट)/iu.test(prompt)
+    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदल(?:ो| दो)|हटा(?:ओ| दो)|मिटा(?:ओ| दो)|डिलीट)/iu.test(fileIntentPrompt)
   )) return 'File creation, editing, and deletion are not available without an approved project-edit proposal. No filesystem change was made.';
   if (
     /\b(?:install|uninstall|update|upgrade)\b[\s\S]{0,48}\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b|\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b[\s\S]{0,40}\b(?:install|uninstall|update|upgrade)\b|(?:पैकेज|ऐप|एप्लिकेशन|सॉफ़्टवेयर).{0,40}(?:इंस्टॉल|अपडेट|हटाओ)/iu.test(prompt)
@@ -57,10 +65,11 @@ function unsupportedCapability(prompt: string, canProposeEdits: boolean): string
   ) {
     return 'That system feature is not available to Vyomara. No system action was performed.';
   }
-  if (
-    /\b(?:open|launch|start)\s+(?:(?:the|an?)\s+)?(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings|system preferences)\b|\b(?:application|app)\b[\s\S]{0,32}\b(?:open|launch|start)\b|(?:कैलकुलेटर|सफारी|फ़ाइंडर|फाइंडर|टर्मिनल|नोट्स|कैलेंडर).{0,24}(?:खोलो|खोलिए|चलाओ)/iu.test(prompt)
-  ) {
+  if (isApplicationLaunchRequest(prompt) && !canOpenApplications) {
     return 'Opening applications is not available to Vyomara. No application was opened.';
+  }
+  if (isApplicationLaunchRequest(prompt) && !requestedApplicationId(prompt)) {
+    return 'Which supported application would you like me to open?';
   }
   return undefined;
 }
@@ -88,7 +97,7 @@ function filesystemToolsForPrompt(
   const asksForNameSearch =
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|\bcheck\b[\s\S]{0,24}\b(?:again|once\s+more)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
   const asksForFilesystemAction =
-    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|change|replace|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
+    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|fix|implement|refactor|debug|edit|modify|change|replace|update|delete|remove|inspect|deep\s*dive|analy[sz]e|anly[sz]e|analysis|review|understand|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
   const asksForRecursiveListing =
     /\b(?:tree|recursive(?:ly)?|all\s+descendants|subfolders?|nested\s+folders?)\b/i.test(intentPrompt) ||
     /\binside\b[\s\S]{0,40}\b(?:their|its|the)\s+subfolders?\b/i.test(intentPrompt);
@@ -103,6 +112,12 @@ function filesystemToolsForPrompt(
 
   if (!hasFilesystemSubject || !asksForFilesystemAction) {
     return tools.filter(tool => !tool.id.startsWith('filesystem.'));
+  }
+  if (asksForProjectAnalysis(intentPrompt)) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') ||
+      ['filesystem.directory-tree', 'filesystem.read-file'].includes(tool.id) ||
+      (asksForFileMutation(intentPrompt) && tool.id.startsWith('filesystem.propose-')));
   }
   if (asksToReadFile) {
     return tools.filter(tool =>
@@ -134,13 +149,21 @@ function claimsUnsupportedExecution(
     /\b(?:the\s+)?(?:web search|search)\s+(?:is|was|has been)\s+(?:complete|completed|successful)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:installed|uninstalled|updated|upgraded)\b.{0,60}\b(?:package|application|app|software|dependency)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:opened|accessed|controlled|restarted|shut down)\b.{0,60}\b(?:camera|microphone|system settings|bluetooth|wi-?fi|mac)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:opened|launched|started)\b.{0,60}\b(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings)\b/i,
     /\b(?:maine|mainee)\b[\s\S]{0,48}\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala(?:ya|o)?|chalaya|execute|run)\b/i,
     /\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala diya|chalaya|run ho gaya|execute ho gaya)\b/i,
     /(?:मैंने|मैने).{0,48}(?:कमांड|टर्मिनल|शेल).{0,32}(?:चलाया|चला दिया|चलाया है)/u,
     /["'](?:name|toolId)["']\s*:\s*["'](?:shell\.[a-z0-9.-]+|assistant\.(?:open|search|browse)[a-z0-9.-]*|filesystem\.(?:create|write|delete)[a-z0-9.-]*)["']/i,
   ];
   return claims.some(pattern => pattern.test(text));
+}
+
+function claimsUnverifiedApplicationLaunch(
+  text: string,
+  applicationLaunchCompleted: boolean,
+): boolean {
+  const claims =
+    /\b(?:I|we)\s+(?:have\s+)?(?:opened|launched|started)\b.{0,60}\b(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings|visual studio code)\b/i;
+  return claims.test(text) && !applicationLaunchCompleted;
 }
 
 function claimsUnverifiedFileMutation(
@@ -318,11 +341,29 @@ function filesystemPartialResultResponse(
 }
 
 function asksForFileAnalysis(prompt: string): boolean {
-  return /\b(?:explain|analy[sz]e|summari[sz]e|review)\b|\bwhat\s+(?:does|do|is)\b[\s\S]{0,80}\b(?:do|mean|work|purpose)\b|\bhow\s+(?:does|do)\b[\s\S]{0,80}\bwork\b/i.test(prompt);
+  return /\b(?:explain|deep\s*dive|analy[sz]e|anly[sz]e|summari[sz]e|review)\b|\bwhat\s+(?:does|do|is)\b[\s\S]{0,80}\b(?:do|mean|work|purpose|project)\b|\bhow\s+(?:does|do)\b[\s\S]{0,80}\bwork\b/i.test(prompt);
+}
+
+function asksForProjectAnalysis(prompt: string): boolean {
+  return /\b(?:project|repo|repository|codebase)\b/i.test(prompt) &&
+    /\b(?:deep\s*dive|analy[sz]e|anly[sz]e|analysis|review|understand|assess|audit)\b/i.test(prompt);
+}
+
+function asksForTestAnalysis(prompt: string): boolean {
+  return /\btests?\b/i.test(prompt);
+}
+
+function hasRequiredProjectAnalysisReads(
+  prompt: string,
+  readFilePaths: ReadonlySet<string>,
+): boolean {
+  if (readFilePaths.size === 0) return false;
+  return !asksForTestAnalysis(prompt) ||
+    [...readFilePaths].some(path => /(?:^|[/_.-])(?:tests?|__tests__|spec)(?:[/_.-]|$)/i.test(path));
 }
 
 function asksForFileMutation(prompt: string): boolean {
-  const action = /\b(?:create|write|edit|modify|change|replace|update|delete|remove)\b/i;
+  const action = /\b(?:create|write|fix|implement|refactor|edit|modify|change|replace|update|delete|remove)\b/i;
   const subject = /\b(?:file|folder|directory|code|codebase|project|repo|repository)\b|(?:^|\s)\/[^\s"'`]+/i;
   return action.test(prompt) && subject.test(prompt);
 }
@@ -655,7 +696,12 @@ async function runAgentTask(
   const start = Date.now();
   task.transition('planning');
   const canProposeEdits = options.tools.modelTools().some(tool => tool.id.startsWith('filesystem.propose-'));
-  const unsupportedResponse = unsupportedCapability(prompt, canProposeEdits);
+  const canOpenApplications = options.tools.modelTools().some(tool => tool.id === 'application.open');
+  const unsupportedResponse = unsupportedCapability(
+    prompt,
+    canProposeEdits,
+    canOpenApplications,
+  );
   if (unsupportedResponse) {
     options.session.add({ role: 'assistant', content: unsupportedResponse });
     options.logger.emit({
@@ -673,11 +719,15 @@ async function runAgentTask(
   let correctionAttempts = 0;
   const successfulToolIds = new Set<string>();
   const appliedFileOperationToolIds = new Set<string>();
+  let applicationLaunchCompleted = false;
   const fileOperationResults: string[] = [];
   const readFilePaths = new Set<string>();
+  const verifiedTreeFilesByRoot = new Map<string, Set<string>>();
   const filesystemToolResults: string[] = [];
   let editToolRepairInstruction: string | undefined;
   let editToolRepairAttempts = 0;
+  let projectAnalysisRepairAttempts = 0;
+  let projectAnalysisRepairInstruction: string | undefined;
   const toolAttempts = new Map<string, number>();
   const recentUserContext = options.session.messages()
     .slice(0, -1)
@@ -686,12 +736,15 @@ async function runAgentTask(
     .map(message => message.content)
     .join('\n');
   const recentSearchDirectory = latestVerifiedSearchDirectory(options.session.messages());
-  const availableTools = filesystemToolsForPrompt(
+  const promptTools = filesystemToolsForPrompt(
     prompt,
     recentUserContext,
     recentSearchDirectory !== undefined,
     options.tools.modelTools(),
   );
+  const availableTools = requestedApplicationId(prompt) !== undefined
+    ? promptTools
+    : promptTools.filter(tool => tool.id !== 'application.open');
   const returnPartialFilesystemResult = (
     error: { readonly code: string; readonly message: string },
     iteration: number,
@@ -716,18 +769,32 @@ async function runAgentTask(
   };
 
   for (let iteration = 1; iteration <= options.config.maxAgentIterations; iteration++) {
+    const analysisRepairTools = !asksForProjectAnalysis(prompt)
+      ? availableTools
+      : hasRequiredProjectAnalysisReads(prompt, readFilePaths)
+        ? asksForFileMutation(prompt)
+          ? availableTools.filter(tool => tool.id.startsWith('filesystem.propose-'))
+          : []
+        : availableTools.filter(tool =>
+          tool.id === (
+            successfulToolIds.has('filesystem.directory-tree')
+              ? 'filesystem.read-file'
+              : 'filesystem.directory-tree'
+          ));
+    const iterationTools =
+      toolCalls < options.config.maxToolCalls ? analysisRepairTools : [];
     let rawResponse: unknown;
     try {
       rawResponse = await runBounded(
         providerSignal => options.provider.complete(
-          editToolRepairInstruction
+          editToolRepairInstruction || projectAnalysisRepairInstruction
             ? [
               ...options.session.messages(),
-              { role: 'user', content: editToolRepairInstruction },
+              { role: 'user', content: editToolRepairInstruction ?? projectAnalysisRepairInstruction ?? '' },
             ]
             : options.session.messages(),
           providerSignal,
-          toolCalls < options.config.maxToolCalls ? availableTools : [],
+            iterationTools,
           options.onText,
         ),
         options.config.requestTimeoutMs,
@@ -780,6 +847,33 @@ async function runAgentTask(
           return returnPartialFilesystemResult(recoverableToolFailure, iteration);
         }
         throw recoverableToolFailure;
+      }
+      if (
+        asksForProjectAnalysis(prompt) &&
+        filesystemToolResults.length > 0 &&
+        !hasRequiredProjectAnalysisReads(prompt, readFilePaths)
+      ) {
+        if (projectAnalysisRepairAttempts < 3 && toolCalls < options.config.maxToolCalls) {
+          projectAnalysisRepairAttempts++;
+          projectAnalysisRepairInstruction = readFilePaths.size > 0
+            ? 'The user asked about tests, but no test file has been read yet. Use filesystem.read-file on a relevant test file using its exact path from the verified tree. Do not draw conclusions about the tests until you have read one.'
+            : successfulToolIds.has('filesystem.directory-tree')
+              ? 'You have verified only file names, not source contents. Call filesystem.read-file on the relevant source files and any test files the user asked about, using exact paths from the verified tree. Then base conclusions only on those contents.'
+              : 'You have not read any source contents. A filename search is not enough for project analysis. Use filesystem.directory-tree on the exact project directory from the user request or verified search result. Do not search for phrases like “entry point”.';
+          continue;
+        }
+        const safeResponse = readFilePaths.size > 0 && asksForTestAnalysis(prompt)
+          ? 'I inspected some project files, but I couldn’t verify the requested test because I wasn’t able to read a test file.'
+          : 'I mapped the project structure, but I haven’t read its source files yet, so I can’t give a verified code analysis.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
       }
       const readPath = readFilePaths.size === 1 ? [...readFilePaths][0] : undefined;
       const fallbackProposal = readPath === undefined || fileOperationResults.length > 0
@@ -883,6 +977,19 @@ async function runAgentTask(
         });
         return verifiedFileOperation;
       }
+      if (claimsUnverifiedApplicationLaunch(response.text, applicationLaunchCompleted)) {
+        const safeResponse =
+          'I cannot confirm the application opened because no successful application-launch result was recorded.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
       if (claimsUnsupportedExecution(response.text)) {
         const safeResponse =
           'I cannot verify that action because no registered tool result confirms it. No shell command, web search, or file mutation was performed.';
@@ -972,9 +1079,7 @@ async function runAgentTask(
       return response.text;
     }
 
-    const allowedToolIds = new Set(
-      toolCalls < options.config.maxToolCalls ? availableTools.map(tool => tool.id) : [],
-    );
+    const allowedToolIds = new Set(iterationTools.map(tool => tool.id));
     if (response.calls.some(call =>
       call.toolId.startsWith('filesystem.') && !allowedToolIds.has(call.toolId))) {
       options.session.add({
@@ -1045,7 +1150,7 @@ async function runAgentTask(
         toolId: call.toolId,
       });
       try {
-        const args = executionArguments(
+        let args = executionArguments(
           prompt,
           call.toolId,
           call.arguments,
@@ -1054,6 +1159,36 @@ async function runAgentTask(
           availableTools,
           options.config.filesystemAllowedRoots,
         );
+        if (call.toolId === 'filesystem.directory-tree' && asksForProjectAnalysis(prompt)) {
+          args = {
+            ...args,
+            maxDepth: options.config.maxTreeDepth,
+            maxEntries: options.config.maxDirectoryEntries,
+          };
+        }
+        if (
+          call.toolId === 'filesystem.read-file' &&
+          typeof args.path === 'string' &&
+          !args.path.split(/[\\/]/).includes('..')
+        ) {
+          const requestedPath = args.path;
+          for (const [treeRoot, treeFiles] of verifiedTreeFilesByRoot) {
+            const exactPath = resolve(requestedPath);
+            const suffixMatches = isAbsolute(requestedPath)
+              ? [...treeFiles].filter(file =>
+                requestedPath.endsWith(relative(treeRoot, file)))
+              : [];
+            const verifiedPath = isAbsolute(requestedPath)
+              ? treeFiles.has(exactPath)
+                ? exactPath
+                : suffixMatches.length === 1 ? suffixMatches[0] : undefined
+              : resolve(treeRoot, requestedPath);
+            if (verifiedPath && treeFiles.has(verifiedPath)) {
+              args = { ...args, path: verifiedPath };
+              break;
+            }
+          }
+        }
         let executionToolId = call.toolId;
         let executionToolArguments = args;
         const explicitReplacement = call.toolId === 'filesystem.propose-edit'
@@ -1139,8 +1274,45 @@ async function runAgentTask(
             'output-too-large',
           );
         }
+        if (
+          call.toolId === 'filesystem.directory-tree' &&
+          typeof args.path === 'string' &&
+          isAbsolute(args.path) &&
+          isRecord(result) &&
+          Array.isArray(result.entries)
+        ) {
+          const treeRoot = resolve(args.path);
+          const treeFiles = new Set<string>();
+          for (const entry of result.entries) {
+            if (
+              !isRecord(entry) ||
+              entry.type !== 'file' ||
+              typeof entry.path !== 'string' ||
+              isAbsolute(entry.path) ||
+              entry.path.split(/[\\/]/).includes('..')
+            ) continue;
+            treeFiles.add(resolve(treeRoot, entry.path));
+          }
+          verifiedTreeFilesByRoot.set(treeRoot, treeFiles);
+        }
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
         successfulToolIds.add(call.toolId);
+        if (
+          call.toolId === 'application.open' &&
+          isRecord(result) &&
+          result.status === 'opened' &&
+          result.application === requestedApplicationId(prompt)
+        ) {
+          applicationLaunchCompleted = true;
+        }
+        if (
+          call.toolId === 'filesystem.directory-tree' &&
+          asksForProjectAnalysis(prompt)
+        ) {
+          projectAnalysisRepairAttempts = Math.max(projectAnalysisRepairAttempts, 1);
+          projectAnalysisRepairInstruction =
+            'You have verified the project file names. Read at most one relevant entry-point/source file and, if the user asked about tests, one relevant test file, using exact paths from the tree. Call filesystem.read-file for these files (preferably together) and do not spend calls rereading the tree, README, or package metadata unless directly relevant. Then base conclusions only on those contents.';
+        }
         if (call.toolId.startsWith('filesystem.propose-')) {
           fileOperationResults.push(serialized);
         }
@@ -1155,6 +1327,13 @@ async function runAgentTask(
         }
         if (call.toolId === 'filesystem.read-file' && typeof args.path === 'string') {
           readFilePaths.add(resolve(args.path));
+          if (asksForProjectAnalysis(prompt) && projectAnalysisRepairAttempts > 0) {
+            projectAnalysisRepairInstruction = hasRequiredProjectAnalysisReads(prompt, readFilePaths)
+                ? asksForFileMutation(prompt)
+                  ? 'You now have the required verified project and test contents. Make the requested code change using only the available filesystem.propose-* tools. Read the target before editing if needed, submit a complete reviewed proposal, and do not claim changes were applied before user approval.'
+                  : 'You now have the required verified file contents. Do not call more tools or ask the user to provide files; answer the requested project analysis using only those contents and clearly qualify anything the files do not establish.'
+              : 'The user asked about tests, but no test file has been read yet. Use filesystem.read-file on a relevant test file using its exact path from the verified tree. Do not draw conclusions about the tests until you have read one.';
+          }
         }
         if (
           call.toolId.startsWith('filesystem.') &&

@@ -296,6 +296,85 @@ test('agent turns a complete model edit into a review proposal rather than displ
   assert.equal(await readFile(path, 'utf8'), original);
 });
 
+test('agent can analyze a project and tests, then submit and apply the requested code fix', async t => {
+  const { root, config, proposal, approvals, executor } = await fixture(t);
+  const project = join(root, 'sample-project');
+  const sourcePath = join(project, 'src', 'index.ts');
+  const testPath = join(project, 'test', 'index.test.ts');
+  const original = 'export function add(a: number, b: number): number { return a - b; }\n';
+  const updated = 'export function add(a: number, b: number): number { return a + b; }\n';
+  await mkdir(join(project, 'src'), { recursive: true });
+  await mkdir(join(project, 'test'));
+  await writeFile(sourcePath, original);
+  await writeFile(testPath, 'assert.equal(add(2, 3), 5);\n');
+  const responses: unknown[] = [
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.directory-tree',
+      arguments: { path: project },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.read-file',
+      arguments: { path: sourcePath },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.read-file',
+      arguments: { path: testPath },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.propose-edit',
+      arguments: { path: sourcePath, content: updated },
+    }] },
+    { kind: 'final', text: 'The fix is ready for your review.' },
+  ];
+  const advertisedToolIds: string[][] = [];
+  const provider: ModelProvider = {
+    id: 'test.project-code-fix',
+    async complete(_messages, _signal, tools) {
+      advertisedToolIds.push((tools ?? []).map(tool => tool.id));
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const session = new Session();
+  const resultPromise = runAgent(
+    `Deep dive into this repo, analyze the source and tests, then fix the bug in src/index.ts so add returns the sum. Project: ${project}`,
+    new AbortController().signal,
+    {
+      provider,
+      tools: executor,
+      config,
+      session,
+      logger: createLogger(() => {}),
+    },
+  );
+  const review = await proposal;
+
+  assert.equal(review.path, sourcePath);
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.deepEqual(advertisedToolIds[0], ['filesystem.directory-tree']);
+  assert.deepEqual(advertisedToolIds[1], ['filesystem.read-file']);
+  assert.deepEqual(advertisedToolIds[2], ['filesystem.read-file']);
+  assert.ok(advertisedToolIds[3]?.includes('filesystem.propose-edit'));
+  assert.equal(await readFile(sourcePath, 'utf8'), original);
+
+  await approvals.approve(review.id);
+
+  assert.equal(await resultPromise, 'The approved edit was applied.');
+  assert.equal(await readFile(sourcePath, 'utf8'), updated);
+  assert.deepEqual(
+    session.messages().filter(message => message.role === 'tool').map(message =>
+      message.role === 'tool' ? message.toolId : undefined),
+    [
+      'filesystem.directory-tree',
+      'filesystem.read-file',
+      'filesystem.read-file',
+      'filesystem.propose-edit',
+    ],
+  );
+});
+
 test('rejecting an edit leaves the original file unchanged', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'existing.txt');

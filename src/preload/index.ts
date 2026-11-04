@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   DesktopChatRequest,
+  DesktopApplicationLaunchProposal,
   DesktopFileOperationProposal,
   DesktopSpeechRecognitionEvent,
   VyomaraDesktopApi,
@@ -36,6 +37,19 @@ const api: VyomaraDesktopApi = {
   },
   rejectFileOperation(id: string) {
     return ipcRenderer.invoke('vyomara:file-operation-reject', id);
+  },
+  onApplicationLaunchProposal(listener: (proposal: DesktopApplicationLaunchProposal) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, proposal: DesktopApplicationLaunchProposal): void => {
+      listener(proposal);
+    };
+    ipcRenderer.on('vyomara:application-launch-proposed', handler);
+    return () => ipcRenderer.removeListener('vyomara:application-launch-proposed', handler);
+  },
+  approveApplicationLaunch(id: string) {
+    return ipcRenderer.invoke('vyomara:application-launch-approve', id);
+  },
+  rejectApplicationLaunch(id: string) {
+    return ipcRenderer.invoke('vyomara:application-launch-reject', id);
   },
   cancelRequest() {
     return ipcRenderer.invoke('vyomara:chat-cancel');

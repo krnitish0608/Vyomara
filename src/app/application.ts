@@ -2,6 +2,7 @@ import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import type { SessionMessage } from '../session/session.ts';
 import { runAgent } from '../agent/agent.ts';
+import { requestedApplicationId } from '../agent/intents.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
@@ -11,6 +12,10 @@ import type {
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
 import { createDefaultToolRegistry } from '../tools/default-tools.ts';
+import type {
+  ApplicationLaunchApprovalPort,
+  ApplicationLauncherPort,
+} from '../tools/application-tools.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
 import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
@@ -84,6 +89,8 @@ export async function runRequest(
   onText?: (text: string) => void,
   includeFilesystemTools?: boolean,
   fileOperationApproval?: FileOperationApprovalPort,
+  applicationLauncher?: ApplicationLauncherPort,
+  applicationLaunchApproval?: ApplicationLaunchApprovalPort,
 ): Promise<RequestResult> {
   const enableFilesystemTools = includeFilesystemTools ??
     (config.filesystemAllowedRoots.length > 0 && promptContainsAbsoluteLocalPath(prompt));
@@ -102,8 +109,16 @@ export async function runRequest(
       })
       : new PlaceholderProvider();
     const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config, enableFilesystemTools, fileOperationApproval),
-      policy: new PolicyGateway(),
+      registry: createDefaultToolRegistry(
+        config,
+        enableFilesystemTools,
+        fileOperationApproval,
+        applicationLauncher,
+        applicationLaunchApproval,
+      ),
+      policy: new PolicyGateway({
+        authorizedApplication: requestedApplicationId(prompt),
+      }),
       config,
       logger: taskLogger,
     });

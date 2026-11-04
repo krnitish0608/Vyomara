@@ -96,8 +96,10 @@ policy. If Ollama returns a typed provider error or times out after a
 filesystem result has already been validated, Vyomara returns that bounded
 result and states that no model summary was generated. User cancellation and
 filesystem tool errors are still surfaced.
-Shell execution, web search, package installation, application launching,
-system-feature control, writes, and deletes are not implemented.
+Shell execution, web search, package installation, and system-feature control
+are not implemented. On macOS desktop, explicitly requested launches from a
+small app allowlist require user confirmation every time. Filesystem writes
+and deletes require the separate reviewed-operation flow.
 
 Filesystem errors are returned with safe categories such as `not-found`,
 `invalid-path`, `outside-root`, and `permission-denied`; user-facing messages
