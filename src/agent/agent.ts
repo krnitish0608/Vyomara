@@ -79,14 +79,14 @@ function filesystemToolsForPrompt(
   const filesystemSubjectPattern =
     /\b(?:files?|folders?|director(?:y|ies)|projects?|repos?|repositories|codebases?|documents?|notes?|filenames?|paths?|filesystem)\b|\/[^\s"'`]+|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी|प्रोजेक्ट|रेपो)/iu;
   const refersToRecentSubject =
-    /\b(?:it|that|there|them|those|under that)\b/i.test(prompt) &&
+    /\b(?:it|that|there|them|those|under that|again|once more)\b/i.test(prompt) &&
     (filesystemSubjectPattern.test(recentUserContext) || hasRecentSearchResult);
   const hasFilesystemSubject =
     filesystemSubjectPattern.test(prompt) ||
     (hasRecentSearchResult && /\b(?:repository|repo|project|folder|directory|files?|folders?)\b/i.test(prompt)) ||
     refersToRecentSubject;
   const asksForNameSearch =
-    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
+    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|\bcheck\b[\s\S]{0,24}\b(?:again|once\s+more)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
   const asksForFilesystemAction =
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
   const asksForRecursiveListing = /\b(?:tree|recursive(?:ly)?|all\s+descendants)\b/i.test(intentPrompt);
@@ -210,39 +210,88 @@ function claimsUnverifiedDirectoryRead(
 function filesystemResultResponse(
   results: readonly string[],
   maxResponseChars: number,
+  prompt: string,
   followupFailed = false,
 ): string {
-  const heading = followupFailed
-    ? 'Verified filesystem tool result(s); Ollama could not complete its follow-up, so no summary was generated:'
-    : 'Verified filesystem tool result(s):';
+  const includeNames =
+    /\b(?:check|list|show|which|what\s+are)\b[\s\S]{0,40}\b(?:files?|folders?|contents?|names?)\b/i.test(prompt) ||
+    /\b(?:tree|recursive(?:ly)?)\b/i.test(prompt);
   const formattedResults = results.map(result => {
-    const listing = /^filesystem\.list-directory \((.*)\): (.+)$/s.exec(result);
-    if (!listing) return result;
-    const path = listing[1];
-    const serialized = listing[2];
-    if (path === undefined || serialized === undefined) return result;
+    const toolResult = /^filesystem\.([a-z-]+)(?: \((.*)\))?: ([\s\S]+)$/.exec(result);
+    if (!toolResult) return result;
+    const [, toolName, path, serialized] = toolResult;
+    if (!toolName || serialized === undefined) return result;
     try {
       const value: unknown = JSON.parse(serialized);
-      if (!isRecord(value) || !Array.isArray(value.entries)) return result;
-      const folders = value.entries.filter(entry =>
-        isRecord(entry) && entry.type === 'directory');
-      const files = value.entries.filter(entry =>
-        isRecord(entry) && entry.type === 'file');
-      const truncated = value.truncated === true ? ' The listing was truncated.' : '';
-      const folderNames = folders.flatMap(entry =>
-        isRecord(entry) && typeof entry.name === 'string' ? [entry.name] : []);
-      const fileNames = files.flatMap(entry =>
-        isRecord(entry) && typeof entry.name === 'string' ? [entry.name] : []);
-      const details = [
-        `Folders (${folders.length}): ${folderNames.length ? folderNames.join(', ') : 'none'}`,
-        `Files (${files.length}): ${fileNames.length ? fileNames.join(', ') : 'none'}`,
-      ].join('\n');
-      return `Directory listing for ${path} (direct children): ${folders.length} folders and ${files.length} files.${truncated}\n${details}`;
+      if (!isRecord(value)) return result;
+      if (toolName === 'search' && Array.isArray(value.matches)) {
+        let matches = value.matches.filter(match =>
+          isRecord(match) && typeof match.path === 'string' &&
+          (match.type === 'file' || match.type === 'directory'));
+        const projectSearch = /\b(?:project|repo|repository|codebase)\b/i.test(prompt);
+        const matchingDirectories = matches.filter(match => match.type === 'directory');
+        if (projectSearch && matchingDirectories.length > 0) {
+          matches = matchingDirectories;
+        }
+        const locations = matches.map(match =>
+          `- \`${match.path}\` (${match.type === 'directory' ? 'folder' : 'file'})`);
+        const summary = locations.length === 0
+          ? 'I couldn’t find a matching file or folder in the locations I could inspect.'
+          : locations.length === 1
+            ? projectSearch && matches[0]?.type === 'directory'
+              ? `Your project folder is here: \`${matches[0].path}\`.`
+              : `I found a matching ${matches[0]?.type === 'directory' ? 'folder' : 'file'} here:\n${locations[0]?.replace(/^- /, '')}`
+            : projectSearch
+              ? `I found these project folders:\n${locations.join('\n')}`
+            : `I found these matching locations:\n${locations.join('\n')}`;
+        if (typeof value.skippedDirectories === 'number' && value.skippedDirectories > 0) {
+          return `${summary}\nI couldn’t inspect every directory, so there may be other matches.`;
+        }
+        return value.truncated === true
+          ? `${summary}\nThe search reached its limit, so there may be additional matches.`
+          : summary;
+      }
+      if ((toolName === 'list-directory' || toolName === 'directory-tree') &&
+          Array.isArray(value.entries)) {
+        const folders = value.entries.filter(entry =>
+          isRecord(entry) && entry.type === 'directory');
+        const files = value.entries.filter(entry =>
+          isRecord(entry) && entry.type === 'file');
+        const truncated = value.truncated === true;
+        const total = folders.length + files.length;
+        const location = typeof path === 'string' ? ` \`${path}\`` : '';
+        const scope = toolName === 'list-directory' ? ' directly inside' : ' in the tree under';
+        const counts = `${folders.length} ${folders.length === 1 ? 'folder' : 'folders'} and ${files.length} ${files.length === 1 ? 'file' : 'files'}`;
+        const summary = truncated
+          ? `I found ${total} entries${scope}${location}, including ${counts}. The listing was cut short, so there may be more.`
+          : `I found ${counts}${scope}${location} (${total} ${total === 1 ? 'item' : 'items'} total).`;
+        if (!includeNames) return summary;
+        const entryNames = (entries: readonly unknown[]): string[] =>
+          entries.flatMap(entry => {
+            if (!isRecord(entry)) return [];
+            const name = toolName === 'directory-tree' ? entry.path : entry.name;
+            return typeof name === 'string' ? [name] : [];
+          });
+        const names = [
+          `Folders: ${entryNames(folders).join(', ') || 'none'}`,
+          `Files: ${entryNames(files).join(', ') || 'none'}`,
+        ].join('\n');
+        return `${summary}\n${names}`;
+      }
+      if (toolName === 'read-file' && typeof value.content === 'string') {
+        return typeof path === 'string'
+          ? `Here’s the content of \`${path}\`:\n${value.content}`
+          : value.content;
+      }
+      return result;
     } catch {
       return result;
     }
   });
-  const response = `${heading}\n${formattedResults.join('\n')}`;
+  const response = [
+    ...formattedResults,
+    ...(followupFailed ? ['I couldn’t complete the rest of the check, but the information above is verified.'] : []),
+  ].join('\n\n');
   return response.length <= maxResponseChars
     ? response
     : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
@@ -253,9 +302,13 @@ function filesystemPartialResultResponse(
   failureCode: string,
   failureMessage: string,
   maxResponseChars: number,
+  prompt: string,
 ): string {
-  const response =
-    `Verified filesystem tool result(s), partial; a later operation failed (${failureCode}): ${failureMessage}\n${results.join('\n')}`;
+  const summary = filesystemResultResponse(results, maxResponseChars, prompt);
+  const failureNote = failureCode === 'not-found' || /not found/i.test(failureMessage)
+    ? 'I couldn’t find the location needed to finish the check.'
+    : 'A later filesystem step failed, so the results above may be incomplete.';
+  const response = `${summary}\n\n${failureNote}`;
   return response.length <= maxResponseChars
     ? response
     : 'A filesystem operation failed after a verified result; the partial result exceeds the configured response limit and cannot be shown.';
@@ -269,20 +322,22 @@ function latestVerifiedSearchDirectory(messages: ReturnType<Session['messages']>
     try {
       value = JSON.parse(message.content);
     } catch {
-      continue;
+      return undefined;
     }
-    if (!isRecord(value) || !Array.isArray(value.matches)) continue;
-    for (const match of value.matches) {
-      if (
-        isRecord(match) &&
-        match.type === 'directory' &&
-        typeof match.path === 'string' &&
-        match.path.startsWith('/') &&
-        !match.path.split('/').includes('..')
-      ) {
-        return match.path;
-      }
+    if (!isRecord(value) || !Array.isArray(value.matches)) return undefined;
+    const match = value.matches.find(candidate =>
+      isRecord(candidate) &&
+      candidate.type === 'directory' &&
+      typeof candidate.path === 'string' &&
+      candidate.path.startsWith('/') &&
+      !candidate.path.split('/').includes('..'));
+    if (
+      isRecord(match) &&
+      typeof match.path === 'string'
+    ) {
+      return match.path;
     }
+    return undefined;
   }
   return undefined;
 }
@@ -298,17 +353,51 @@ function executionArguments(
   arguments_: Readonly<Record<string, unknown>>,
   batchSize: number,
   recentSearchDirectory?: string,
+  tools: ReturnType<ToolExecutor['modelTools']> = [],
 ): Readonly<Record<string, unknown>> {
+  const tool = tools.find(candidate => candidate.id === toolId);
+  const normalizedArguments = { ...arguments_ };
+  if (tool) {
+    const required = new Set(tool.parameters.required ?? []);
+    for (const [name, property] of Object.entries(tool.parameters.properties)) {
+      if (property.type !== 'integer' || required.has(name) ||
+          !Object.hasOwn(normalizedArguments, name)) continue;
+      const value = normalizedArguments[name];
+      if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+        const parsed = Number(value);
+        if (
+          Number.isSafeInteger(parsed) &&
+          (property.minimum === undefined || parsed >= property.minimum) &&
+          (property.maximum === undefined || parsed <= property.maximum)
+        ) {
+          normalizedArguments[name] = parsed;
+        }
+      }
+    }
+  }
   if (
     toolId === 'filesystem.list-directory' &&
     recentSearchDirectory &&
     !prompt.includes('/') &&
     /\b(?:repository|repo|project|folder|directory|files?|folders?|it|that|there|under)\b/i.test(prompt)
   ) {
-    return { ...arguments_, path: recentSearchDirectory };
+    return { ...normalizedArguments, path: recentSearchDirectory };
   }
   if (toolId === 'filesystem.search') {
-    const searchArguments = { ...arguments_ };
+    const searchArguments = normalizedArguments;
+    const genericProjectFollowup =
+      /\b(?:project|repo|repository|codebase)\b/i.test(prompt) &&
+      !/\b[a-z0-9_-]{3,}\b/i.test(prompt.replace(
+        /\b(?:where|is|my|the|this|that|project|repo|repository|codebase|in|on|laptop|system|directory|folder|again|once|more|check|search|find|look|for|locate|it)\b/giu,
+        ' ',
+      ));
+    const repeatedSearch =
+      /\b(?:check|search|look)\b[\s\S]{0,24}\b(?:again|once\s+more)\b/i.test(prompt);
+    if (recentSearchDirectory && (genericProjectFollowup || repeatedSearch)) {
+      searchArguments.query = recentSearchDirectory.split('/').at(-1) ?? searchArguments.query;
+      searchArguments.path =
+        recentSearchDirectory.slice(0, recentSearchDirectory.lastIndexOf('/')) || '/';
+    }
     if (typeof searchArguments.query === 'string') {
       const specificQuery = searchArguments.query
         .replace(/\b(?:project|projects|folder|folders|directory|directories|repo|repository|repositories|file|files|document|documents)\b/giu, ' ')
@@ -332,11 +421,11 @@ function executionArguments(
     batchSize !== 1 ||
     !['filesystem.list-directory', 'filesystem.read-file', 'filesystem.directory-tree'].includes(toolId)
   ) {
-    return arguments_;
+    return normalizedArguments;
   }
   const exactPath = exactQuotedAbsolutePath(prompt);
-  if (!exactPath || arguments_.path === exactPath) return arguments_;
-  return { ...arguments_, path: exactPath };
+  if (!exactPath || normalizedArguments.path === exactPath) return normalizedArguments;
+  return { ...normalizedArguments, path: exactPath };
 }
 
 function parseProviderResponse(
@@ -508,6 +597,7 @@ async function runAgentTask(
       error.code,
       error.message,
       options.config.maxResponseChars,
+      prompt,
     );
     options.session.add({ role: 'assistant', content: response });
     task.needsAttention();
@@ -543,6 +633,7 @@ async function runAgentTask(
         const partialResponse = filesystemResultResponse(
           filesystemToolResults,
           options.config.maxResponseChars,
+          prompt,
           true,
         );
         options.session.add({ role: 'assistant', content: partialResponse });
@@ -609,7 +700,7 @@ async function runAgentTask(
       }
       if (claimsUnverifiedFileRead(response.text, successfulToolIds)) {
         const safeResponse =
-          'I cannot report file contents because no registered filesystem read completed successfully.';
+          'I haven’t read a file in this conversation, so I can’t confirm its contents.';
         options.session.add({ role: 'assistant', content: safeResponse });
         options.logger.emit({
           event: 'request.completed',
@@ -622,7 +713,7 @@ async function runAgentTask(
       }
       if (claimsUnverifiedDirectoryRead(response.text, successfulToolIds)) {
         const safeResponse =
-          'I cannot report directory contents because no registered directory listing or tree tool completed successfully.';
+          'I haven’t listed a folder yet, so I can’t confirm what’s inside it.';
         options.session.add({ role: 'assistant', content: safeResponse });
         options.logger.emit({
           event: 'request.completed',
@@ -646,6 +737,7 @@ async function runAgentTask(
         const finalResponse = filesystemResultResponse(
           filesystemToolResults,
           options.config.maxResponseChars,
+          prompt,
         );
         options.session.add({ role: 'assistant', content: finalResponse });
         options.logger.emit({
@@ -746,6 +838,7 @@ async function runAgentTask(
           call.arguments,
           response.calls.length,
           recentSearchDirectory,
+          availableTools,
         );
         const result = await options.tools.execute(call.toolId, args, signal, context);
         const serialized = JSON.stringify(result);
@@ -771,7 +864,8 @@ async function runAgentTask(
           !['filesystem.propose-edit', 'filesystem.propose-create'].includes(call.toolId)
         ) {
           const listingPath =
-            call.toolId === 'filesystem.list-directory' && typeof args.path === 'string'
+            ['filesystem.list-directory', 'filesystem.directory-tree', 'filesystem.read-file'].includes(call.toolId) &&
+            typeof args.path === 'string'
               ? ` (${args.path})`
               : '';
           filesystemToolResults.push(`${call.toolId}${listingPath}: ${serialized}`);

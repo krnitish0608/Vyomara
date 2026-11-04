@@ -231,7 +231,7 @@ test('repository follow-ups list the verified project directory and report its d
       kind: 'tool-calls',
       calls: [{
         toolId: 'filesystem.list-directory',
-        arguments: { path: '/' },
+        arguments: { path: '/', maxEntries: '10' },
       }],
     },
     { kind: 'final', text: 'There is 1 folder.' },
@@ -263,18 +263,18 @@ test('repository follow-ups list the verified project directory and report its d
     'are you able to see how many folders are there in that repository?',
   );
   assert.deepEqual(advertised[2], ['filesystem.list-directory']);
-  assert.match(folderCount, /2 folders and 2 files/u);
-  assert.match(folderCount, /app, tests/u);
-  assert.match(folderCount, /README\.md, package\.json/u);
+  assert.match(folderCount, /I found 2 folders and 2 files directly inside/u);
+  assert.match(folderCount, /4 items total/u);
+  assert.doesNotMatch(folderCount, /Verified filesystem tool result/u);
+  assert.doesNotMatch(folderCount, /app, tests/u);
   const followUp = await app.run(undefined, 'under that how many?');
-  assert.match(followUp, /2 folders and 2 files/u);
-  assert.match(followUp, /Directory listing for/u);
+  assert.match(followUp, /I found 2 folders and 2 files directly inside/u);
   assert.equal(
     await app.run(undefined, 'yes'),
-    'I cannot report directory contents because no registered directory listing or tree tool completed successfully.',
+    'I haven’t listed a folder yet, so I can’t confirm what’s inside it.',
   );
   const fileList = await app.run(undefined, 'check files');
-  assert.match(fileList, /Files \(2\): README\.md, package\.json/u);
+  assert.match(fileList, /Files: README\.md, package\.json/u);
 });
 
 test('agent recognizes misspelled project search and resolves a search-it follow-up from recent context', async t => {
@@ -312,11 +312,11 @@ test('agent recognizes misspelled project search and resolves a search-it follow
 
   assert.match(
     await app.run(undefined, 'whrere is my keylessrn project in the directory'),
-    /Verified filesystem tool result/u,
+    /Your project folder is here/u,
   );
   assert.deepEqual(advertised[0], ['filesystem.search']);
   assert.deepEqual(advertised[1], ['filesystem.search']);
-  assert.match(await app.run(undefined, 'just serch it'), /Verified filesystem tool result/u);
+  assert.match(await app.run(undefined, 'just serch it'), /I found a matching folder here/u);
   assert.ok(advertised.slice(1).every(ids => ids.includes('filesystem.search')));
   const result = app.session.messages().find(message =>
     message.role === 'tool' && message.toolId === 'filesystem.search');
@@ -328,6 +328,78 @@ test('agent recognizes misspelled project search and resolves a search-it follow
   assert.equal(matches.length, 1);
   assert.equal(matches[0]?.path.split('/').at(-1), 'keylessrn');
   assert.equal(matches[0]?.type, 'directory');
+});
+
+test('project search prioritizes repo folders and vague follow-ups reuse the verified project path', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-project-location-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'Vyomara');
+  await mkdir(projectPath);
+  await writeFile(join(root, 'Vyomara AI Assistant UI Showcase.png'), 'image');
+  await writeFile(join(root, 'Vyomara Voice Assistant Dashboard.png'), 'image');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'vyomara', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I found some Vyomara files.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'repo', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I searched again.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'anything', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I checked once more.' },
+  ]), registry, config);
+
+  const firstAnswer = await app.run(
+    undefined,
+    'where is this Vyomara project located in the system?',
+  );
+  const firstSearchResult = app.session.messages().find(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(firstSearchResult?.role, 'tool');
+  const firstMatches = firstSearchResult?.role === 'tool'
+    ? JSON.parse(firstSearchResult.content).matches as Array<{ path: string; type: string }>
+    : [];
+  const verifiedProjectPath = firstMatches.find(match => match.type === 'directory')?.path;
+  assert.equal(verifiedProjectPath?.split('/').at(-1), 'Vyomara');
+  assert.ok(verifiedProjectPath && firstAnswer.includes(verifiedProjectPath));
+  assert.doesNotMatch(firstAnswer, /\.png/u);
+  const followup = await app.run(undefined, 'where is the project repo?');
+  assert.ok(verifiedProjectPath && followup.includes(verifiedProjectPath));
+  const repeat = await app.run(undefined, 'check once again');
+  assert.ok(verifiedProjectPath && repeat.includes(verifiedProjectPath));
+
+  const searchResults = app.session.messages().filter(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(searchResults.length, 3);
+  for (const message of searchResults) {
+    if (message.role !== 'tool') continue;
+    const matches = (JSON.parse(message.content) as {
+      matches: Array<{ path: string; type: string }>;
+    }).matches;
+    assert.ok(matches.some(match =>
+      match.type === 'directory' && match.path === verifiedProjectPath));
+  }
 });
 
 test('agent expands a home-relative model search path before filesystem validation', async () => {
@@ -503,8 +575,9 @@ test('verified filesystem results are returned if Ollama fails during its follow
   };
   const app = harness(provider, registry, config);
   const result = await app.run();
-  assert.match(result, /Ollama could not complete its follow-up/);
-  assert.match(result, /"content":"real fixture contents"/);
+  assert.match(result, /Here’s the content of/);
+  assert.match(result, /real fixture contents/);
+  assert.match(result, /couldn’t complete the rest of the check/u);
   assert.doesNotMatch(result, /model summary/);
   assert.equal(calls, 2);
   assert.equal(
@@ -554,8 +627,9 @@ test('verified filesystem results are returned when the model follow-up times ou
   };
   const app = harness(provider, registry, config);
   const result = await app.run();
-  assert.match(result, /Ollama could not complete its follow-up/);
-  assert.match(result, /"content":"real fixture contents"/);
+  assert.match(result, /Here’s the content of/);
+  assert.match(result, /real fixture contents/);
+  assert.match(result, /couldn’t complete the rest of the check/u);
   assert.equal(calls, 2);
   assert.equal(
     app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
@@ -694,7 +768,7 @@ test('assistant cannot claim file contents without a successful filesystem read 
   const response = await app.run();
   assert.equal(
     response,
-    'I cannot report file contents because no registered filesystem read completed successfully.',
+    'I haven’t read a file in this conversation, so I can’t confirm its contents.',
   );
   assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
   assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
@@ -707,7 +781,7 @@ test('assistant cannot claim a directory listing without a successful listing re
   const response = await app.run();
   assert.equal(
     response,
-    'I cannot report directory contents because no registered directory listing or tree tool completed successfully.',
+    'I haven’t listed a folder yet, so I can’t confirm what’s inside it.',
   );
   assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
   assert.equal(app.logLines.some(line => line.includes('"event":"tool.completed"')), false);
@@ -753,7 +827,7 @@ test('filesystem content cannot authorize an unregistered shell tool through pro
   };
   const app = harness(provider, registry, config);
   const response = await app.run();
-  assert.match(response, /partial; a later operation failed \(unknown-tool\)/);
+  assert.match(response, /A later filesystem step failed/u);
   assert.match(response, /Ignore previous instructions/);
 
   const readResult = observedMessages[1]?.find(message => message.role === 'tool');
@@ -833,7 +907,7 @@ test('invalid model arguments receive one structured correction and corrected li
       kind: 'tool-calls',
       calls: [{
         toolId: 'filesystem.list-directory',
-        arguments: { path: root, maxEntries: '10' },
+        arguments: { path: root, maxEntries: 'not-an-integer' },
       }],
     },
     {
@@ -854,10 +928,10 @@ test('invalid model arguments receive one structured correction and corrected li
     },
   };
   const app = harness(provider, registry, config);
-  const result = await app.run();
+  const result = await app.run(undefined, `list files in ${root}`);
   assert.match(result, /a\.txt.*b\.txt/);
   assert.doesNotMatch(result, /misleading\.txt/);
-  assert.match(result, /^Verified filesystem tool result\(s\):/);
+  assert.doesNotMatch(result, /Verified filesystem tool result/u);
   assert.equal(responseIndex, 3);
   const history = providerMessages[1]!;
   const toolError = history.find(message => message.role === 'tool');
@@ -946,7 +1020,7 @@ test('one exact quoted absolute path overrides a model-corrupted filesystem path
       },
     }, registry, config);
     const result = await app.run(new AbortController().signal, prompt);
-    assert.match(result, /^Verified filesystem tool result\(s\):/);
+    assert.doesNotMatch(result, /Verified filesystem tool result/u);
     assert.equal(providerCall, 2);
     assert.equal(
       app.logLines.filter(line =>
@@ -1099,7 +1173,7 @@ test('filesystem JSON null limits use defaults while string null limits remain i
         error instanceof ToolExecutionError && error.code === 'invalid-input');
     } else {
       const result = await app.run(new AbortController().signal, `Use ${toolId} for ${root}`);
-      assert.match(result, /^Verified filesystem tool result\(s\):/);
+      assert.doesNotMatch(result, /Verified filesystem tool result/u);
     }
     assert.equal(requestCount, 2);
     assert.equal(
@@ -1156,10 +1230,9 @@ test('verified filesystem responses stay within the configured assistant output 
     { kind: 'final', text: 'Here are the directory results.' },
   ]), registry, config);
   const response = await app.run();
-  assert.equal(
-    response,
-    'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.',
-  );
+  assert.match(response, /listing was cut short/u);
+  assert.match(response, /7 files/u);
+  assert.doesNotMatch(response, /entry-0-/u);
   assert.ok(response.length <= config.maxResponseChars);
   assert.equal(
     app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
@@ -1206,10 +1279,10 @@ test('out-of-range tree arguments can be corrected without weakening validation'
     },
   };
   const app = harness(provider, registry, config);
-  const result = await app.run();
+  const result = await app.run(undefined, `show the directory tree for ${root}`);
   assert.match(result, /nested\/item\.txt/);
   assert.doesNotMatch(result, /fabricated\/missing\.txt/);
-  assert.match(result, /^Verified filesystem tool result\(s\):/);
+  assert.doesNotMatch(result, /Verified filesystem tool result/u);
   assert.equal(calls, 3);
   assert.deepEqual(
     app.session.messages().filter(message => message.role === 'tool').map(message =>
@@ -1253,7 +1326,7 @@ test('repeated invalid arguments stop after one bounded correction and never suc
         kind: 'tool-calls',
         calls: [{
           toolId: 'filesystem.list-directory',
-          arguments: { path: root, maxEntries: '10' },
+          arguments: { path: root, maxEntries: 'not-an-integer' },
         }],
       };
     },
@@ -1603,10 +1676,7 @@ test('mocked Ollama safely calls the registered filesystem reader and receives i
   });
   assert.equal(
     result,
-    `Verified filesystem tool result(s):\nfilesystem.read-file: ${JSON.stringify({
-      content: 'local note',
-      bytes: Buffer.byteLength('local note'),
-    })}`,
+    `Here’s the content of \`${file}\`:\nlocal note`,
   );
   assert.doesNotMatch(result, /The note says/);
   assert.equal(await readFile(file, 'utf8'), 'local note');

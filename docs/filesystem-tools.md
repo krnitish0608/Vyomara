@@ -43,6 +43,11 @@ results.
   defaults to 3 (maximum 10).
 - Search and other filesystem reads are bounded by tool output limits and
   cancellation/timeouts. The desktop uses a 10-second filesystem timeout.
+- User-facing filesystem answers are phrased conversationally from verified
+  results: search returns matching paths, listings report direct-child counts,
+  and file reads show the requested content. Counts are not presented as
+  recursive unless a tree was requested; truncated or skipped results are
+  identified as incomplete.
 
 ## Reviewed changes
 
@@ -75,8 +80,10 @@ The agent exposes filesystem tools only when the current request explicitly
 asks for a filesystem action. A request to locate a file, folder, or project
 exposes name search rather than a broad directory listing. Calls to tools not
 available for that request are not executed. Short follow-ups such as "search
-it" can use the recent user-mentioned file or project as context; ordinary
-greetings still do not expose filesystem tools.
+it", "where is the repo?", or "check again" use the latest verified search
+result as context. Project-location answers prioritize matching directories
+over similarly named files. Ordinary greetings still do not expose filesystem
+tools.
 
 File contents are sensitive. Read results, tool calls, and approved-change
 proposals are stored in local conversation history and sent to the configured
