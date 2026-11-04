@@ -138,6 +138,72 @@ test('filesystem read returns permitted UTF-8 text without exposing the path in 
   });
 });
 
+test('filesystem search finds file and folder names without following symlinks', async t => {
+  const { root, executor } = await fixture(t);
+  const folder = join(root, 'Docs', 'ReadMeAssets');
+  await mkdir(folder, { recursive: true });
+  await writeFile(join(root, 'README.md'), 'readme content');
+  await writeFile(join(folder, 'icon.txt'), 'icon');
+  await symlink(folder, join(root, 'linked-assets'));
+
+  const result = await execute(executor, 'filesystem.search', { query: 'readme', path: root }) as {
+    matches: Array<{ path: string; type: string }>;
+    scannedDirectories: number;
+    skippedDirectories: number;
+    truncated: boolean;
+  };
+  assert.deepEqual(result.matches.map(match => [match.path.split('/').at(-1), match.type]), [
+    ['ReadMeAssets', 'directory'],
+    ['README.md', 'file'],
+  ]);
+  assert.equal(result.scannedDirectories, 3);
+  assert.equal(result.skippedDirectories, 0);
+  assert.equal(result.truncated, false);
+});
+
+test('filesystem search returns exact name matches without scanning the entire tree', async t => {
+  const { root, executor } = await fixture(t);
+  const match = join(root, 'keylessrn');
+  await mkdir(match);
+  for (let index = 0; index < 20; index += 1) {
+    await mkdir(join(root, `other-${index}`));
+  }
+
+  const result = await execute(executor, 'filesystem.search', {
+    query: 'KeylessRN',
+    path: root,
+  }) as {
+    matches: Array<{ path: string; type: string }>;
+    scannedDirectories: number;
+    truncated: boolean;
+  };
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0]?.path.split('/').at(-1), 'keylessrn');
+  assert.equal(result.matches[0]?.type, 'directory');
+  assert.equal(result.scannedDirectories, 1);
+  assert.equal(result.truncated, true);
+});
+
+test('whole-machine filesystem access rejects protected system paths', async () => {
+  const config = loadConfig({
+    VYOM_PROVIDER: 'placeholder',
+    VYOM_ALLOWED_ROOTS: '["/"]',
+  });
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const executor = new ToolExecutor({
+    registry,
+    policy: new PolicyGateway(),
+    config,
+    logger: createLogger(() => {}),
+  });
+
+  await assert.rejects(
+    execute(executor, 'filesystem.list-directory', { path: '/System' }),
+    (error: unknown) => error instanceof ToolExecutionError && error.code === 'permission-denied',
+  );
+});
+
 test('filesystem access rejects paths outside configured roots', async t => {
   const { parent, root, executor } = await fixture(t);
   const outside = join(parent, 'private.txt');

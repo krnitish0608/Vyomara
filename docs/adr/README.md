@@ -23,19 +23,19 @@ proposed decisions must not be presented as current implementation choices.
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
 | [0012](./0012-desktop-interface.md) | Initial macOS desktop interaction shell | Superseded |
 | [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Superseded |
-| [0014](./0014-approved-project-edit-proposals.md) | User-approved, selected-project code edits | Superseded |
+| [0014](./0014-human-reviewed-filesystem-operations.md) | Human-reviewed machine-wide filesystem operations | Accepted |
 
 ## Open decisions
 
 The current product direction is recorded in
 [docs/product-direction.md](../product-direction.md). Historical ADRs remain
-useful as context but do not authorize the removed desktop panels, manual
-project selection, or project-edit workflow.
+useful as context but do not authorize the removed desktop panels or manual
+project selection. ADR-0014 defines the current reviewed filesystem workflow.
 
 User confirmation is needed for:
 
-1. **Approval UX:** how non-code side-effect requests beyond the implemented
-   app-launch, project-edit, and fixed-check flows are displayed and scoped.
+1. **Approval UX:** how future side-effect requests beyond reviewed filesystem
+   operations are displayed and scoped.
 2. **Configuration:** secret injection for any future credential-bearing
    provider.
 3. **Diagnostics:** retention/rotation policy and any future opt-in content

@@ -12,14 +12,16 @@ The desktop app is intentionally simple while that agent workflow is built:
 - Keep Assistant, History, chat, voice input, and visible task activity.
 - Do not expose Memory, Permissions, Project workspace, or Settings panels.
 - Do not require manual project selection before asking for help.
-- Keep project reading, editing, application control, and other integrations
-  deferred until they fit a coherent voice-first workflow with clear safety
-  boundaries.
+- Let the desktop search and inspect files across the machine, subject to OS
+  permissions and blocked system/credential paths.
+- Require a review of every proposed file/folder creation or text edit, and a
+  separate confirmation for each deletion. Move approved deletions to Trash.
+- Keep shell execution, app control, and other integrations deferred until
+  they fit a coherent voice-first workflow with clear safety boundaries.
 
 Removing those desktop panels does not delete existing local conversation
 data or change the CLI's separate capabilities. The desktop app currently
-does not provide memory management, project access, file editing, or model
-switching controls.
+does not provide memory management or model switching controls.
 
 ## Product principles
 
@@ -39,12 +41,10 @@ switching controls.
 
 ## Project workflow direction
 
-Project access should not depend on a user manually choosing a directory for
-each interaction. A future coding workflow should understand available
-workspace context through the agent's broader environment awareness and
-respect platform permissions. Until that flow is designed and implemented,
-the desktop app does not expose project selection, project checks, file
-inspection, or code edits.
+Project access does not depend on manually choosing a directory. The desktop
+uses bounded filesystem discovery and a per-operation human review boundary
+for changes. File contents remain untrusted input, and platform permissions
+and protected-path rules remain in force.
 
 ## Reference image
 

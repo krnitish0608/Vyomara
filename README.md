@@ -17,16 +17,17 @@ desktop shell has text chat, offline voice input, request cancellation,
 task-activity status, and local conversation history. Its sidebar keeps History
 alongside the assistant and task activity; Memory, Permissions, Project
 workspace, and Settings panels are not part of the current desktop workflow.
-Desktop chat does not expose filesystem tools or project editing. The agent's
-project-awareness and coding workflow are deferred until they can work without
-requiring manual project selection.
+Desktop chat can search and inspect files across the machine without manual
+project selection. File/folder creation and text edits require an explicit
+per-operation review; each deletion requires typing `DELETE` and moves the
+item to Trash. Protected system and credential paths are unavailable. The CLI
+continues to use its separately configured, read-only filesystem tools.
 Requests have correlated task/run lifecycle events and are stored as local,
 inspectable sessions. The session history includes user prompts, assistant
 replies, tool calls, and returned tool data, which may contain private content.
 Each session is capped at 1,000 messages or 8 MiB; start another session when
 that limit is reached.
-Unsupported shell, web-search, and direct file-mutation requests are not
-executed.
+Unsupported shell, web-search, and unapproved file mutations are not executed.
 Tool arguments are strictly validated, with at most one bounded correction
 attempt; a model claim is not evidence that an action succeeded.
 Desktop conversations are retained locally until deleted. The database is not
@@ -45,8 +46,10 @@ Use pnpm only. Do not mix npm and pnpm lockfiles in this project.
 
 ## Safety principles
 
-- Default to read-only behavior.
-- Require approval before sensitive or destructive actions.
+- Require approval before every file creation/edit and a separate confirmation
+  for each deletion.
+- Treat full-machine filesystem access as sensitive and keep system and
+  credential paths protected.
 - Never commit secrets.
 - Test changes before marking work complete.
 

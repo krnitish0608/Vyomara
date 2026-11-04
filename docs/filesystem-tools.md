@@ -1,117 +1,91 @@
-# Read-only filesystem tools
+# Filesystem tools
 
-The default tool registry includes `filesystem.list-directory`,
-`filesystem.directory-tree`, and `filesystem.read-file`. They are registered
-with the existing tool executor as `read` effects, so every invocation passes
-through the policy gateway. No filesystem write, edit, delete, move, rename,
-shell, or process-execution tool is registered.
+Vyomara's CLI and desktop have different filesystem scopes:
 
-The desktop has a separate, explicit project-edit workflow when a project is
-selected and the user asks for a code change. It can stage up to three
-full-file replacements or new files (maximum 16 KiB each); new files are
-limited to existing project folders inspected during that request. Staging
-does not write. Vyomara displays each complete diff, and every file requires
-its own apply/reject decision. Replacements fail if the source changed after
-review, and new files fail if the destination became occupied. Folder creation,
-file deletion, secret-file edits, and arbitrary commands are not supported.
-See [ADR-0014](./adr/0014-approved-project-edit-proposals.md) for the approval
-and filesystem safety boundary.
+- The CLI stays read-only and uses `VYOM_ALLOWED_ROOTS`, a JSON array of
+  absolute directory paths. Its default `[]` grants no filesystem access.
+- The desktop can search, list, read, create, edit, and delete user files without
+  asking the user to select a project. It runs with the current macOS user's
+  operating-system permissions, not as root. The desktop's broad scope does not
+  override macOS privacy permissions; access may require the user to grant
+  Vyomara access in System Settings.
 
-## Allowed roots
+The desktop blocks system and credential locations, including `/System`,
+`/Library`, `/Applications`, `/usr`, `/bin`, `/sbin`, `/etc`, `/var`,
+`/private/etc`, `/private/var`, `/dev`, `/proc`, `/sys`, `/boot`, `/root`,
+the user's Keychains and Vyomara application data, and common credential
+stores such as `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, and
+`.config/gcloud`, `.config/gh`, `.docker`, `.local/share/keyrings`, `.netrc`,
+`.npmrc`, and `.git-credentials`. Protected paths are blocked for reads and
+changes; recursive search and tree traversal skip them and report incomplete
+results.
 
-Filesystem access is denied unless one or more roots are explicitly configured.
-Set `VYOM_ALLOWED_ROOTS` to a JSON array of absolute directory paths, for
-example in a local shell (replace the example with directories you intend to
-allow). Up to 32 roots may be configured:
+## Discovery and reading
 
-```sh
-export VYOM_ALLOWED_ROOTS='["/Users/your-name/Projects"]'
-```
+- `filesystem.search` matches file and folder names case-insensitively. It
+  starts at `/` on desktop when no path is supplied, does not search file
+  contents, and never follows symlinks. A default whole-machine search
+  prioritizes common project roots in the current user's home directory before
+  other accessible locations. An exact filename/folder-name match is returned
+  immediately with `truncated: true` because the rest of the machine was not
+  searched. Otherwise, search returns at most 100 results by default, scans at
+  most 10,000 directories and 1,000 entries per directory, and stops at depth
+  32. Permission failures and protected paths are counted as skipped;
+  `truncated` and `skippedDirectories` must be considered when interpreting
+  results.
+- `filesystem.list-directory` returns direct child names and types.
+- `filesystem.directory-tree` returns relative entry paths up to the configured
+  depth and entry limits. Symlinks may be described but are never followed.
+- `filesystem.read-file` accepts bounded UTF-8 text. It rejects invalid UTF-8,
+  NUL bytes, and disallowed control characters.
+- Reads are limited to 65,536 bytes by default, configurable up to 1 MiB.
+  Directory lists and trees default to 100 entries (maximum 500); tree depth
+  defaults to 3 (maximum 10).
+- Search and other filesystem reads are bounded by tool output limits and
+  cancellation/timeouts. The desktop uses a 10-second filesystem timeout.
 
-`.env.example` uses `[]`, granting no filesystem access. Vyomara does not
-expand `~`, load `.env` files, or silently grant access to the home directory.
-The Electron app also provides a **Folders** screen for selecting and
-revoking roots through the native directory picker. Those grants are persisted
-in the owner-only local database and take effect on the next request.
-`VYOM_ALLOWED_ROOTS` seeds that list the first time the desktop database is
-initialized; after that, the Folders screen is authoritative for desktop
-permissions. The CLI continues to use `VYOM_ALLOWED_ROOTS` directly.
-At operation time it canonicalizes each root, rejects paths outside those
-roots, requires requested paths to be absolute, and rejects `..` path
-components. Error messages and diagnostics do not include configured roots or
-requested absolute paths.
+## Reviewed changes
 
-## Operations and limits
+Desktop writes are proposals, never direct model actions:
 
-- `filesystem.list-directory` returns entry names and types, including
-  symlinks as `symlink` without following them.
-- `filesystem.directory-tree` returns relative entry paths and depth. Its
-  default depth is 3 and the configured maximum is 10.
-  Depth 1 lists direct children of the requested directory; deeper values
-  include descendants. If a directory at the depth boundary is non-empty,
-  `truncated` is true because its children were omitted.
-  Selection uses depth-first traversal with sibling names in lexical order;
-  `maxEntries` is shared across the full tree. Returned entries are sorted by
-  relative path. When there is remaining entry capacity, each directory is
-  scanned to retain its lexically earliest candidates, independent of the
-  filesystem's enumeration order. The scan retains at most the remaining
-  entry budget in memory, and the executor timeout bounds its duration; a
-  very large directory can therefore time out rather than return a partial
-  selection.
-- `filesystem.read-file` accepts UTF-8 text files only. It rejects invalid
-  UTF-8, NUL bytes, and disallowed control characters as binary-looking
-  content.
-- A file is limited to 65,536 bytes by default, configurable from 1 byte to
-  1 MiB with `VYOM_MAX_FILE_BYTES`.
-- Listings and trees return at most 100 entries by default, configurable up
-  to 500 with `VYOM_MAX_DIRECTORY_ENTRIES`.
-- Tree depth defaults to 3, configurable up to 10 with `VYOM_MAX_TREE_DEPTH`.
-- All tool results are also constrained by `VYOM_MAX_TOOL_OUTPUT_CHARS`
-  (default 4,000 characters), and operations use the existing tool timeout
-  (default 2 seconds) and cancellation boundary.
+- Creating a file, creating an empty folder, or editing a text file pauses the
+  request and displays the exact path and full current/proposed text in the
+  conversation. The user must approve each operation before it is applied.
+- File creation requires an existing parent folder. File edits are limited to
+  16 KiB and fail if the reviewed file changes before approval. Existing file
+  permission bits are retained for edits; new files and folders are owner-only.
+- Each deletion requires the user to type `DELETE` for that specific item. It
+  moves the item to the system Trash rather than permanently erasing it.
+  Deleting `/`, `/Users`, or `/Volumes` is blocked.
+- Protected paths, symlinks, invalid paths, and inaccessible paths are
+  rejected. Pending approvals expire with the request or are discarded on
+  cancellation/restart.
+- Shell execution, package installation, web access, and arbitrary application
+  control remain unavailable.
 
-Pass `maxEntries` to a listing or tree request, and `maxDepth` to a tree
-request, only to lower the configured maximum. Entries are selected and
-returned deterministically: listings use lexical name order, and trees use
-the traversal and final path order described above. `truncated` indicates omitted
-entries due to count, depth, or output limits. Unknown input fields, relative
-paths, negative limits, and values above configured maxima are rejected.
+## Validation and privacy
 
-Invalid model-generated arguments are not coerced. The agent may return one
-structured validation error to the model for a correction attempt; corrected
-arguments pass through the same schema validation, executor, and policy checks.
-If the correction is invalid, the request stops without a success response.
-Missing paths, invalid paths, paths outside allowed roots, and permission
-failures are reported with concise messages and safe error codes, without
-printing absolute paths or stack traces.
+Tool arguments are strictly schema-validated; relative paths and parent
+traversal are rejected. Requested paths are checked against canonical roots,
+and file reads use `O_NOFOLLOW` plus file-identity checks. File creation uses
+exclusive creation. Edits and deletions re-check the reviewed file identity
+and content before acting. Model results remain untrusted data.
 
-File contents are sensitive user data. The filesystem tools do not log them,
-but a model-requested read result is added to the temporary conversation and
-sent to the configured local Ollama service on the next provider request.
-Only explicitly registered read-only tools are advertised. Ollama tool calls
-are bounded by the configured iteration, call, input, and output limits, and
-every call still passes through executor validation and the fail-closed policy
-gateway. Treat file contents as untrusted data; they cannot change system
-policy.
+The agent exposes filesystem tools only when the current request explicitly
+asks for a filesystem action. A request to locate a file, folder, or project
+exposes name search rather than a broad directory listing. Calls to tools not
+available for that request are not executed. Short follow-ups such as "search
+it" can use the recent user-mentioned file or project as context; ordinary
+greetings still do not expose filesystem tools.
 
-Assistant prose is not proof of filesystem activity: a read is considered
-successful only when the matching registered tool completed and returned a
-validated result. Shell commands, web searches, and file mutations are
-unsupported and are not implemented.
+File contents are sensitive. Read results, tool calls, and approved-change
+proposals are stored in local conversation history and sent to the configured
+local Ollama provider for follow-up. Vyomara does not send them to a cloud
+provider. The local database is not application-encrypted; use FileVault and
+review saved conversations before sharing or exporting them.
 
-## Symlinks and race limitation
-
-Configured roots are canonicalized before use. Requested paths are resolved
-and checked with path-aware containment, and symbolic links in requested
-paths are rejected. Directory listing and tree output may describe a symlink
-entry but never descend through it. File reads use `O_NOFOLLOW` for the final
-file and verify file identity after opening.
-
-Portable Node.js path-based filesystem APIs do not provide a complete
-`openat`-style, handle-relative walk for every operation. A hostile local
-process could change a parent directory or symlink between a check and a
-path-based directory operation (a TOCTOU race). The implementation narrows
-that window and fails closed on detected changes, but does not claim
-race-free protection against concurrent local filesystem mutation. Configure
-only roots you trust and avoid concurrently changing their directory
-structure during a read.
+Portable path-based filesystem APIs cannot provide a fully handle-relative
+walk for every operation. A hostile local process could race parent-directory
+changes between validation and a filesystem action (a TOCTOU race). Vyomara
+revalidates immediately before changes but does not claim race-free protection
+against concurrent local filesystem mutation.

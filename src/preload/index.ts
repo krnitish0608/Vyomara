@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DesktopChatRequest, DesktopSpeechRecognitionEvent, VyomaraDesktopApi } from '../desktop/contracts.ts';
+import type {
+  DesktopChatRequest,
+  DesktopFileOperationProposal,
+  DesktopSpeechRecognitionEvent,
+  VyomaraDesktopApi,
+} from '../desktop/contracts.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 const api: VyomaraDesktopApi = {
@@ -15,6 +20,22 @@ const api: VyomaraDesktopApi = {
     };
     ipcRenderer.on('vyomara:chat-text', handler);
     return () => ipcRenderer.removeListener('vyomara:chat-text', handler);
+  },
+  onFileOperationProposal(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, proposal: DesktopFileOperationProposal): void => {
+      listener(proposal);
+    };
+    ipcRenderer.on('vyomara:file-operation-proposed', handler);
+    return () => ipcRenderer.removeListener('vyomara:file-operation-proposed', handler);
+  },
+  approveFileOperation(id: string, confirmation?: string) {
+    return ipcRenderer.invoke('vyomara:file-operation-approve', {
+      id,
+      ...(confirmation === undefined ? {} : { confirmation }),
+    });
+  },
+  rejectFileOperation(id: string) {
+    return ipcRenderer.invoke('vyomara:file-operation-reject', id);
   },
   cancelRequest() {
     return ipcRenderer.invoke('vyomara:chat-cancel');

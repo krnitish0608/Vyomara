@@ -16,6 +16,33 @@ export function parseDesktopSessionId(value: unknown): string {
   return value;
 }
 
+export function parseDesktopFileOperationApprovalRequest(
+  value: unknown,
+): { readonly id: string; readonly confirmation?: string } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new DesktopValidationError('File review request is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).some(key => key !== 'id' && key !== 'confirmation') ||
+    !Object.hasOwn(record, 'id') ||
+    (Object.hasOwn(record, 'confirmation') &&
+      (typeof record.confirmation !== 'string' || record.confirmation.length > 16))
+  ) {
+    throw new DesktopValidationError('File review request is invalid.');
+  }
+  const id = parseDesktopSessionId(record.id);
+  return {
+    id,
+    ...(typeof record.confirmation === 'string' ? { confirmation: record.confirmation } : {}),
+  };
+}
+
 export function parseDesktopSessionDeleteRequest(value: unknown): { readonly id: string; readonly confirmation: string } {
   if (
     typeof value !== 'object' ||

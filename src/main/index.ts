@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } from 'electron';
 import type { SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -21,16 +21,22 @@ import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import {
   DesktopValidationError,
   parseDesktopChatRequest,
+  parseDesktopFileOperationApprovalRequest,
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../desktop/validation.ts';
 import { exportToSelectedFile } from '../desktop/session-export.ts';
+import {
+  FileOperationApprovalError,
+  FileOperationApprovalManager,
+} from '../desktop/file-operation-approval.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
+let activeFileOperationApproval: FileOperationApprovalManager | undefined;
 const macSpeechRunner = new MacSpeechRunner();
 let localWhisperRunner: LocalWhisperRunner | undefined;
 let voiceListeningEnabled = false;
@@ -55,7 +61,8 @@ function publicErrorMessage(error: unknown): string {
     error instanceof ToolExecutionError ||
     error instanceof PersistenceError ||
     error instanceof MacSpeechError ||
-    error instanceof LocalSpeechError
+    error instanceof LocalSpeechError ||
+    error instanceof FileOperationApprovalError
   ) {
     return error.message;
   }
@@ -174,11 +181,28 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
 
   const controller = new AbortController();
   activeRequest = controller;
+  const desktopConfig: AppConfig = {
+    ...config,
+    filesystemAllowedRoots: ['/'],
+    toolTimeoutMs: 10_000,
+    maxToolOutputChars: 20_000,
+  };
+  const approvals = new FileOperationApprovalManager({
+    config: desktopConfig,
+    onProposal(proposal) {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        throw new Error('The review window is unavailable; no file operation was performed.');
+      }
+      mainWindow.webContents.send('vyomara:file-operation-proposed', proposal);
+    },
+    moveToTrash: path => shell.trashItem(path),
+  });
+  activeFileOperationApproval = approvals;
   try {
     return await runRequest(
       request.prompt,
       controller.signal,
-      config,
+      desktopConfig,
       createDesktopLogger(),
       request.sessionId,
       text => {
@@ -186,12 +210,39 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
           mainWindow.webContents.send('vyomara:chat-text', { requestId: request.requestId, text });
         }
       },
-      false,
+      true,
+      approvals,
     );
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
     activeRequest = undefined;
+    activeFileOperationApproval = undefined;
+  }
+});
+
+ipcMain.handle('vyomara:file-operation-approve', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('File review request is invalid.');
+  if (!activeRequest || !activeFileOperationApproval) {
+    throw new Error('There is no active file operation to approve.');
+  }
+  try {
+    const approval = parseDesktopFileOperationApprovalRequest(input);
+    await activeFileOperationApproval.approve(approval.id, approval.confirmation);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('File review request is invalid.');
+  if (!activeRequest || !activeFileOperationApproval) {
+    throw new Error('There is no active file operation to reject.');
+  }
+  try {
+    activeFileOperationApproval.reject(parseDesktopSessionId(input));
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
   }
 });
 
@@ -390,7 +441,10 @@ app.whenReady().then(async () => {
     );
   });
   try {
-    config = loadConfig(process.env);
+    config = {
+      ...loadConfig(process.env),
+      filesystemAllowedRoots: ['/'],
+    };
     voiceListeningEnabled = await readVoiceListeningPreference();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';

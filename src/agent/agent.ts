@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -22,13 +23,17 @@ export class AgentError extends Error {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function unsupportedCapability(prompt: string, canProposeEdits: boolean): string | undefined {
   if (!canProposeEdits && /\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b[\s\S]{0,80}\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b|\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b[\s\S]{0,80}\b(?:fix|edit|modify|change|implement|refactor|debug|update)\b/i.test(prompt)) {
-    return 'File creation, editing, and deletion are not available without an approved edit workflow. Select a project folder in Project workspace to request a reviewable change to an existing file; no files were changed.';
+    return 'File creation, editing, and deletion are not available in this session. No files were changed.';
   }
   if (!canProposeEdits && (
     /\b(?:open|launch)\s+(?:vs\s*code|vscode|visual studio code)\b[\s\S]{0,96}\b(?:fix|edit|modify|change|implement|refactor|debug)\b|\b(?:fix|edit|modify|change|implement|refactor|debug)\b[\s\S]{0,96}\b(?:in|using|through)\s+(?:vs\s*code|vscode|visual studio code)\b/i.test(prompt)
-  )) return 'Select a project folder in Project workspace before requesting an approved code edit. No files were changed.';
+  )) return 'File editing is not available in this session. No files were changed.';
   if (
     /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?(?:echo|pwd|ls|cat|grep|find|cd|whoami|uname|curl|wget|git|pnpm|npm|ollama)\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
   ) {
@@ -60,6 +65,62 @@ function unsupportedCapability(prompt: string, canProposeEdits: boolean): string
   return undefined;
 }
 
+function filesystemToolsForPrompt(
+  prompt: string,
+  recentUserContext: string,
+  hasRecentSearchResult: boolean,
+  tools: ReturnType<ToolExecutor['modelTools']>,
+): ReturnType<ToolExecutor['modelTools']> {
+  const filesystemTools = tools.filter(tool => tool.id.startsWith('filesystem.'));
+  if (filesystemTools.length === 0) return tools;
+  const intentPrompt = prompt
+    .replace(/(["'`])\/[^\r\n]*?\1/g, ' ')
+    .replace(/\/[^\s"'`]+/g, ' ');
+  const filesystemSubjectPattern =
+    /\b(?:files?|folders?|director(?:y|ies)|projects?|repos?|repositories|codebases?|documents?|notes?|filenames?|paths?|filesystem)\b|\/[^\s"'`]+|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी|प्रोजेक्ट|रेपो)/iu;
+  const refersToRecentSubject =
+    /\b(?:it|that|there|them|those|under that)\b/i.test(prompt) &&
+    (filesystemSubjectPattern.test(recentUserContext) || hasRecentSearchResult);
+  const hasFilesystemSubject =
+    filesystemSubjectPattern.test(prompt) ||
+    (hasRecentSearchResult && /\b(?:repository|repo|project|folder|directory|files?|folders?)\b/i.test(prompt)) ||
+    refersToRecentSubject;
+  const asksForNameSearch =
+    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
+  const asksForFilesystemAction =
+    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
+  const asksForRecursiveListing = /\b(?:tree|recursive(?:ly)?|all\s+descendants)\b/i.test(intentPrompt);
+  const asksToReadFile =
+    /\b(?:read|display)\s+(?:(?:the|exact)\s+)?(?:contents?\s+of\s+)?(?:exact\s+)?files?\b/i.test(intentPrompt) ||
+    /\bfilesystem\.read-file\b/i.test(intentPrompt);
+  const asksForDirectoryListing =
+    /\b(?:how\s+many|count|folders?|subfolders?|contents?|inside|under|contain)\b/i.test(intentPrompt) ||
+    /\bcheck\s+(?:(?:the|all)\s+)?(?:files?|folders?|contents?)\b/i.test(intentPrompt) ||
+    /\blist\s+(?:(?:the|all|direct)\s+)?(?:children|files|folders|contents|directory|folder)\b/i.test(intentPrompt) ||
+    /\b(?:filesystem\.(?:list-directory|directory-tree|read-file|search))\b/i.test(intentPrompt);
+
+  if (!hasFilesystemSubject || !asksForFilesystemAction) {
+    return tools.filter(tool => !tool.id.startsWith('filesystem.'));
+  }
+  if (asksToReadFile) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') || tool.id === 'filesystem.read-file');
+  }
+  if (asksForNameSearch) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') || tool.id === 'filesystem.search');
+  }
+  if (asksForRecursiveListing && asksForDirectoryListing) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') || tool.id === 'filesystem.directory-tree');
+  }
+  if (asksForDirectoryListing) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') || tool.id === 'filesystem.list-directory');
+  }
+  return tools;
+}
+
 function claimsUnsupportedExecution(
   text: string,
 ): boolean {
@@ -69,8 +130,6 @@ function claimsUnsupportedExecution(
     /\b(?:running|executing|launched)\s+(?:the\s+)?(?:shell\s+)?(?:command|script)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:searched|browsed)\s+(?:the\s+)?(?:web|internet)\b/i,
     /\b(?:the\s+)?(?:web search|search)\s+(?:is|was|has been)\s+(?:complete|completed|successful)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:created|deleted|wrote|modified|updated)\s+(?:the\s+)?(?:file|folder|directory)\b/i,
-    /\b(?:the\s+)?(?:file|folder|directory)\s+(?:was|has been)\s+(?:created|deleted|written|modified|updated)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:installed|uninstalled|updated|upgraded)\b.{0,60}\b(?:package|application|app|software|dependency)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:opened|accessed|controlled|restarted|shut down)\b.{0,60}\b(?:camera|microphone|system settings|bluetooth|wi-?fi|mac)\b/i,
     /\b(?:I|we)\s+(?:have\s+)?(?:opened|launched|started)\b.{0,60}\b(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings)\b/i,
@@ -80,6 +139,28 @@ function claimsUnsupportedExecution(
     /["'](?:name|toolId)["']\s*:\s*["'](?:shell\.[a-z0-9.-]+|assistant\.(?:open|search|browse)[a-z0-9.-]*|filesystem\.(?:create|write|delete)[a-z0-9.-]*)["']/i,
   ];
   return claims.some(pattern => pattern.test(text));
+}
+
+function claimsUnverifiedFileMutation(
+  text: string,
+  appliedToolIds: ReadonlySet<string>,
+): boolean {
+  const claims = [
+    {
+      pattern: /\b(?:I|we)\s+(?:have\s+)?(?:created|made)\s+(?:the\s+)?(?:file|folder|directory)\b|\b(?:file|folder|directory)\s+(?:was|has been)\s+created\b/i,
+      tools: ['filesystem.propose-create-file', 'filesystem.propose-create-directory'],
+    },
+    {
+      pattern: /\b(?:I|we)\s+(?:have\s+)?(?:wrote|modified|updated|edited)\s+(?:the\s+)?(?:file|document)\b|\b(?:file|document)\s+(?:was|has been)\s+(?:written|modified|updated|edited)\b/i,
+      tools: ['filesystem.propose-edit'],
+    },
+    {
+      pattern: /\b(?:I|we)\s+(?:have\s+)?(?:deleted|removed)\s+(?:the\s+)?(?:file|folder|directory)\b|\b(?:file|folder|directory)\s+(?:was|has been)\s+(?:deleted|removed)\b/i,
+      tools: ['filesystem.propose-delete'],
+    },
+  ];
+  return claims.some(claim =>
+    claim.pattern.test(text) && !claim.tools.some(toolId => appliedToolIds.has(toolId)));
 }
 
 function claimsUnverifiedFileRead(
@@ -111,9 +192,17 @@ function claimsUnverifiedDirectoryRead(
     /\b(?:I|we)\s+(?:have\s+)?(?:shown|generated|built)\s+(?:the\s+)?(?:directory|folder)\s+tree\b/i,
     /\b(?:directory|folder)\s+tree\s+(?:shows|contains|is)\b/i,
   ];
+  const claimsCounts = [
+    /\b(?:there\s+(?:are|is)|contains?|has)\b[\s\S]{0,40}\b\d+\s+(?:files?|folders?|subfolders?)\b/i,
+    /\b(?:there\s+(?:are|is)|contains?|has)\b[\s\S]{0,40}\b(?:one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:files?|folders?|subfolders?)\b/i,
+    /\bno\s+(?:sub)?folders?\b|\bno\s+files?\b/i,
+  ];
   const hasListing = successfulToolIds.has('filesystem.list-directory') ||
     successfulToolIds.has('filesystem.directory-tree');
-  return (!hasListing && claimsListing.some(pattern => pattern.test(text))) ||
+  return (!hasListing && (
+    claimsListing.some(pattern => pattern.test(text)) ||
+    claimsCounts.some(pattern => pattern.test(text))
+  )) ||
     (!successfulToolIds.has('filesystem.directory-tree') &&
       claimsTree.some(pattern => pattern.test(text)));
 }
@@ -126,7 +215,34 @@ function filesystemResultResponse(
   const heading = followupFailed
     ? 'Verified filesystem tool result(s); Ollama could not complete its follow-up, so no summary was generated:'
     : 'Verified filesystem tool result(s):';
-  const response = `${heading}\n${results.join('\n')}`;
+  const formattedResults = results.map(result => {
+    const listing = /^filesystem\.list-directory \((.*)\): (.+)$/s.exec(result);
+    if (!listing) return result;
+    const path = listing[1];
+    const serialized = listing[2];
+    if (path === undefined || serialized === undefined) return result;
+    try {
+      const value: unknown = JSON.parse(serialized);
+      if (!isRecord(value) || !Array.isArray(value.entries)) return result;
+      const folders = value.entries.filter(entry =>
+        isRecord(entry) && entry.type === 'directory');
+      const files = value.entries.filter(entry =>
+        isRecord(entry) && entry.type === 'file');
+      const truncated = value.truncated === true ? ' The listing was truncated.' : '';
+      const folderNames = folders.flatMap(entry =>
+        isRecord(entry) && typeof entry.name === 'string' ? [entry.name] : []);
+      const fileNames = files.flatMap(entry =>
+        isRecord(entry) && typeof entry.name === 'string' ? [entry.name] : []);
+      const details = [
+        `Folders (${folders.length}): ${folderNames.length ? folderNames.join(', ') : 'none'}`,
+        `Files (${files.length}): ${fileNames.length ? fileNames.join(', ') : 'none'}`,
+      ].join('\n');
+      return `Directory listing for ${path} (direct children): ${folders.length} folders and ${files.length} files.${truncated}\n${details}`;
+    } catch {
+      return result;
+    }
+  });
+  const response = `${heading}\n${formattedResults.join('\n')}`;
   return response.length <= maxResponseChars
     ? response
     : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
@@ -145,6 +261,32 @@ function filesystemPartialResultResponse(
     : 'A filesystem operation failed after a verified result; the partial result exceeds the configured response limit and cannot be shown.';
 }
 
+function latestVerifiedSearchDirectory(messages: ReturnType<Session['messages']>): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'tool' || message.toolId !== 'filesystem.search') continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(message.content);
+    } catch {
+      continue;
+    }
+    if (!isRecord(value) || !Array.isArray(value.matches)) continue;
+    for (const match of value.matches) {
+      if (
+        isRecord(match) &&
+        match.type === 'directory' &&
+        typeof match.path === 'string' &&
+        match.path.startsWith('/') &&
+        !match.path.split('/').includes('..')
+      ) {
+        return match.path;
+      }
+    }
+  }
+  return undefined;
+}
+
 function exactQuotedAbsolutePath(prompt: string): string | undefined {
   const matches = [...prompt.matchAll(/(["'`])(\/[^\r\n]{1,4096}?)\1/g)];
   return matches.length === 1 ? matches[0]?.[2] : undefined;
@@ -155,7 +297,37 @@ function executionArguments(
   toolId: string,
   arguments_: Readonly<Record<string, unknown>>,
   batchSize: number,
+  recentSearchDirectory?: string,
 ): Readonly<Record<string, unknown>> {
+  if (
+    toolId === 'filesystem.list-directory' &&
+    recentSearchDirectory &&
+    !prompt.includes('/') &&
+    /\b(?:repository|repo|project|folder|directory|files?|folders?|it|that|there|under)\b/i.test(prompt)
+  ) {
+    return { ...arguments_, path: recentSearchDirectory };
+  }
+  if (toolId === 'filesystem.search') {
+    const searchArguments = { ...arguments_ };
+    if (typeof searchArguments.query === 'string') {
+      const specificQuery = searchArguments.query
+        .replace(/\b(?:project|projects|folder|folders|directory|directories|repo|repository|repositories|file|files|document|documents)\b/giu, ' ')
+        .trim();
+      if (specificQuery !== '') searchArguments.query = specificQuery;
+    }
+    if (searchArguments.path === '') {
+      delete searchArguments.path;
+    } else if (
+      typeof searchArguments.path === 'string' &&
+      (searchArguments.path === '~' || searchArguments.path.startsWith('~/'))
+    ) {
+      const relativePath = searchArguments.path === '~' ? '' : searchArguments.path.slice(2);
+      if (!relativePath.split('/').includes('..')) {
+        searchArguments.path = join(homedir(), relativePath);
+      }
+    }
+    return searchArguments;
+  }
   if (
     batchSize !== 1 ||
     !['filesystem.list-directory', 'filesystem.read-file', 'filesystem.directory-tree'].includes(toolId)
@@ -293,7 +465,7 @@ async function runAgentTask(
   options.session.add({ role: 'user', content: prompt });
   const start = Date.now();
   task.transition('planning');
-  const canProposeEdits = options.tools.modelTools().some(tool => tool.id === 'filesystem.propose-edit');
+  const canProposeEdits = options.tools.modelTools().some(tool => tool.id.startsWith('filesystem.propose-'));
   const unsupportedResponse = unsupportedCapability(prompt, canProposeEdits);
   if (unsupportedResponse) {
     options.session.add({ role: 'assistant', content: unsupportedResponse });
@@ -311,11 +483,22 @@ async function runAgentTask(
   let failedToolId: string | undefined;
   let correctionAttempts = 0;
   const successfulToolIds = new Set<string>();
+  const appliedFileOperationToolIds = new Set<string>();
   const filesystemToolResults: string[] = [];
   const toolAttempts = new Map<string, number>();
-  const inspectedProjectFiles = new Set<string>();
-  const inspectedProjectDirectories = new Set<string>();
-  let selectedProjectRoot: string | undefined;
+  const recentUserContext = options.session.messages()
+    .slice(0, -1)
+    .filter(message => message.role === 'user')
+    .slice(-3)
+    .map(message => message.content)
+    .join('\n');
+  const recentSearchDirectory = latestVerifiedSearchDirectory(options.session.messages());
+  const availableTools = filesystemToolsForPrompt(
+    prompt,
+    recentUserContext,
+    recentSearchDirectory !== undefined,
+    options.tools.modelTools(),
+  );
   const returnPartialFilesystemResult = (
     error: { readonly code: string; readonly message: string },
     iteration: number,
@@ -345,7 +528,7 @@ async function runAgentTask(
         providerSignal => options.provider.complete(
           options.session.messages(),
           providerSignal,
-          toolCalls < options.config.maxToolCalls ? options.tools.modelTools() : [],
+          toolCalls < options.config.maxToolCalls ? availableTools : [],
           options.onText,
         ),
         options.config.requestTimeoutMs,
@@ -411,6 +594,19 @@ async function runAgentTask(
         });
         return safeResponse;
       }
+      if (claimsUnverifiedFileMutation(response.text, appliedFileOperationToolIds)) {
+        const safeResponse =
+          'I cannot claim a file change because no matching user-approved operation completed successfully.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
       if (claimsUnverifiedFileRead(response.text, successfulToolIds)) {
         const safeResponse =
           'I cannot report file contents because no registered filesystem read completed successfully.';
@@ -440,10 +636,11 @@ async function runAgentTask(
       const readOnlyProjectContext =
         successfulToolIds.has('assistant.project-root') &&
         !options.tools.modelTools().some(tool => tool.id === 'filesystem.propose-edit');
+      const completedFileOperation = [...successfulToolIds].some(toolId =>
+        toolId.startsWith('filesystem.propose-'));
       if (
         filesystemToolResults.length > 0 &&
-        !successfulToolIds.has('filesystem.propose-edit') &&
-        !successfulToolIds.has('filesystem.propose-create') &&
+        !completedFileOperation &&
         !readOnlyProjectContext
       ) {
         const finalResponse = filesystemResultResponse(
@@ -469,6 +666,33 @@ async function runAgentTask(
         iterations: iteration,
       });
       return response.text;
+    }
+
+    const allowedToolIds = new Set(
+      toolCalls < options.config.maxToolCalls ? availableTools.map(tool => tool.id) : [],
+    );
+    if (response.calls.some(call =>
+      call.toolId.startsWith('filesystem.') && !allowedToolIds.has(call.toolId))) {
+      options.session.add({
+        role: 'assistant',
+        kind: 'tool-call',
+        content: response.content ?? '',
+        toolCalls: response.calls.map(call => ({
+          toolId: call.toolId,
+          arguments: call.arguments,
+        })),
+      });
+      for (const call of response.calls) {
+        options.session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({
+            ok: false,
+            error: 'No action was taken. This tool is not available for the current request; answer the user directly or choose an available tool.',
+          }),
+        });
+      }
+      continue;
     }
 
     const proposedCalls = response.calls.map(call => {
@@ -516,35 +740,13 @@ async function runAgentTask(
         toolId: call.toolId,
       });
       try {
-        const args = executionArguments(prompt, call.toolId, call.arguments, response.calls.length);
-        if (call.toolId === 'filesystem.propose-edit') {
-          const proposedPath = args.path;
-          const absolutePath = typeof proposedPath === 'string' &&
-            selectedProjectRoot !== undefined &&
-            !isAbsolute(proposedPath)
-            ? resolve(selectedProjectRoot, proposedPath)
-            : undefined;
-          if (!absolutePath || !inspectedProjectFiles.has(absolutePath)) {
-            throw new ToolExecutionError(
-              'Read this exact file from the selected project during this request before proposing a replacement.',
-              'invalid-input',
-            );
-          }
-        }
-        if (call.toolId === 'filesystem.propose-create') {
-          const proposedPath = args.path;
-          const absoluteParent = typeof proposedPath === 'string' &&
-            selectedProjectRoot !== undefined &&
-            !isAbsolute(proposedPath)
-            ? resolve(selectedProjectRoot, dirname(proposedPath))
-            : undefined;
-          if (!absoluteParent || !inspectedProjectDirectories.has(absoluteParent)) {
-            throw new ToolExecutionError(
-              'Inspect the existing destination folder from the selected project during this request before proposing a new file.',
-              'invalid-input',
-            );
-          }
-        }
+        const args = executionArguments(
+          prompt,
+          call.toolId,
+          call.arguments,
+          response.calls.length,
+          recentSearchDirectory,
+        );
         const result = await options.tools.execute(call.toolId, args, signal, context);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
@@ -556,51 +758,23 @@ async function runAgentTask(
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
         successfulToolIds.add(call.toolId);
         if (
-          call.toolId === 'assistant.project-root' &&
+          call.toolId.startsWith('filesystem.propose-') &&
           typeof result === 'object' &&
           result !== null &&
-          'path' in result &&
-          typeof result.path === 'string' &&
-          isAbsolute(result.path)
+          'status' in result &&
+          result.status === 'applied'
         ) {
-          selectedProjectRoot = result.path;
-        }
-        if (
-          call.toolId === 'filesystem.read-file' &&
-          typeof args.path === 'string' &&
-          selectedProjectRoot !== undefined
-        ) {
-          const filePath = resolve(args.path);
-          const relativePath = relative(selectedProjectRoot, filePath);
-          if (
-            relativePath !== '' &&
-            !isAbsolute(relativePath) &&
-            relativePath !== '..' &&
-            !relativePath.startsWith(`..${sep}`)
-          ) {
-            inspectedProjectFiles.add(filePath);
-          }
-        }
-        if (
-          ['filesystem.list-directory', 'filesystem.directory-tree'].includes(call.toolId) &&
-          typeof args.path === 'string' &&
-          selectedProjectRoot !== undefined
-        ) {
-          const directoryPath = resolve(args.path);
-          const relativePath = relative(selectedProjectRoot, directoryPath);
-          if (
-            !isAbsolute(relativePath) &&
-            relativePath !== '..' &&
-            !relativePath.startsWith(`..${sep}`)
-          ) {
-            inspectedProjectDirectories.add(directoryPath);
-          }
+          appliedFileOperationToolIds.add(call.toolId);
         }
         if (
           call.toolId.startsWith('filesystem.') &&
           !['filesystem.propose-edit', 'filesystem.propose-create'].includes(call.toolId)
         ) {
-          filesystemToolResults.push(`${call.toolId}: ${serialized}`);
+          const listingPath =
+            call.toolId === 'filesystem.list-directory' && typeof args.path === 'string'
+              ? ` (${args.path})`
+              : '';
+          filesystemToolResults.push(`${call.toolId}${listingPath}: ${serialized}`);
         }
         if (failedToolId === call.toolId) {
           recoverableToolFailure = undefined;

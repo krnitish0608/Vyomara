@@ -6,7 +6,7 @@ export type PolicyDecision =
 
 export class PolicyGateway {
   authorize(effect: ToolEffect): PolicyDecision {
-    if (effect === 'read') return { allowed: true };
+    if (effect === 'read' || effect === 'propose') return { allowed: true };
     return { allowed: false, reason: 'side-effects-disabled' };
   }
 }

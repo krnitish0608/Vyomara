@@ -6,6 +6,7 @@ import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
   DesktopConversationMessage,
+  FileOperationApprovalPort,
   DesktopSessionHistory,
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
@@ -82,6 +83,7 @@ export async function runRequest(
   sessionId?: string,
   onText?: (text: string) => void,
   includeFilesystemTools?: boolean,
+  fileOperationApproval?: FileOperationApprovalPort,
 ): Promise<RequestResult> {
   const enableFilesystemTools = includeFilesystemTools ??
     (config.filesystemAllowedRoots.length > 0 && promptContainsAbsoluteLocalPath(prompt));
@@ -100,7 +102,7 @@ export async function runRequest(
       })
       : new PlaceholderProvider();
     const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config, enableFilesystemTools),
+      registry: createDefaultToolRegistry(config, enableFilesystemTools, fileOperationApproval),
       policy: new PolicyGateway(),
       config,
       logger: taskLogger,

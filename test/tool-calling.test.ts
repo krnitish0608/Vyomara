@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, opendir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgent, AgentError } from '../src/agent/agent.ts';
@@ -70,7 +70,7 @@ function harness(
     session,
     tools,
     logLines,
-    run: (signal = new AbortController().signal, prompt = 'Use the available tool if helpful.') =>
+    run: (signal = new AbortController().signal, prompt = 'Inspect the filesystem and use the available tool if helpful.') =>
       runAgent(prompt, signal, {
         provider,
         tools,
@@ -113,7 +113,7 @@ test('agent performs one tool call and returns a later final response with struc
   assert.equal(await app.run(), 'The tool returned hello.');
   assert.deepEqual(advertised, [['test.echo'], ['test.echo']]);
   assert.deepEqual(providerMessages[1], [
-    { role: 'user', content: 'Use the available tool if helpful.' },
+    { role: 'user', content: 'Inspect the filesystem and use the available tool if helpful.' },
     {
       role: 'assistant',
       kind: 'tool-call',
@@ -123,7 +123,7 @@ test('agent performs one tool call and returns a later final response with struc
     { role: 'tool', toolId: 'test.echo', content: '"hello"' },
   ]);
   assert.deepEqual(app.session.messages(), [
-    { role: 'user', content: 'Use the available tool if helpful.' },
+    { role: 'user', content: 'Inspect the filesystem and use the available tool if helpful.' },
     {
       role: 'assistant',
       kind: 'tool-call',
@@ -151,6 +151,204 @@ test('agent accepts a final response without invoking available tools', async ()
     role: 'assistant',
     content: 'No tool was needed.',
   });
+});
+
+test('agent withholds filesystem tools for greetings and limits project location to name search', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-filesystem-intent-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'keylessrn'));
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  let directoryOpens = 0;
+  registerFilesystemTools(registry, config, {
+    openDirectory: async path => {
+      directoryOpens += 1;
+      return opendir(path);
+    },
+  });
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.list-directory', arguments: { path: root } }],
+    },
+    { kind: 'final', text: 'Hi there!' },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.list-directory', arguments: { path: root } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.search', arguments: { query: 'keylessrn', path: root } }],
+    },
+    { kind: 'final', text: 'I searched for the project.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, {
+    filesystemAllowedRoots: [root],
+    maxAgentIterations: 4,
+  });
+
+  assert.equal(await app.run(undefined, 'Hi Vyom'), 'Hi there!');
+  assert.equal(directoryOpens, 0);
+  assert.match(await app.run(undefined, 'Where is my keylessrn project?'), /keylessrn/u);
+  assert.equal(directoryOpens, 1);
+  assert.deepEqual(advertised, [
+    [],
+    [],
+    ['filesystem.search'],
+    ['filesystem.search'],
+    ['filesystem.search'],
+  ]);
+});
+
+test('repository follow-ups list the verified project directory and report its direct file and folder counts', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-repository-inspection-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'KeylessRN');
+  await mkdir(join(projectPath, 'app'), { recursive: true });
+  await mkdir(join(projectPath, 'tests'));
+  await writeFile(join(projectPath, 'package.json'), '{}');
+  await writeFile(join(projectPath, 'README.md'), 'project');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'KeylessRN', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I found the repository.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: '/' },
+      }],
+    },
+    { kind: 'final', text: 'There is 1 folder.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: '' },
+      }],
+    },
+    { kind: 'final', text: 'There are no files.' },
+    { kind: 'final', text: 'So to confirm, there is one folder and no subfolders.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: '/' },
+      }],
+    },
+    { kind: 'final', text: 'There are no files.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, {
+    filesystemAllowedRoots: [root],
+  });
+
+  assert.match(await app.run(undefined, 'where is my KeylessRN project?'), /KeylessRN/u);
+  assert.deepEqual(advertised[0], ['filesystem.search']);
+  const folderCount = await app.run(
+    undefined,
+    'are you able to see how many folders are there in that repository?',
+  );
+  assert.deepEqual(advertised[2], ['filesystem.list-directory']);
+  assert.match(folderCount, /2 folders and 2 files/u);
+  assert.match(folderCount, /app, tests/u);
+  assert.match(folderCount, /README\.md, package\.json/u);
+  const followUp = await app.run(undefined, 'under that how many?');
+  assert.match(followUp, /2 folders and 2 files/u);
+  assert.match(followUp, /Directory listing for/u);
+  assert.equal(
+    await app.run(undefined, 'yes'),
+    'I cannot report directory contents because no registered directory listing or tree tool completed successfully.',
+  );
+  const fileList = await app.run(undefined, 'check files');
+  assert.match(fileList, /Files \(2\): README\.md, package\.json/u);
+});
+
+test('agent recognizes misspelled project search and resolves a search-it follow-up from recent context', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-project-followup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'keylessrn');
+  await mkdir(projectPath);
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+          arguments: { query: 'keylessrn project', path: '' },
+      }],
+    },
+    { kind: 'final', text: 'I can search for the project.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'keylessrn', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I found the project.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, {
+    filesystemAllowedRoots: [root],
+  });
+
+  assert.match(
+    await app.run(undefined, 'whrere is my keylessrn project in the directory'),
+    /Verified filesystem tool result/u,
+  );
+  assert.deepEqual(advertised[0], ['filesystem.search']);
+  assert.deepEqual(advertised[1], ['filesystem.search']);
+  assert.match(await app.run(undefined, 'just serch it'), /Verified filesystem tool result/u);
+  assert.ok(advertised.slice(1).every(ids => ids.includes('filesystem.search')));
+  const result = app.session.messages().find(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(result?.role, 'tool');
+  const matches = result?.role === 'tool' ? JSON.parse(result.content).matches as Array<{
+    path: string;
+    type: string;
+  }> : [];
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.path.split('/').at(-1), 'keylessrn');
+  assert.equal(matches[0]?.type, 'directory');
+});
+
+test('agent expands a home-relative model search path before filesystem validation', async () => {
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: ['/'],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'vyomara-no-such-folder', path: '~/__vyomara-no-such-folder__' },
+      }],
+    },
+  ]), registry, config);
+
+  await assert.rejects(app.run(undefined, 'where is my vyomara project?'), (error: unknown) =>
+    error instanceof ToolExecutionError && error.code === 'not-found');
 });
 
 test('agent executes multiple sequential tool calls within the configured call limit', async () => {
@@ -803,7 +1001,7 @@ test('ambiguous, unquoted, and batched filesystem paths are not pinned', async t
   registerFilesystemTools(registry, config);
   const scenarios = [
     {
-      prompt: `Compare "${join(root, 'first')}" with "${join(root, 'second')}".`,
+      prompt: `List directory "${join(root, 'first')}" and compare it with "${join(root, 'second')}".`,
       calls: [{
         toolId: 'filesystem.list-directory',
         arguments: { path: '/wrong/target' },
@@ -1417,6 +1615,7 @@ test('mocked Ollama safely calls the registered filesystem reader and receives i
     'filesystem.list-directory',
     'filesystem.read-file',
     'filesystem.directory-tree',
+    'filesystem.search',
   ]);
   assert.deepEqual(requests[1]?.messages instanceof Array
     ? (requests[1]?.messages as Array<Record<string, unknown>>).slice(-2)

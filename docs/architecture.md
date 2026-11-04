@@ -3,12 +3,11 @@
 ## Status
 
 This architecture blueprint was created in Phase 3 and contains historical
-design decisions. The current desktop baseline is intentionally smaller:
-Assistant, History, chat, voice input, cancellation, and task activity. Desktop
-chat does not expose filesystem tools, project selection/editing, memory
-management, filesystem permission controls, or provider settings. The CLI
-continues to use its separate configured capabilities. Existing local data is
-not deleted when desktop controls are removed.
+design decisions. The desktop currently provides Assistant, History, chat,
+voice input, cancellation, task activity, machine-wide file discovery, and
+user-reviewed file operations. System and credential paths are blocked.
+The CLI continues to use its separately configured, read-only filesystem
+capabilities. Existing local data is not deleted when desktop controls change.
 
 The diagram and older phase notes below describe the previous target
 architecture, not a feature inventory for the current desktop app. Update
@@ -20,8 +19,8 @@ and should not be treated as an instruction to re-add a removed UI.
 
 The MVP is a single-process modular monolith with one primary agent. UI,
 provider, storage, and tool implementations sit behind narrow interfaces.
-There is no worker-agent service, cloud fallback, shell tool, or unrestricted
-side-effect capability in the MVP.
+There is no worker-agent service, cloud fallback, shell tool, or direct,
+unreviewed filesystem mutation capability in the MVP.
 
 ```mermaid
 flowchart TD
@@ -35,8 +34,8 @@ flowchart TD
     Ollama[Local Ollama adapter]
     ToolRegistry[Tool registry and schemas]
     Policy[Policy and approval gateway]
-    Tools[Read-only filesystem tools]
-    Roots[Explicitly configured filesystem roots]
+    Tools[Bounded filesystem tools]
+    Roots[CLI configured roots / desktop machine scope with exclusions]
     Store[Local persistence interface]
     History[Session history]
     Memory[Explicit memory]
@@ -60,16 +59,15 @@ flowchart TD
 ```
 
 The CLI stores local session history, supports review, continuation, and
-deletion, and offers its separate memory and configured filesystem
-capabilities. The desktop bridge is narrower: it exposes provider status,
-chat/cancellation, speech, activity, and session history. Desktop chat creates
-its tool registry without filesystem tools. History supports review, typed
-deletion, continuation, and complete-session JSON export to a new owner-only
-file. Provider configuration comes from the current process environment;
-the desktop has no provider settings controls. Memory, filesystem roots, and
-older provider overrides may remain in the SQLite schema for compatibility,
-but the desktop does not expose or mutate them; saved provider overrides are
-no longer loaded by desktop startup.
+deletion, and uses its separate configured, read-only filesystem capabilities.
+Desktop chat exposes bounded search/read tools and approval-only file
+operations through a typed preload bridge. Each create/edit requires review of
+the exact path and full text; each deletion requires its own typed confirmation
+and moves the item to Trash. Filesystem approvals are in-memory and scoped to
+one active request. History supports review, typed deletion, continuation, and
+complete-session JSON export to a new owner-only file. Provider configuration
+comes from the current process environment; the desktop has no provider
+settings controls.
 
 The Ollama endpoint is environment-configured and loopback-only. Tool
 arguments remain strictly validated through the registry and policy gateway.
@@ -84,12 +82,12 @@ assistant claims about unsupported execution are not evidence of success.
 | Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/speech IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
 | Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
-| Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |
+| Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, bypass file-operation approval, or execute model-generated shell. |
 | Provider interface | Define normalized request, response, cancellation, and error contracts. | Expose provider-specific objects to agent or tools. |
 | Ollama adapter | Translate the provider contract to the selected local Ollama-compatible API/model. | Silently contact a remote provider or decide policy. |
 | Tool registry | Resolve stable tool names, validate input/output schemas, classify effects, and enforce limits. | Allow unknown or model-invented tools to execute. |
 | Policy/approval gateway | Check identity, scope, permission, and approval before any side effect; deny by default. | Let model output or a tool self-authorize. |
-| Filesystem tools | List/read only within explicit roots and enforce traversal/symlink containment at access time. | Directly write/delete or return unbounded file content. |
+| Filesystem tools | Search/list/read with bounded traversal; stage changes for explicit approval; enforce protected paths and symlink containment. | Apply an unreviewed change, traverse a symlink, or return unbounded content. |
 | Persistence interface | Separate session history from explicit memory and expose inspect/review/delete operations. | Automatically promote conversation into durable memory. |
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 
@@ -129,9 +127,9 @@ font or renderer-side provider request is used.
 2. The registry rejects unknown names, validates arguments, and applies
    per-tool timeout/output limits and effect classification.
 3. Policy checks the request, configured roots, and current permission. The
-   CLI filesystem tools are read-only; desktop chat does not register them.
-   Any future side effect is denied unless a separately approved capability
-   and action-specific user approval exist.
+   CLI filesystem tools are read-only. Desktop proposal tools are registered
+   only with an active approval port; direct write/delete effects remain denied.
+   Each exact proposal must be approved by the renderer before application.
 4. The tool executes with least privilege. Filesystem paths are resolved and
    checked against allowed roots, including symlink targets, at the point of
    access.
@@ -153,7 +151,7 @@ The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
 default model `llama3.2`, and loopback endpoint documented in
 [ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
 the installed Ollama version was not recorded. Tool definitions come from
-registered read-only tools; structured assistant tool-call and tool-result
+registered tools; structured assistant tool-call and tool-result
 messages stay in the temporary session. No provider framework or SDK has been
 added.
 
@@ -184,8 +182,9 @@ may include the database.
 - **Policy gateway:** sole authorization point for tools and all future
   side effects; fail closed if permissions or approval state cannot be
   established.
-- **Filesystem:** least-privilege reads only in MVP; explicit roots and
-  traversal/symlink defenses are mandatory.
+- **Filesystem:** desktop-wide access remains under the logged-in user's OS
+  permissions and excludes system/credential paths; CLI access remains
+  explicitly rooted. Traversal/symlink defenses are mandatory.
 - **Network:** local Ollama is the initial provider target. No silent remote
   fallback or undisclosed content transfer.
 - **Secrets and diagnostics:** no secrets in source control or ordinary logs;
@@ -214,7 +213,7 @@ src/
     ollama/            # isolated local adapter
   tools/
     contracts/         # schemas, registry, result limits
-    filesystem/        # read-only tools and allowed-root checks
+    filesystem/        # bounded discovery, protected paths, and reviewed changes
   policy/              # authorization and approval gateway
   persistence/
     contracts/         # history and explicit-memory ports
@@ -235,7 +234,7 @@ provider-specific behavior inside adapters.
 
 This is the original planning sequence, not a checklist of pending work.
 Phases 1–9 implemented the core contracts and validation, policy and executor,
-Ollama adapter, bounded agent/task lifecycle, read-only tools, and local SQLite
+Ollama adapter, bounded agent/task lifecycle, filesystem tools, and local SQLite
 history with separately managed explicit memory. Phase 10 starts the desktop
 interaction layer. User-facing allowed-root management, memory context
 injection, app packaging, project/session browsing, voice, and broader
@@ -247,8 +246,7 @@ end-to-end evaluation remain future work.
 2. **Core contracts and validation:** normalized errors, request cancellation,
    schemas, size/time/iteration limits, and deterministic test fixtures.
 3. **Policy and tool boundary:** fail-closed policy, approval state model,
-   allowed-root representation, and traversal/symlink security tests. Expose
-   only read-only filesystem tools.
+   filesystem scope, and traversal/symlink security tests.
 4. **Provider port and local adapter:** fake-provider contract tests first,
    then Ollama compatibility tests with no remote fallback.
 5. **Session coordinator and primary agent:** one turn at a time, bounded

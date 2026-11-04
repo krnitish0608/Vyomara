@@ -100,7 +100,9 @@ export class ToolExecutor {
     try {
       const result = await runBounded(
         toolSignal => tool.run(input, toolSignal),
-        this.options.config.toolTimeoutMs,
+        tool.effect === 'propose'
+          ? this.options.config.requestTimeoutMs
+          : this.options.config.toolTimeoutMs,
         signal,
       );
       if (!tool.validateOutput(result)) {

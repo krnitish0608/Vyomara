@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
   DesktopProviderStatus,
+  DesktopFileOperationProposal,
   DesktopSpeechSetupStatus,
   DesktopSessionHistory,
   DesktopSessionSummary,
@@ -123,6 +124,9 @@ export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [fileOperationProposals, setFileOperationProposals] = useState<DesktopFileOperationProposal[]>([]);
+  const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
+  const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
   const [activity, setActivity] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>();
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -162,6 +166,7 @@ export function App() {
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const activityHeading = useRef<HTMLHeadingElement>(null);
   const historyHeading = useRef<HTMLHeadingElement>(null);
+  const fileOperationReview = useRef<HTMLElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -173,6 +178,11 @@ export function App() {
     const unsubscribe = window.vyomara.onActivity(event => {
       const label = activityLabel(event);
       if (label) setActivity(current => [...current, label].slice(-12));
+    });
+    const unsubscribeFileOperations = window.vyomara.onFileOperationProposal(proposal => {
+      setFileOperationProposals(current =>
+        current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
+      requestAnimationFrame(() => fileOperationReview.current?.scrollIntoView({ block: 'nearest' }));
     });
     const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
       if (event.type === 'partial') {
@@ -233,6 +243,7 @@ export function App() {
     return () => {
       mounted = false;
       unsubscribe();
+      unsubscribeFileOperations();
       unsubscribeSpeech();
     };
   }, []);
@@ -400,6 +411,8 @@ export function App() {
           content: message,
           failed: true,
         }]);
+      setFileOperationProposals([]);
+      setFileOperationConfirmations({});
     } finally {
       if (activeChatRequestId.current === requestId) activeChatRequestId.current = undefined;
       setRequestPending(false);
@@ -496,9 +509,55 @@ export function App() {
     setPrompt('');
     setActivity([]);
     setRequestError(undefined);
+    setFileOperationProposals([]);
+    setFileOperationConfirmations({});
     setHistoryOpen(false);
     setSelectedHistorySession(undefined);
     setHistoryDeleteConfirmation('');
+  }
+
+  async function approveFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (
+      fileOperationActionPending ||
+      (proposal.operation === 'delete' && fileOperationConfirmations[proposal.id] !== 'DELETE')
+    ) return;
+    setFileOperationActionPending(proposal.id);
+    setRequestError(undefined);
+    try {
+      await window.vyomara.approveFileOperation(
+        proposal.id,
+        proposal.operation === 'delete' ? fileOperationConfirmations[proposal.id] : undefined,
+      );
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setFileOperationConfirmations(current => {
+        const next = { ...current };
+        delete next[proposal.id];
+        return next;
+      });
+    } catch (error) {
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+    } finally {
+      setFileOperationActionPending(undefined);
+    }
+  }
+
+  async function rejectFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (fileOperationActionPending) return;
+    setFileOperationActionPending(proposal.id);
+    try {
+      await window.vyomara.rejectFileOperation(proposal.id);
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setFileOperationConfirmations(current => {
+        const next = { ...current };
+        delete next[proposal.id];
+        return next;
+      });
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The file review could not be dismissed.');
+    } finally {
+      setFileOperationActionPending(undefined);
+    }
   }
 
   async function toggleHistory(): Promise<void> {
@@ -689,9 +748,17 @@ export function App() {
               <span aria-hidden="true">▤</span> Tasks &amp; Activity
               {requestPending && <span className="nav-indicator" aria-label="Task running">●</span>}
             </button>
-            <button className="side-nav-item side-nav-item-disabled" type="button" disabled title="Approvals are not implemented yet">
+            <button
+              className={`side-nav-item${fileOperationProposals.length > 0 ? ' side-nav-item-review' : ''}`}
+              type="button"
+              onClick={() => fileOperationReview.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+              disabled={fileOperationProposals.length === 0}
+              aria-label={fileOperationProposals.length > 0
+                ? `Review ${fileOperationProposals.length} pending file operation${fileOperationProposals.length === 1 ? '' : 's'}`
+                : 'No pending file approvals'}
+            >
               <span aria-hidden="true">◇</span> Approvals
-              <span className="planned-label">Planned</span>
+              {fileOperationProposals.length > 0 && <span className="nav-indicator" aria-label={`${fileOperationProposals.length} pending`}>●</span>}
             </button>
           </div>
           <div className="side-nav-group">
@@ -768,10 +835,92 @@ export function App() {
             {requestPending && (
               <div className="pending-state" role="status" aria-live="polite">
                 <span className="thinking-indicator" aria-hidden="true"><i /><i /><i /></span>
-                <span>Vyom is thinking…</span>
+                <span>{fileOperationProposals.length > 0 ? 'Waiting for your file-operation review…' : 'Vyom is thinking…'}</span>
                 <button type="button" onClick={() => void cancel()}>Stop</button>
               </div>
             )}
+            {fileOperationProposals.map((proposal, index) => {
+              const label = proposal.operation === 'create-file'
+                ? 'Create file'
+                : proposal.operation === 'create-directory'
+                  ? 'Create folder'
+                  : proposal.operation === 'edit-file'
+                    ? 'Edit file'
+                    : 'Move to Trash';
+              const actionPending = fileOperationActionPending === proposal.id;
+              return (
+                <section
+                  className="file-operation-review"
+                  aria-label={`${label} approval`}
+                  key={proposal.id}
+                  ref={index === 0 ? fileOperationReview : undefined}
+                >
+                  <p className="eyebrow">YOUR REVIEW REQUIRED</p>
+                  <h3>{label}</h3>
+                  <code className="file-operation-path">{proposal.path}</code>
+                  {proposal.operation === 'delete' ? (
+                    <>
+                      <p className="file-operation-warning">
+                        This item will be moved to the system Trash, not permanently erased.
+                        {proposal.targetType === 'directory' && ' The folder move includes its contents.'}
+                      </p>
+                      <label className="file-operation-confirm-label" htmlFor={`file-delete-${proposal.id}`}>
+                        Type DELETE to confirm this item
+                      </label>
+                      <input
+                        id={`file-delete-${proposal.id}`}
+                        className="file-operation-confirm-input"
+                        value={fileOperationConfirmations[proposal.id] ?? ''}
+                        onChange={event => setFileOperationConfirmations(current => ({
+                          ...current,
+                          [proposal.id]: event.target.value,
+                        }))}
+                        autoComplete="off"
+                        disabled={actionPending}
+                      />
+                    </>
+                  ) : (
+                    <div className="file-operation-preview">
+                      {proposal.currentContent !== undefined && (
+                        <div>
+                          <h4>Current content</h4>
+                          <pre>{proposal.currentContent}</pre>
+                        </div>
+                      )}
+                      {proposal.proposedContent !== undefined && (
+                        <div>
+                          <h4>Proposed content</h4>
+                          <pre>{proposal.proposedContent}</pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="file-operation-actions">
+                    <button
+                      className={proposal.operation === 'delete' ? 'history-danger' : 'file-operation-approve'}
+                      type="button"
+                      onClick={() => void approveFileOperation(proposal)}
+                      disabled={actionPending || fileOperationActionPending !== undefined ||
+                        (proposal.operation === 'delete' && fileOperationConfirmations[proposal.id] !== 'DELETE')}
+                    >
+                      {actionPending
+                        ? 'Applying…'
+                        : proposal.operation === 'delete'
+                          ? 'Move to Trash'
+                          : 'Approve and apply'}
+                    </button>
+                    <button
+                      className="file-operation-reject"
+                      type="button"
+                      onClick={() => void rejectFileOperation(proposal)}
+                      disabled={actionPending || fileOperationActionPending !== undefined}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </section>
+              );
+            })}
             </div>
           </div>
           <form className="composer" onSubmit={event => void submit(event)}>
@@ -878,7 +1027,7 @@ export function App() {
           </form>
           <p className={`privacy-note${messages.length === 0 && !requestError && !speechError ? ' visually-hidden' : ''}`} role={requestError || speechError ? 'alert' : 'status'}>
             {requestError
-              ? 'Request failed; no success is implied.'
+              ? requestError
               : speechError ?? 'Your conversation is stored locally on this Mac. Speech output uses the on-device macOS voice.'}
           </p>
         </section>

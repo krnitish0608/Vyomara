@@ -16,6 +16,31 @@ export interface DesktopChatResponse {
   readonly sessionId: string;
 }
 
+export type FileOperationKind = 'create-file' | 'create-directory' | 'edit-file' | 'delete';
+
+export interface FileOperationRequest {
+  readonly operation: FileOperationKind;
+  readonly path: string;
+  readonly content?: string;
+}
+
+export interface DesktopFileOperationProposal {
+  readonly id: string;
+  readonly operation: FileOperationKind;
+  readonly path: string;
+  readonly targetType: 'file' | 'directory';
+  readonly currentContent?: string;
+  readonly proposedContent?: string;
+}
+
+export type FileOperationResult =
+  | { readonly status: 'applied' }
+  | { readonly status: 'rejected' };
+
+export interface FileOperationApprovalPort {
+  request(request: FileOperationRequest, signal: AbortSignal): Promise<FileOperationResult>;
+}
+
 export interface DesktopProviderStatus {
   readonly provider: 'ollama' | 'placeholder';
   readonly model: string;
@@ -64,6 +89,9 @@ export interface VyomaraDesktopApi {
   getProviderStatus(): Promise<DesktopProviderStatus>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
   onChatText(listener: (chunk: DesktopChatTextChunk) => void): () => void;
+  onFileOperationProposal(listener: (proposal: DesktopFileOperationProposal) => void): () => void;
+  approveFileOperation(id: string, confirmation?: string): Promise<void>;
+  rejectFileOperation(id: string): Promise<void>;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;
