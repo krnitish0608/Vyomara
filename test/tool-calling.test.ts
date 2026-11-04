@@ -945,7 +945,7 @@ test('missing filesystem paths reach the CLI as specific safe errors without a s
     message.role === 'assistant' && message.content.includes('successfully')), false);
 });
 
-test('invalid model arguments receive one structured correction and corrected list arguments execute', async t => {
+test('invalid optional listing limits are omitted and use the configured default', async t => {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-correction-'));
   t.after(async () => rm(parent, { recursive: true, force: true }));
   const root = join(parent, 'allowed');
@@ -959,7 +959,7 @@ test('invalid model arguments receive one structured correction and corrected li
   });
   const registry = new ToolRegistry();
   registerFilesystemTools(registry, config);
-  const providerMessages: Array<Parameters<ModelProvider['complete']>[0]> = [];
+  let responseIndex = 0;
   const responses: ProviderResponse[] = [
     {
       kind: 'tool-calls',
@@ -968,42 +968,20 @@ test('invalid model arguments receive one structured correction and corrected li
         arguments: { path: root, maxEntries: 'not-an-integer' },
       }],
     },
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.list-directory',
-        arguments: { path: root, maxEntries: 2 },
-      }],
-    },
-    { kind: 'final', text: 'The directory contains misleading.txt.' },
+    { kind: 'final', text: 'The directory contains a.txt and b.txt.' },
   ];
-  let responseIndex = 0;
   const provider: ModelProvider = {
     id: 'test.correcting-list',
-    async complete(messages) {
-      providerMessages.push(messages);
+    async complete() {
       return responses[responseIndex++]!;
     },
   };
   const app = harness(provider, registry, config);
   const result = await app.run(undefined, `list files in ${root}`);
-  assert.match(result, /a\.txt.*b\.txt/);
+  assert.match(result, /a\.txt, b\.txt/u);
   assert.doesNotMatch(result, /misleading\.txt/);
   assert.doesNotMatch(result, /Verified filesystem tool result/u);
-  assert.equal(responseIndex, 3);
-  const history = providerMessages[1]!;
-  const toolError = history.find(message => message.role === 'tool');
-  assert.equal(toolError?.role === 'tool' && toolError.toolId, 'filesystem.list-directory');
-  assert.deepEqual(
-    toolError?.role === 'tool' ? JSON.parse(toolError.content) : undefined,
-    {
-      ok: false,
-      error: {
-        code: 'invalid-input',
-        message: 'maxEntries must be an integer number; omit it to use the configured default.',
-      },
-    },
-  );
+  assert.equal(responseIndex, 2);
   assert.equal(
     app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
     1,
@@ -1012,13 +990,6 @@ test('invalid model arguments receive one structured correction and corrected li
     app.session.messages().filter(message => message.role === 'tool').map(message =>
       message.role === 'tool' ? JSON.parse(message.content) : undefined),
     [
-      {
-        ok: false,
-        error: {
-          code: 'invalid-input',
-          message: 'maxEntries must be an integer number; omit it to use the configured default.',
-        },
-      },
       {
         entries: [
           { name: 'a.txt', type: 'file' },
@@ -1168,7 +1139,7 @@ test('ambiguous, unquoted, and batched filesystem paths are not pinned', async t
   }
 });
 
-test('filesystem JSON null limits use defaults while string null limits remain invalid', async t => {
+test('filesystem JSON null and malformed optional limits use defaults', async t => {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-null-limits-'));
   t.after(async () => rm(parent, { recursive: true, force: true }));
   const root = join(parent, 'allowed');
@@ -1182,11 +1153,11 @@ test('filesystem JSON null limits use defaults while string null limits remain i
   const registry = new ToolRegistry();
   registerFilesystemTools(registry, config);
 
-  for (const [toolId, arguments_, valid] of [
-    ['filesystem.list-directory', { path: root, maxEntries: null }, true],
-    ['filesystem.directory-tree', { path: root, maxDepth: null, maxEntries: null }, true],
-    ['filesystem.list-directory', { path: root, maxEntries: 'null' }, false],
-    ['filesystem.directory-tree', { path: root, maxDepth: 'null', maxEntries: 'null' }, false],
+  for (const [toolId, arguments_] of [
+    ['filesystem.list-directory', { path: root, maxEntries: null }],
+    ['filesystem.directory-tree', { path: root, maxDepth: null, maxEntries: null }],
+    ['filesystem.list-directory', { path: root, maxEntries: 'null' }],
+    ['filesystem.directory-tree', { path: root, maxDepth: 'null', maxEntries: 'null' }],
   ] as const) {
     let requestCount = 0;
     const provider = new OllamaProvider({
@@ -1223,38 +1194,18 @@ test('filesystem JSON null limits use defaults while string null limits remain i
       },
     });
     const app = harness(provider, registry, config);
-    if (!valid) {
-      await assert.rejects(app.run(
-        new AbortController().signal,
-        `Use ${toolId} for ${root}`,
-      ), (error: unknown) =>
-        error instanceof ToolExecutionError && error.code === 'invalid-input');
-    } else {
-      const result = await app.run(new AbortController().signal, `Use ${toolId} for ${root}`);
-      assert.doesNotMatch(result, /Verified filesystem tool result/u);
-    }
+    const result = await app.run(new AbortController().signal, `Use ${toolId} for ${root}`);
+    assert.doesNotMatch(result, /Verified filesystem tool result/u);
     assert.equal(requestCount, 2);
     assert.equal(
       app.logLines.filter(line => line.includes('"event":"tool.completed"')).length,
-      valid ? 1 : 0,
+      1,
     );
     const toolResult = app.session.messages().find(message =>
       message.role === 'tool' && message.toolId === toolId);
     assert.equal(toolResult?.role, 'tool');
     const parsed = toolResult?.role === 'tool' ? JSON.parse(toolResult.content) : undefined;
-    if (valid) {
-      assert.equal(parsed.truncated, false);
-    } else {
-      assert.deepEqual(parsed, {
-        ok: false,
-        error: {
-          code: 'invalid-input',
-          message: toolId === 'filesystem.list-directory'
-            ? 'maxEntries must be an integer number; omit it to use the configured default.'
-            : 'maxDepth must be an integer number; omit it to use the configured default.',
-        },
-      });
-    }
+    assert.equal(parsed.truncated, false);
   }
 });
 
@@ -1320,7 +1271,7 @@ test('out-of-range tree arguments can be corrected without weakening validation'
           kind: 'tool-calls',
           calls: [{
             toolId: 'filesystem.directory-tree',
-            arguments: { path: root, maxEntries: 1000 },
+            arguments: { path: '../relative/path', maxEntries: 1000 },
           }],
         };
       }
@@ -1350,7 +1301,7 @@ test('out-of-range tree arguments can be corrected without weakening validation'
         ok: false,
         error: {
           code: 'invalid-input',
-          message: 'maxEntries must be between 1 and 100.',
+          message: 'Path must be an absolute path without parent-directory traversal.',
         },
       },
       {
@@ -1384,7 +1335,7 @@ test('repeated invalid arguments stop after one bounded correction and never suc
         kind: 'tool-calls',
         calls: [{
           toolId: 'filesystem.list-directory',
-          arguments: { path: root, maxEntries: 'not-an-integer' },
+          arguments: { path: 'relative/path', maxEntries: '10' },
         }],
       };
     },

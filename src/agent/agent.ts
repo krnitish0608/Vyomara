@@ -251,7 +251,7 @@ function filesystemResultResponse(
           return `${summary}\nI couldn’t inspect every directory, so there may be other matches.`;
         }
         return value.truncated === true
-          ? `${summary}\nThe search reached its limit, so there may be additional matches.`
+          ? `${summary}\nI couldn’t check every possible location, so there may be other matches.`
           : summary;
       }
       if ((toolName === 'list-directory' || toolName === 'directory-tree') &&
@@ -366,6 +366,11 @@ function executionArguments(
       if (property.type !== 'integer' || required.has(name) ||
           !Object.hasOwn(normalizedArguments, name)) continue;
       const value = normalizedArguments[name];
+      if (typeof value === 'number' && Number.isSafeInteger(value) &&
+          (property.minimum === undefined || value >= property.minimum) &&
+          (property.maximum === undefined || value <= property.maximum)) {
+        continue;
+      }
       if (typeof value === 'string' && /^-?\d+$/.test(value)) {
         const parsed = Number(value);
         if (
@@ -374,8 +379,10 @@ function executionArguments(
           (property.maximum === undefined || parsed <= property.maximum)
         ) {
           normalizedArguments[name] = parsed;
+          continue;
         }
       }
+      delete normalizedArguments[name];
     }
   }
   if (
