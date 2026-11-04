@@ -27,10 +27,14 @@ async function fixture(t: TestContext) {
   });
   let resolveProposal!: (proposal: DesktopFileOperationProposal) => void;
   const proposal = new Promise<DesktopFileOperationProposal>(resolve => { resolveProposal = resolve; });
+  let proposalCount = 0;
   const trashedPaths: string[] = [];
   const approvals = new FileOperationApprovalManager({
     config,
-    onProposal: resolveProposal,
+    onProposal(value) {
+      proposalCount++;
+      resolveProposal(value);
+    },
     async moveToTrash(path) {
       trashedPaths.push(path);
     },
@@ -43,7 +47,7 @@ async function fixture(t: TestContext) {
     config,
     logger: createLogger(() => {}),
   });
-  return { root, config, proposal, approvals, executor, trashedPaths };
+  return { root, config, proposal, proposalCount: () => proposalCount, approvals, executor, trashedPaths };
 }
 
 function execute(executor: ToolExecutor, id: string, input: unknown, signal = new AbortController().signal) {
@@ -98,7 +102,7 @@ test('agent reports a file change only after the user approves and it applies', 
   const review = await proposal;
   await approvals.approve(review.id);
 
-  assert.equal(await resultPromise, 'I created the file.');
+  assert.equal(await resultPromise, 'The approved file creation was applied.');
   assert.equal(await readFile(path, 'utf8'), 'approved\n');
 });
 
@@ -135,9 +139,161 @@ test('agent rejects a false success claim after the user rejects the operation',
 
   assert.equal(
     await resultPromise,
-    'I cannot claim a file change because no matching user-approved operation completed successfully.',
+    'The proposed file creation was rejected. No changes were made.',
   );
   await assert.rejects(readFile(path), { code: 'ENOENT' });
+});
+
+test('agent must read an existing file before proposing an edit', async t => {
+  const { root, config, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'existing.txt');
+  const original = 'const greeting = "Hello";\nexport const label = "Welcome";\n';
+  const updated = 'const greeting = "Hi";\nexport const label = "Welcome";\n';
+  let repairInstructionSeen = false;
+  await writeFile(path, original);
+  const responses: unknown[] = [
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-edit',
+        arguments: { path, content: 'Hi' },
+      }],
+    },
+    { kind: 'final', text: 'I prepared an edit; please provide the complete file.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-replace-text',
+        arguments: {
+          path,
+          oldText: 'const greeting = "Hello";',
+          newText: 'const greeting = "Hi";',
+        },
+      }],
+    },
+    { kind: 'final', text: 'I updated the greeting.' },
+  ];
+  const provider: ModelProvider = {
+    id: 'test.read-before-edit',
+    async complete(messages) {
+      repairInstructionSeen ||= messages.some(message =>
+        message.role === 'user' && message.content.startsWith('Correction:'));
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const session = new Session();
+  const resultPromise = runAgent('Change the greeting in the existing file.', new AbortController().signal, {
+    provider,
+    tools: executor,
+    config,
+    session,
+    logger: createLogger(() => {}),
+  });
+  const review = await proposal;
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.equal(repairInstructionSeen, true);
+  const rejectedEdit = session.messages().find(message =>
+    message.role === 'tool' &&
+    message.toolId === 'filesystem.propose-edit' &&
+    message.content.includes('Edit proposal not created'));
+  assert.ok(rejectedEdit);
+  approvals.reject(review.id);
+
+  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
+  assert.equal(await readFile(path, 'utf8'), original);
+});
+
+test('agent converts an explicit exact-text edit into a reviewed replacement', async t => {
+  const { root, config, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'existing.txt');
+  const original = 'const greeting = "Hello";\n';
+  const updated = 'const greeting = "Hi";\n';
+  await writeFile(path, original);
+  const responses: unknown[] = [
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-edit',
+        arguments: { path, content: 'Hi' },
+      }],
+    },
+    { kind: 'final', text: 'I prepared the edit.' },
+  ];
+  const provider: ModelProvider = {
+    id: 'test.localized-replacement',
+    async complete() {
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const session = new Session();
+  const resultPromise = runAgent(
+    `In the file ${path}, replace the exact text "Hello" with "Hi".`,
+    new AbortController().signal,
+    {
+      provider,
+      tools: executor,
+      config,
+      session,
+      logger: createLogger(() => {}),
+    },
+  );
+  const review = await proposal;
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.ok(session.messages().some(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.read-file'));
+  assert.equal(await readFile(path, 'utf8'), original);
+  approvals.reject(review.id);
+
+  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
+  assert.equal(await readFile(path, 'utf8'), original);
+});
+
+test('agent turns a complete model edit into a review proposal rather than displaying it as applied', async t => {
+  const { root, config, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'existing.ts');
+  const original = 'export const greeting = "Hello";\n';
+  const updated = 'export const greeting = "Hi";\n';
+  await writeFile(path, original);
+  const responses: unknown[] = [
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path } }],
+    },
+    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\n${updated}\`\`\`` },
+  ];
+  const provider: ModelProvider = {
+    id: 'test.complete-edit-fallback',
+    async complete() {
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const resultPromise = runAgent(
+    'Edit the existing file to change the greeting from Hello to Hi.',
+    new AbortController().signal,
+    {
+      provider,
+      tools: executor,
+      config,
+      session: new Session(),
+      logger: createLogger(() => {}),
+    },
+  );
+  const review = await proposal;
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.equal(await readFile(path, 'utf8'), original);
+  approvals.reject(review.id);
+
+  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
+  assert.equal(await readFile(path, 'utf8'), original);
 });
 
 test('rejecting an edit leaves the original file unchanged', async t => {
@@ -155,6 +311,52 @@ test('rejecting an edit leaves the original file unchanged', async t => {
   approvals.reject(review.id);
   assert.deepEqual(await resultPromise, { status: 'rejected', operation: 'edit-file', path });
   assert.equal(await readFile(path, 'utf8'), 'before\n');
+});
+
+test('localized text replacements show the full file diff and apply only after approval', async t => {
+  const { root, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'existing.txt');
+  const original = 'const greeting = "Hello";\nexport const label = "Welcome";\n';
+  const updated = 'const greeting = "Hi";\nexport const label = "Welcome";\n';
+  await writeFile(path, original);
+  const resultPromise = execute(executor, 'filesystem.propose-replace-text', {
+    path,
+    oldText: '"Hello"',
+    newText: '"Hi"',
+  });
+  const review = await proposal;
+
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.equal(await readFile(path, 'utf8'), original);
+  await approvals.approve(review.id);
+  assert.deepEqual(await resultPromise, { status: 'applied', operation: 'edit-file', path });
+  assert.equal(await readFile(path, 'utf8'), updated);
+});
+
+test('localized text replacements fail when their exact source is missing or ambiguous', async t => {
+  const { root, proposalCount, executor } = await fixture(t);
+  const path = join(root, 'existing.txt');
+  await writeFile(path, 'same same\n');
+
+  await assert.rejects(
+    execute(executor, 'filesystem.propose-replace-text', {
+      path,
+      oldText: 'missing',
+      newText: 'replacement',
+    }),
+    /must match the file exactly once/u,
+  );
+  await assert.rejects(
+    execute(executor, 'filesystem.propose-replace-text', {
+      path,
+      oldText: 'same',
+      newText: 'replacement',
+    }),
+    /must match the file exactly once/u,
+  );
+  assert.equal(await readFile(path, 'utf8'), 'same same\n');
+  assert.equal(proposalCount(), 0);
 });
 
 test('edits fail closed if the reviewed file changes before approval', async t => {

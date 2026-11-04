@@ -47,6 +47,11 @@ interface ContentInput extends PathInput {
   readonly content: string;
 }
 
+interface ReplaceTextInput extends PathInput {
+  readonly oldText: string;
+  readonly newText: string;
+}
+
 interface OperationOutput {
   readonly status: 'applied' | 'rejected';
   readonly operation: FileOperationKind;
@@ -1190,6 +1195,53 @@ export function registerFilesystemTools(
     };
     registry.register(contentOperation('filesystem.propose-create-file', 'create-file'));
     registry.register(contentOperation('filesystem.propose-edit', 'edit-file'));
+    const replaceText: Tool<ReplaceTextInput, OperationOutput> = {
+      id: 'filesystem.propose-replace-text',
+      effect: 'propose',
+      description: 'Propose replacing one exact, unique text snippet in an existing UTF-8 file. Use for localized edits after reading the file; the full change is reviewed before approval.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Exact absolute path to the existing file.', maxLength: 4096, pattern: '^/' },
+          oldText: { type: 'string', description: 'Exact existing text to replace; it must occur exactly once.', maxLength: contentMaximum },
+          newText: { type: 'string', description: 'Replacement text.', maxLength: contentMaximum },
+        },
+        required: ['path', 'oldText', 'newText'],
+        additionalProperties: false,
+      },
+      validateInput(value): value is ReplaceTextInput {
+        return isRecord(value) &&
+          exactKeys(value, ['path', 'oldText', 'newText']) &&
+          validPath(value.path) &&
+          typeof value.oldText === 'string' &&
+          value.oldText.length > 0 &&
+          Buffer.byteLength(value.oldText, 'utf8') <= contentMaximum &&
+          validUnicode(value.oldText) &&
+          !/[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value.oldText) &&
+          typeof value.newText === 'string' &&
+          Buffer.byteLength(value.newText, 'utf8') <= contentMaximum &&
+          validUnicode(value.newText) &&
+          !/[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value.newText);
+      },
+      inputError(value) {
+        if (!isRecord(value) || !exactKeys(value, ['path', 'oldText', 'newText'])) {
+          return 'Use only the path, oldText, and newText arguments.';
+        }
+        if (!validPath(value.path)) return 'Path must be an absolute path without parent-directory traversal.';
+        return `oldText and newText must be UTF-8 text of at most ${contentMaximum} bytes without binary control characters; oldText cannot be empty.`;
+      },
+      validateOutput: isOperationOutput,
+      async run(input, signal) {
+        const request: FileOperationRequest = {
+          operation: 'edit-file',
+          path: input.path,
+          replacement: { find: input.oldText, replace: input.newText },
+        };
+        const result = await approval.request(request, signal);
+        return { ...result, operation: 'edit-file', path: input.path };
+      },
+    };
+    registry.register(replaceText);
     registry.register(createDirectory);
     registry.register(deletePath);
   }

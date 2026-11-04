@@ -22,6 +22,10 @@ export interface FileOperationRequest {
   readonly operation: FileOperationKind;
   readonly path: string;
   readonly content?: string;
+  readonly replacement?: {
+    readonly find: string;
+    readonly replace: string;
+  };
 }
 
 export interface DesktopFileOperationProposal {

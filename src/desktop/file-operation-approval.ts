@@ -161,6 +161,25 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
     if (isAbortError(signal)) throw new OperationStoppedError('cancelled');
     const prepared = await this.#prepare(request, signal);
     if (signal.aborted) throw new OperationStoppedError('cancelled');
+    let reviewedRequest = request;
+    if (request.replacement) {
+      if (request.operation !== 'edit-file' || prepared.currentContent === undefined) {
+        throw new FileOperationApprovalError('Text replacement requires an existing regular file.');
+      }
+      const { find, replace } = request.replacement;
+      const firstIndex = prepared.currentContent.indexOf(find);
+      if (find.length === 0 || firstIndex === -1 ||
+          prepared.currentContent.indexOf(find, firstIndex + find.length) !== -1) {
+        throw new FileOperationApprovalError('The exact text to replace must match the file exactly once.');
+      }
+      const content = prepared.currentContent.slice(0, firstIndex) +
+        replace +
+        prepared.currentContent.slice(firstIndex + find.length);
+      if (Buffer.byteLength(content, 'utf8') > this.#options.config.maxFileBytes) {
+        throw new FileOperationApprovalError('The proposed file exceeds the configured maximum size.');
+      }
+      reviewedRequest = { operation: 'edit-file', path: request.path, content };
+    }
     const id = randomUUID();
     const proposal: DesktopFileOperationProposal = {
       id,
@@ -168,14 +187,14 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
       path: request.path,
       targetType: prepared.directory ? 'directory' : 'file',
       ...(prepared.currentContent === undefined ? {} : { currentContent: prepared.currentContent }),
-      ...(request.content === undefined ? {} : { proposedContent: request.content }),
+      ...(reviewedRequest.content === undefined ? {} : { proposedContent: reviewedRequest.content }),
     };
     return new Promise<FileOperationResult>((resolveResult, rejectResult) => {
       const onAbort = (): void => {
         this.#finish(id, pending => pending.reject(new OperationStoppedError('cancelled')));
       };
       const pending: PendingOperation = {
-        request,
+        request: reviewedRequest,
         proposal,
         ...(prepared.snapshot === undefined ? {} : { snapshot: prepared.snapshot }),
         targetPath: prepared.targetPath,

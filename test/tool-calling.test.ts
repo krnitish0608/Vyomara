@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, opendir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, opendir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAgent, AgentError } from '../src/agent/agent.ts';
@@ -275,6 +275,67 @@ test('repository follow-ups list the verified project directory and report its d
   );
   const fileList = await app.run(undefined, 'check files');
   assert.match(fileList, /Files: README\.md, package\.json/u);
+});
+
+test('filename search ignores an out-of-scope model path and searches the configured root', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-search-scope-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'SampleApp');
+  await mkdir(projectPath);
+  const marker = join(projectPath, 'marker.txt');
+  await writeFile(marker, 'fixture');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'marker.txt', path: '/' },
+      }],
+    },
+    { kind: 'final', text: 'I found the file.' },
+  ]), registry, config);
+
+  const result = await app.run(undefined, 'find the file named marker.txt in my project');
+  assert.match(result, /marker\.txt/u);
+  const search = app.session.messages().find(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(search?.role, 'tool');
+  assert.deepEqual(JSON.parse(search.content).matches, [{
+    path: await realpath(marker),
+    type: 'file',
+  }]);
+});
+
+test('file analysis requests return the model explanation after verified file reading', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-file-analysis-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const root = join(parent, 'allowed');
+  await mkdir(root);
+  const file = join(root, 'greeting.ts');
+  await writeFile(file, 'export const greet = (name: string) => `Hello, ${name}!`;\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: file } }],
+    },
+    { kind: 'final', text: 'It defines a typed greeting function that interpolates the supplied name.' },
+  ]), registry, config);
+
+  const result = await app.run(undefined, `Read ${file} and explain what it does.`);
+  assert.match(result, /typed greeting function/u);
+  assert.doesNotMatch(result, /Here’s the content/u);
 });
 
 test('agent recognizes misspelled project search and resolves a search-it follow-up from recent context', async t => {

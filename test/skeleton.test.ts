@@ -92,7 +92,8 @@ test('configuration uses safe defaults and rejects invalid values without echoin
     }).ollamaModel,
     'llama3.2',
   );
-  assert.equal(loadConfig({}).maxAgentIterations, 3);
+  assert.equal(loadConfig({}).maxAgentIterations, 5);
+  assert.equal(loadConfig({}).maxToolCalls, 4);
   assert.throws(
     () => loadConfig({ VYOM_PROVIDER: 'secret-provider-token' }),
     error => error instanceof Error &&

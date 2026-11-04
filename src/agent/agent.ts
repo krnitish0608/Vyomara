@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -88,7 +88,7 @@ function filesystemToolsForPrompt(
   const asksForNameSearch =
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|\bcheck\b[\s\S]{0,24}\b(?:again|once\s+more)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
   const asksForFilesystemAction =
-    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
+    /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|change|replace|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
   const asksForRecursiveListing =
     /\b(?:tree|recursive(?:ly)?|all\s+descendants|subfolders?|nested\s+folders?)\b/i.test(intentPrompt) ||
     /\binside\b[\s\S]{0,40}\b(?:their|its|the)\s+subfolders?\b/i.test(intentPrompt);
@@ -154,7 +154,7 @@ function claimsUnverifiedFileMutation(
     },
     {
       pattern: /\b(?:I|we)\s+(?:have\s+)?(?:wrote|modified|updated|edited)\s+(?:the\s+)?(?:file|document)\b|\b(?:file|document)\s+(?:was|has been)\s+(?:written|modified|updated|edited)\b/i,
-      tools: ['filesystem.propose-edit'],
+      tools: ['filesystem.propose-edit', 'filesystem.propose-replace-text'],
     },
     {
       pattern: /\b(?:I|we)\s+(?:have\s+)?(?:deleted|removed)\s+(?:the\s+)?(?:file|folder|directory)\b|\b(?:file|folder|directory)\s+(?:was|has been)\s+(?:deleted|removed)\b/i,
@@ -317,6 +317,74 @@ function filesystemPartialResultResponse(
     : 'A filesystem operation failed after a verified result; the partial result exceeds the configured response limit and cannot be shown.';
 }
 
+function asksForFileAnalysis(prompt: string): boolean {
+  return /\b(?:explain|analy[sz]e|summari[sz]e|review)\b|\bwhat\s+(?:does|do|is)\b[\s\S]{0,80}\b(?:do|mean|work|purpose)\b|\bhow\s+(?:does|do)\b[\s\S]{0,80}\bwork\b/i.test(prompt);
+}
+
+function asksForFileMutation(prompt: string): boolean {
+  const action = /\b(?:create|write|edit|modify|change|replace|update|delete|remove)\b/i;
+  const subject = /\b(?:file|folder|directory|code|codebase|project|repo|repository)\b|(?:^|\s)\/[^\s"'`]+/i;
+  return action.test(prompt) && subject.test(prompt);
+}
+
+function exactTextReplacement(prompt: string): { readonly oldText: string; readonly newText: string } | undefined {
+  const match = /\breplace\s+(?:the\s+)?(?:exact\s+)?(?:text\s+)?(["'`])([^"'`]{1,4096})\1\s+with\s+(["'`])([^"'`]{0,4096})\3/i.exec(prompt);
+  if (!match || match[1] !== match[3] || match[2] === undefined || match[4] === undefined) {
+    return undefined;
+  }
+  return { oldText: match[2], newText: match[4] };
+}
+
+function completeUpdatedFileFromResponse(text: string): string | undefined {
+  if (!/\b(?:complete|full)\s+(?:updated|replacement)\s+file\b/i.test(text)) return undefined;
+  const codeBlocks = [...text.matchAll(/```[^\r\n]*\r?\n([\s\S]*?)```/g)];
+  return codeBlocks.length === 1 ? codeBlocks[0]?.[1] : undefined;
+}
+
+function proposalFromFinalResponse(
+  prompt: string,
+  text: string,
+  path: string,
+): { readonly toolId: string; readonly arguments: Readonly<Record<string, unknown>> } | undefined {
+  const replacement = exactTextReplacement(prompt);
+  if (replacement) {
+    return {
+      toolId: 'filesystem.propose-replace-text',
+      arguments: { path, oldText: replacement.oldText, newText: replacement.newText },
+    };
+  }
+  const content = completeUpdatedFileFromResponse(text);
+  return content === undefined
+    ? undefined
+    : { toolId: 'filesystem.propose-edit', arguments: { path, content } };
+}
+
+function verifiedFileOperationResponse(results: readonly string[]): string | undefined {
+  const outcomes = results.flatMap(result => {
+    let value: unknown;
+    try {
+      value = JSON.parse(result);
+    } catch {
+      return [];
+    }
+    if (!isRecord(value) || (value.status !== 'applied' && value.status !== 'rejected')) return [];
+    const operation = value.operation === 'edit-file'
+      ? 'edit'
+      : value.operation === 'create-file'
+        ? 'file creation'
+        : value.operation === 'create-directory'
+          ? 'folder creation'
+          : value.operation === 'delete'
+            ? 'deletion'
+            : undefined;
+    if (!operation) return [];
+    return [value.status === 'applied'
+      ? `The approved ${operation} was applied.`
+      : `The proposed ${operation} was rejected. No changes were made.`];
+  });
+  return outcomes.length > 0 ? outcomes.join('\n') : undefined;
+}
+
 function latestVerifiedSearchDirectory(messages: ReturnType<Session['messages']>): string | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -350,6 +418,19 @@ function exactQuotedAbsolutePath(prompt: string): string | undefined {
   return matches.length === 1 ? matches[0]?.[2] : undefined;
 }
 
+function pathWithinConfiguredRoots(
+  path: string,
+  roots: readonly string[],
+): boolean {
+  if (!isAbsolute(path)) return false;
+  const resolvedPath = resolve(path);
+  return roots.some(root => {
+    const fromRoot = relative(resolve(root), resolvedPath);
+    return fromRoot === '' ||
+      (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`));
+  });
+}
+
 function executionArguments(
   prompt: string,
   toolId: string,
@@ -357,6 +438,7 @@ function executionArguments(
   batchSize: number,
   recentSearchDirectory?: string,
   tools: ReturnType<ToolExecutor['modelTools']> = [],
+  allowedRoots: readonly string[] = [],
 ): Readonly<Record<string, unknown>> {
   const tool = tools.find(candidate => candidate.id === toolId);
   const normalizedArguments = { ...arguments_ };
@@ -395,6 +477,14 @@ function executionArguments(
   }
   if (toolId === 'filesystem.search') {
     const searchArguments = normalizedArguments;
+    if (
+      typeof searchArguments.path === 'string' &&
+      isAbsolute(searchArguments.path) &&
+      !pathWithinConfiguredRoots(searchArguments.path, allowedRoots) &&
+      !/(?:^|\s)(?:\/|[A-Za-z]:[\\/])(?:[^\s"'`]+)?/.test(prompt)
+    ) {
+      delete searchArguments.path;
+    }
     const genericProjectFollowup =
       /\b(?:project|repo|repository|codebase)\b/i.test(prompt) &&
       !/\b[a-z0-9_-]{3,}\b/i.test(prompt.replace(
@@ -583,7 +673,11 @@ async function runAgentTask(
   let correctionAttempts = 0;
   const successfulToolIds = new Set<string>();
   const appliedFileOperationToolIds = new Set<string>();
+  const fileOperationResults: string[] = [];
+  const readFilePaths = new Set<string>();
   const filesystemToolResults: string[] = [];
+  let editToolRepairInstruction: string | undefined;
+  let editToolRepairAttempts = 0;
   const toolAttempts = new Map<string, number>();
   const recentUserContext = options.session.messages()
     .slice(0, -1)
@@ -626,7 +720,12 @@ async function runAgentTask(
     try {
       rawResponse = await runBounded(
         providerSignal => options.provider.complete(
-          options.session.messages(),
+          editToolRepairInstruction
+            ? [
+              ...options.session.messages(),
+              { role: 'user', content: editToolRepairInstruction },
+            ]
+            : options.session.messages(),
           providerSignal,
           toolCalls < options.config.maxToolCalls ? availableTools : [],
           options.onText,
@@ -681,6 +780,108 @@ async function runAgentTask(
           return returnPartialFilesystemResult(recoverableToolFailure, iteration);
         }
         throw recoverableToolFailure;
+      }
+      const readPath = readFilePaths.size === 1 ? [...readFilePaths][0] : undefined;
+      const fallbackProposal = readPath === undefined || fileOperationResults.length > 0
+        ? undefined
+        : proposalFromFinalResponse(prompt, response.text, readPath);
+      if (fallbackProposal && toolCalls < options.config.maxToolCalls) {
+        const proposalContext = task.context(randomUUID(), 1);
+        options.logger.emit({
+          event: 'tool.requested',
+          ...proposalContext,
+          toolId: fallbackProposal.toolId,
+          argumentKeys: Object.keys(fallbackProposal.arguments).sort(),
+        });
+        options.session.add({
+          role: 'assistant',
+          kind: 'tool-call',
+          content: response.text,
+          toolCalls: [{
+            toolId: fallbackProposal.toolId,
+            arguments: fallbackProposal.arguments,
+          }],
+        });
+        options.logger.emit({
+          event: 'tool.invoked',
+          ...proposalContext,
+          toolId: fallbackProposal.toolId,
+        });
+        const result = await options.tools.execute(
+          fallbackProposal.toolId,
+          fallbackProposal.arguments,
+          signal,
+          proposalContext,
+        );
+        const serialized = JSON.stringify(result);
+        if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
+          throw new ToolExecutionError(
+            'Tool result exceeded the configured safety limit; success cannot be confirmed.',
+            'output-too-large',
+          );
+        }
+        toolCalls++;
+        options.session.add({
+          role: 'tool',
+          toolId: fallbackProposal.toolId,
+          content: serialized,
+        });
+        successfulToolIds.add(fallbackProposal.toolId);
+        fileOperationResults.push(serialized);
+        if (
+          typeof result === 'object' &&
+          result !== null &&
+          'status' in result &&
+          result.status === 'applied'
+        ) {
+          appliedFileOperationToolIds.add(fallbackProposal.toolId);
+        }
+        const operationResponse = verifiedFileOperationResponse(fileOperationResults);
+        if (operationResponse) {
+          options.session.add({ role: 'assistant', content: operationResponse });
+          options.logger.emit({
+            event: 'request.completed',
+            taskId: task.taskId,
+            runId: task.runId,
+            durationMs: Date.now() - start,
+            iterations: iteration,
+          });
+          return operationResponse;
+        }
+      }
+      if (
+        fileOperationResults.length === 0 &&
+        readFilePaths.size > 0 &&
+        asksForFileMutation(prompt)
+      ) {
+        if (editToolRepairAttempts === 0 && toolCalls < options.config.maxToolCalls) {
+          editToolRepairAttempts++;
+          editToolRepairInstruction =
+            'Correction: no file-change proposal has been submitted. Use the available file tool now: for a localized change, call filesystem.propose-replace-text with the exact existing snippet and replacement; for a broader change, call filesystem.propose-edit with the complete updated file. Do not ask the user to provide the file contents, and do not claim a proposal exists unless the tool call succeeds.';
+          continue;
+        }
+        const safeResponse = 'I couldn’t prepare a reviewed file-change proposal, so no files were changed.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
+      const verifiedFileOperation = verifiedFileOperationResponse(fileOperationResults);
+      if (verifiedFileOperation) {
+        options.session.add({ role: 'assistant', content: verifiedFileOperation });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return verifiedFileOperation;
       }
       if (claimsUnsupportedExecution(response.text)) {
         const safeResponse =
@@ -742,7 +943,8 @@ async function runAgentTask(
       if (
         filesystemToolResults.length > 0 &&
         !completedFileOperation &&
-        !readOnlyProjectContext
+        !readOnlyProjectContext &&
+        !(successfulToolIds.has('filesystem.read-file') && asksForFileAnalysis(prompt))
       ) {
         const finalResponse = filesystemResultResponse(
           filesystemToolResults,
@@ -810,6 +1012,7 @@ async function runAgentTask(
       });
       return { call, attempt, toolCallId, context };
     });
+    const readFilePathsBeforeBatch = new Set(readFilePaths);
     if (response.calls.length > options.config.maxToolCalls - toolCalls) {
       const error = new AgentError('Tool call limit reached.', 'tool-limit');
       if (filesystemToolResults.length > 0) {
@@ -833,7 +1036,7 @@ async function runAgentTask(
         arguments: call.arguments,
       })),
     });
-    for (const { call, attempt, toolCallId, context } of proposedCalls) {
+    for (const [callIndex, { call, attempt, toolCallId, context }] of proposedCalls.entries()) {
       toolCalls++;
       if (task.state === 'planning') task.transition('running');
       options.logger.emit({
@@ -849,8 +1052,86 @@ async function runAgentTask(
           response.calls.length,
           recentSearchDirectory,
           availableTools,
+          options.config.filesystemAllowedRoots,
         );
-        const result = await options.tools.execute(call.toolId, args, signal, context);
+        let executionToolId = call.toolId;
+        let executionToolArguments = args;
+        const explicitReplacement = call.toolId === 'filesystem.propose-edit'
+          ? exactTextReplacement(prompt)
+          : undefined;
+        if (explicitReplacement) {
+          executionToolId = 'filesystem.propose-replace-text';
+          executionToolArguments = {
+            path: args.path,
+            oldText: explicitReplacement.oldText,
+            newText: explicitReplacement.newText,
+          };
+        }
+        if (['filesystem.propose-edit', 'filesystem.propose-replace-text'].includes(call.toolId)) {
+          if (typeof args.path !== 'string') {
+            throw new ToolExecutionError('An exact target path is required for an edit.', 'invalid-input');
+          }
+          const editPath = resolve(args.path);
+          if (!readFilePathsBeforeBatch.has(editPath)) {
+            if (!readFilePaths.has(editPath)) {
+              const remainingCalls = proposedCalls.length - callIndex - 1;
+              if (toolCalls + 1 + remainingCalls > options.config.maxToolCalls) {
+                throw new AgentError('Tool call limit reached before the target file could be reviewed.', 'tool-limit');
+              }
+              const readContext = task.context(randomUUID(), 1);
+              options.logger.emit({
+                event: 'tool.invoked',
+                ...readContext,
+                toolId: 'filesystem.read-file',
+              });
+              const readResult = await options.tools.execute(
+                'filesystem.read-file',
+                { path: args.path },
+                signal,
+                readContext,
+              );
+              const serializedReadResult = JSON.stringify(readResult);
+              if (
+                serializedReadResult === undefined ||
+                serializedReadResult.length > options.config.maxToolOutputChars
+              ) {
+                throw new ToolExecutionError(
+                  'The target file could not be reviewed within the configured output limit.',
+                  'output-too-large',
+                );
+              }
+              options.session.add({
+                role: 'tool',
+                toolId: 'filesystem.read-file',
+                content: serializedReadResult,
+              });
+              successfulToolIds.add('filesystem.read-file');
+              readFilePaths.add(editPath);
+              filesystemToolResults.push(
+                `filesystem.read-file (${args.path}): ${serializedReadResult}`,
+              );
+              toolCalls++;
+            }
+            if (executionToolId !== 'filesystem.propose-replace-text') {
+              options.session.add({
+                role: 'tool',
+                toolId: call.toolId,
+                content: JSON.stringify({
+                  ok: false,
+                  error: 'Edit proposal not created. Review the file contents, then propose a complete updated file.',
+                }),
+              });
+              options.logger.emit({
+                event: 'tool.failed',
+                ...context,
+                toolId: call.toolId,
+                code: 'invalid-input',
+              });
+              continue;
+            }
+          }
+        }
+        const result = await options.tools.execute(executionToolId, executionToolArguments, signal, context);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
           throw new ToolExecutionError(
@@ -860,6 +1141,9 @@ async function runAgentTask(
         }
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
         successfulToolIds.add(call.toolId);
+        if (call.toolId.startsWith('filesystem.propose-')) {
+          fileOperationResults.push(serialized);
+        }
         if (
           call.toolId.startsWith('filesystem.propose-') &&
           typeof result === 'object' &&
@@ -869,9 +1153,12 @@ async function runAgentTask(
         ) {
           appliedFileOperationToolIds.add(call.toolId);
         }
+        if (call.toolId === 'filesystem.read-file' && typeof args.path === 'string') {
+          readFilePaths.add(resolve(args.path));
+        }
         if (
           call.toolId.startsWith('filesystem.') &&
-          !['filesystem.propose-edit', 'filesystem.propose-create'].includes(call.toolId)
+          !call.toolId.startsWith('filesystem.propose-')
         ) {
           const listingPath =
             ['filesystem.list-directory', 'filesystem.directory-tree', 'filesystem.read-file'].includes(call.toolId) &&
