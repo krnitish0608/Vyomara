@@ -89,7 +89,9 @@ function filesystemToolsForPrompt(
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|\bcheck\b[\s\S]{0,24}\b(?:again|once\s+more)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
   const asksForFilesystemAction =
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|list(?:ing)?|show|read|open|create|make|edit|modify|update|delete|remove|inspect|use|see|check|count|many|inside|under|contain|contents?)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां|दिखाओ|पढ़ो|बनाओ|बदल|हटाओ|मिटाओ)/iu.test(intentPrompt);
-  const asksForRecursiveListing = /\b(?:tree|recursive(?:ly)?|all\s+descendants)\b/i.test(intentPrompt);
+  const asksForRecursiveListing =
+    /\b(?:tree|recursive(?:ly)?|all\s+descendants|subfolders?|nested\s+folders?)\b/i.test(intentPrompt) ||
+    /\binside\b[\s\S]{0,40}\b(?:their|its|the)\s+subfolders?\b/i.test(intentPrompt);
   const asksToReadFile =
     /\b(?:read|display)\s+(?:(?:the|exact)\s+)?(?:contents?\s+of\s+)?(?:exact\s+)?files?\b/i.test(intentPrompt) ||
     /\bfilesystem\.read-file\b/i.test(intentPrompt);
@@ -215,7 +217,8 @@ function filesystemResultResponse(
 ): string {
   const includeNames =
     /\b(?:check|list|show|which|what\s+are)\b[\s\S]{0,40}\b(?:files?|folders?|contents?|names?)\b/i.test(prompt) ||
-    /\b(?:tree|recursive(?:ly)?)\b/i.test(prompt);
+    /\b(?:tree|recursive(?:ly)?|subfolders?|nested\s+folders?)\b/i.test(prompt) ||
+    /\binside\b[\s\S]{0,40}\b(?:their|its|the)\s+subfolders?\b/i.test(prompt);
   const formattedResults = results.map(result => {
     const toolResult = /^filesystem\.([a-z-]+)(?: \((.*)\))?: ([\s\S]+)$/.exec(result);
     if (!toolResult) return result;
@@ -376,10 +379,10 @@ function executionArguments(
     }
   }
   if (
-    toolId === 'filesystem.list-directory' &&
+    ['filesystem.list-directory', 'filesystem.directory-tree'].includes(toolId) &&
     recentSearchDirectory &&
     !prompt.includes('/') &&
-    /\b(?:repository|repo|project|folder|directory|files?|folders?|it|that|there|under)\b/i.test(prompt)
+    /\b(?:repository|repo|project|folder|directory|files?|folders?|it|that|there|under|subfolders?)\b/i.test(prompt)
   ) {
     return { ...normalizedArguments, path: recentSearchDirectory };
   }

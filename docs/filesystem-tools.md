@@ -83,7 +83,9 @@ available for that request are not executed. Short follow-ups such as "search
 it", "where is the repo?", or "check again" use the latest verified search
 result as context. Project-location answers prioritize matching directories
 over similarly named files. Ordinary greetings still do not expose filesystem
-tools.
+tools. Requests to inspect a project and its subfolders use the recursive tree
+tool and reuse the verified project path rather than trusting an inferred
+relative path from the model.
 
 File contents are sensitive. Read results, tool calls, and approved-change
 proposals are stored in local conversation history and sent to the configured

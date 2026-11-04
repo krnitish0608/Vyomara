@@ -402,6 +402,64 @@ test('project search prioritizes repo folders and vague follow-ups reuse the ver
   }
 });
 
+test('recursive project listing uses the verified search path instead of a malformed model path', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-project-tree-followup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'ProjectX');
+  await mkdir(join(projectPath, 'src', 'components'), { recursive: true });
+  await writeFile(join(projectPath, 'README.md'), 'project');
+  await writeFile(join(projectPath, 'src', 'components', 'App.tsx'), 'app');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'ProjectX', path: root },
+      }],
+    },
+    { kind: 'final', text: 'I found the project.' },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.directory-tree',
+        arguments: { path: '../relative/path', maxDepth: '3' },
+      }],
+    },
+    { kind: 'final', text: 'The tree includes fabricated.txt.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, config);
+
+  await app.run(undefined, 'where is my ProjectX project?');
+  const treeResponse = await app.run(
+    undefined,
+    'can you tell me what all things are there in my project directory, and inside their subfolders',
+  );
+  assert.deepEqual(advertised[2], ['filesystem.directory-tree']);
+  assert.match(treeResponse, /tree under/u);
+  assert.match(treeResponse, /src\/components\/App\.tsx/u);
+  assert.doesNotMatch(treeResponse, /fabricated\.txt/u);
+  assert.deepEqual(
+    app.session.messages().filter(message =>
+      message.role === 'tool' && message.toolId === 'filesystem.directory-tree').map(message =>
+      message.role === 'tool' ? JSON.parse(message.content) : undefined),
+    [{
+      entries: [
+        { name: 'README.md', path: 'README.md', type: 'file', depth: 1 },
+        { name: 'src', path: 'src', type: 'directory', depth: 1 },
+        { name: 'components', path: 'src/components', type: 'directory', depth: 2 },
+        { name: 'App.tsx', path: 'src/components/App.tsx', type: 'file', depth: 3 },
+      ],
+      truncated: false,
+    }],
+  );
+});
+
 test('agent expands a home-relative model search path before filesystem validation', async () => {
   const config = {
     ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
