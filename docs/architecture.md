@@ -102,16 +102,17 @@ owner-only SQLite database. Memory content can be saved only after exact
 content review and typed confirmation, inspected, and deleted after review
 and typed confirmation; it is not automatically injected into requests. CLI
 roots are configured through environment
-variables. There is no interactive approval UI. The current Ollama
+variables. The desktop provides explicit per-file review and approval for
+bounded project edit proposals; other side effects remain denied. The current Ollama
 adapter advertises explicitly registered read-only tools and accepts
 structured tool calls. Every requested call still passes through executor
 validation and the policy gateway. Invalid arguments receive at most one
 structured correction opportunity through the same executor and policy path.
-Unsupported shell, web, and filesystem mutation requests are refused without
-calling the provider; assistant claims about unsupported execution are not
-accepted as evidence. In MVP, policy denies side effects; the
-approval gateway is a fail-closed boundary for future approved capabilities,
-not permission to add them now.
+Unsupported shell, web, and direct filesystem mutation requests are refused;
+assistant claims about unsupported execution are not accepted as evidence.
+Project edits use a separate staging and explicit-approval flow described in
+[ADR-0014](./adr/0014-approved-project-edit-proposals.md). The policy gateway
+still denies side effects unless a narrow approved workflow authorizes them.
 
 ## Components and boundaries
 
@@ -126,7 +127,7 @@ not permission to add them now.
 | Ollama adapter | Translate the provider contract to the selected local Ollama-compatible API/model. | Silently contact a remote provider or decide policy. |
 | Tool registry | Resolve stable tool names, validate input/output schemas, classify effects, and enforce limits. | Allow unknown or model-invented tools to execute. |
 | Policy/approval gateway | Check identity, scope, permission, and approval before any side effect; deny by default. | Let model output or a tool self-authorize. |
-| Filesystem tools | List/read only within explicit roots and enforce traversal/symlink containment at access time. | Write/delete or return unbounded file content. |
+| Filesystem tools | List/read only within explicit roots and enforce traversal/symlink containment at access time. | Directly write/delete or return unbounded file content. |
 | Persistence interface | Separate session history from explicit memory and expose inspect/review/delete operations. | Automatically promote conversation into durable memory. |
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 

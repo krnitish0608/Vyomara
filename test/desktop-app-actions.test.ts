@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../src/desktop/action-intent.ts';
+import {
+  detectDesktopAppAction,
+  isCodeEditRequest,
+  isProjectContextRequest,
+  requestsNamedProjectOpen,
+  requestsVSCode,
+} from '../src/desktop/action-intent.ts';
 import { parseDesktopAppAction, runDesktopAppAction } from '../src/desktop/app-actions.ts';
 
 test('only clear direct requests are converted into supported application actions', () => {
@@ -27,10 +33,15 @@ test('only clear direct requests are converted into supported application action
   assert.equal(detectDesktopAppAction(`Search Chrome for ${'x'.repeat(257)}`), undefined);
   assert.equal(isCodeEditRequest('Fix the login bug in this project'), true);
   assert.equal(isCodeEditRequest('Open VS Code and fix the login bug'), true);
+  assert.equal(isCodeEditRequest('Create a feature file in this project'), true);
   assert.equal(isCodeEditRequest('Delete the config file in this project'), false);
   assert.equal(isCodeEditRequest('Explain how this project works'), false);
   assert.equal(requestsVSCode('Open VS Code and fix the login bug'), true);
   assert.equal(requestsVSCode('Fix the login bug in this project'), false);
+  assert.equal(requestsNamedProjectOpen('open the kylessrn project'), 'kylessrn');
+  assert.equal(requestsNamedProjectOpen('open VS Code'), undefined);
+  assert.equal(isProjectContextRequest('Can you tell me the repo in the project directory?'), true);
+  assert.equal(isProjectContextRequest('How does a repository work in general?'), false);
 });
 
 test('VS Code requests launch only the fixed installed application name', async () => {

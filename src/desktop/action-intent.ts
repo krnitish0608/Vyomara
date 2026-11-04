@@ -5,7 +5,7 @@ export function isCodeEditRequest(prompt: string): boolean {
     /\b(?:delete|remove|erase)\b[\s\S]{0,40}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:delete|remove|erase)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर).{0,32}(?:हटाओ|मिटाओ|डिलीट)/iu.test(prompt)
   ) return false;
   const requestsChange =
-    /\b(?:fix|edit|modify|change|implement|refactor|debug|update|thik karo|sahi karo|badlo|banao|likho|chnage)\b|(?:ठीक करो|सुधारो|बदल(?:ो|ना)|लागू करो|बनाओ)/iu.test(prompt);
+    /\b(?:fix|edit|modify|change|implement|refactor|debug|update|create|write|add|thik karo|sahi karo|badlo|banao|likho|chnage)\b|(?:ठीक करो|सुधारो|बदल(?:ो|ना)|लागू करो|बनाओ)/iu.test(prompt);
   const identifiesCode =
     /\b(?:code|codebase|project|repository|repo|bug|file|vs\s*code|vscode|visual studio code)\b|(?:कोड|प्रोजेक्ट|रिपॉज़िटरी|रिपोजिटरी|बग|फ़ाइल|फाइल)/iu.test(prompt);
   return requestsChange && identifiesCode;
@@ -13,6 +13,21 @@ export function isCodeEditRequest(prompt: string): boolean {
 
 export function requestsVSCode(prompt: string): boolean {
   return /\b(?:open|launch)\s+(?:the\s+)?(?:visual studio code|vs\s*code|vscode)\b|(?:vs\s*code|vscode).{0,24}(?:खोलो|खोलिए|open karo|khol(?:o|iye)?)/iu.test(prompt);
+}
+
+export function requestsNamedProjectOpen(prompt: string): string | undefined {
+  const match = prompt.trim().match(
+    /^(?:please\s+)?open\s+(?:the\s+)?["'`]?([a-z0-9][a-z0-9._ -]{0,79}?)["'`]?\s+project[.!]?$/iu,
+  );
+  return match?.[1]?.trim();
+}
+
+export function isProjectContextRequest(prompt: string): boolean {
+  const mentionsProject =
+    /\b(?:project|repo|repository|codebase|workspace)\b|(?:प्रोजेक्ट|रिपॉज़िटरी|रिपोजिटरी|कोडबेस)/iu.test(prompt);
+  const asksAboutContentsOrLocation =
+    /\b(?:where|which|what|show|list|tell|inspect|explore|read|find|look|files?|folders?|directory|contents?|structure|path|location|root)\b|(?:कहाँ|कहां|कौन|क्या|दिखाओ|बताओ|सूची|फ़ाइल|फाइल|फ़ोल्डर|फोल्डर)/iu.test(prompt);
+  return mentionsProject && asksAboutContentsOrLocation;
 }
 
 export function detectDesktopAppAction(prompt: string): DesktopAppAction | undefined {

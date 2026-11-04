@@ -166,7 +166,7 @@ test('project edit requests inspect a scoped file and stage a diff without apply
     filesystemAllowedRoots: [project],
   };
   const manager = new EditProposalManager(project);
-  const registry = createDefaultToolRegistry(config, manager);
+  const registry = createDefaultToolRegistry(config, manager, true, project);
   const provider = sequenceProvider([
     { kind: 'tool-calls', calls: [{ toolId: 'assistant.project-root', arguments: {} }] },
     { kind: 'tool-calls', calls: [{ toolId: 'filesystem.read-file', arguments: { path: file } }] },
@@ -195,6 +195,45 @@ test('project edit requests inspect a scoped file and stage a diff without apply
   assert.equal(await readFile(file, 'utf8'), 'export const greeting = "namaste";\n');
 });
 
+test('selected project context supports truthful directory questions and model summaries', async t => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-project-context-'));
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+  const project = await realpath(temporaryDirectory);
+  await writeFile(join(project, 'README.md'), '# Selected project\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
+    filesystemAllowedRoots: [project],
+  };
+  const registry = createDefaultToolRegistry(config, undefined, true, project);
+  const provider = sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'assistant.project-root', arguments: {} }] },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.list-directory',
+        arguments: { path: project },
+      }],
+    },
+    { kind: 'final', text: `The selected project folder is ${project} and it contains README.md.` },
+  ]);
+  const app = harness(provider, registry, {
+    filesystemAllowedRoots: [project],
+    maxToolOutputChars: 20_000,
+    maxAgentIterations: 8,
+    maxToolCalls: 8,
+  });
+
+  assert.equal(
+    await app.run(new AbortController().signal, 'Tell me the repo in the project directory.'),
+    `The selected project folder is ${project} and it contains README.md.`,
+  );
+  assert.deepEqual(app.session.messages().flatMap(message =>
+    message.role === 'tool' ? [message.toolId] : []), [
+    'assistant.project-root',
+    'filesystem.list-directory',
+  ]);
+});
+
 test('project edit proposals require a read of the exact selected file in the same request', async t => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-unread-edit-'));
   t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
@@ -206,7 +245,7 @@ test('project edit proposals require a read of the exact selected file in the sa
     ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
     filesystemAllowedRoots: [project],
   };
-  const registry = createDefaultToolRegistry(config, manager);
+  const registry = createDefaultToolRegistry(config, manager, true, project);
   const app = harness(sequenceProvider([
     {
       kind: 'tool-calls',
@@ -229,6 +268,87 @@ test('project edit proposals require a read of the exact selected file in the sa
   ), /Read this exact file/);
   assert.deepEqual(manager.list(), []);
   assert.equal(await readFile(file, 'utf8'), 'original\n');
+});
+
+test('new project files require an inspected existing folder and stay staged until approval', async t => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-create-'));
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+  const project = await realpath(temporaryDirectory);
+  const sourceDirectory = join(project, 'src');
+  await mkdir(sourceDirectory);
+  const file = join(sourceDirectory, 'feature.ts');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
+    filesystemAllowedRoots: [project],
+  };
+  const manager = new EditProposalManager(project);
+  const registry = createDefaultToolRegistry(config, manager, true, project);
+  const provider = sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'assistant.project-root', arguments: {} }] },
+    { kind: 'tool-calls', calls: [{ toolId: 'filesystem.list-directory', arguments: { path: sourceDirectory } }] },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-create',
+        arguments: { path: 'src/feature.ts', content: 'export const feature = true;\n' },
+      }],
+    },
+    { kind: 'final', text: 'I prepared a new-file diff for review. Nothing has been created.' },
+  ]);
+  const app = harness(provider, registry, {
+    filesystemAllowedRoots: [project],
+    maxToolOutputChars: 20_000,
+    maxAgentIterations: 8,
+    maxToolCalls: 8,
+  });
+
+  assert.equal(
+    await app.run(new AbortController().signal, 'Create a feature file in this project.'),
+    'I prepared a new-file diff for review. Nothing has been created.',
+  );
+  await assert.rejects(readFile(file, 'utf8'), { code: 'ENOENT' });
+  const [proposal] = manager.list();
+  assert.ok(proposal);
+  assert.equal(proposal.operation, 'create');
+  assert.match(proposal.diff, /\+export const feature = true;/);
+  await manager.apply(proposal.id);
+  assert.equal(await readFile(file, 'utf8'), 'export const feature = true;\n');
+});
+
+test('agent refuses to propose a new project file before inspecting its destination folder', async t => {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'vyomara-agent-uninspected-create-'));
+  t.after(async () => rm(temporaryDirectory, { recursive: true, force: true }));
+  const project = await realpath(temporaryDirectory);
+  const file = join(project, 'new.ts');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_MAX_TOOL_OUTPUT_CHARS: '20000' }),
+    filesystemAllowedRoots: [project],
+  };
+  const manager = new EditProposalManager(project);
+  const registry = createDefaultToolRegistry(config, manager, true, project);
+  const app = harness(sequenceProvider([
+    { kind: 'tool-calls', calls: [{ toolId: 'assistant.project-root', arguments: {} }] },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-create',
+        arguments: { path: 'new.ts', content: 'content\n' },
+      }],
+    },
+    { kind: 'final', text: 'I need to inspect the project folder first.' },
+  ]), registry, {
+    filesystemAllowedRoots: [project],
+    maxToolOutputChars: 20_000,
+    maxAgentIterations: 8,
+    maxToolCalls: 8,
+  });
+
+  await assert.rejects(
+    app.run(new AbortController().signal, 'Create a new file in this project.'),
+    /Inspect the existing destination folder/,
+  );
+  assert.deepEqual(manager.list(), []);
+  await assert.rejects(readFile(file, 'utf8'), { code: 'ENOENT' });
 });
 
 test('agent executes multiple sequential tool calls within the configured call limit', async () => {

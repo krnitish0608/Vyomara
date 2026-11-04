@@ -25,7 +25,9 @@ registered read-only tools; filesystem access remains disabled unless allowed
 roots are explicitly configured.
 Each session is capped at 1,000 messages or 8 MiB; start another session when
 that limit is reached.
-Unsupported shell, web-search, and file-mutation requests are not executed.
+Unsupported shell, web-search, and direct file-mutation requests are not
+executed. Project code changes use the separate review-and-approve workflow
+described below.
 Tool arguments are strictly validated, with at most one bounded correction
 attempt; a model claim is not evidence that an action succeeded.
 Saved memory is separate from session history and is never extracted
@@ -134,13 +136,20 @@ may run project-defined lifecycle scripts, which can execute arbitrary code;
 checks receive a limited environment but are not sandboxed and may access your
 user files or network. Only select a project you trust.
 For explicit code-edit requests, Vyom reads only that selected project and can
-stage changes to up to three existing UTF-8 files, each no larger than 16 KiB.
-The complete before/after diff appears in Vyomara; nothing is written until
-you click **Apply this diff** for that exact proposal. Rejecting leaves files
-unchanged, and a stale diff is refused. It cannot create or delete files, edit
-known environment/credential/key files, or run arbitrary commands. **Open selected project in
-VS Code** also requires its own confirmation and opens the existing app with
-that folder.
+stage changes to up to three UTF-8 files, each no larger than 16 KiB. It can
+replace existing files or propose new files inside an existing, inspected
+project folder. The complete diff appears in Vyomara; nothing is written until
+you click **Apply this diff** for that exact proposal. Each file has its own
+approval. Rejecting leaves files unchanged, and a stale diff or newly occupied
+destination is refused. Vyomara cannot create folders or delete files, edit
+known environment/credential/key files, or run arbitrary commands. **Open
+selected project in VS Code** also requires its own confirmation and opens the
+existing app with that folder.
+After selecting a project, you can also ask Vyom to show its location or
+inspect its files; these questions use read-only access scoped to that
+selected folder. Asking to open a named project prompts you to choose its
+folder, checks that the folder name matches, and then asks for confirmation
+before opening it in VS Code.
 Direct requests to open VS Code or Chrome, or search in Chrome, show an
 in-app confirmation before Vyomara launches the existing macOS application.
 Chrome searches display the exact query and disclose that Google receives it.

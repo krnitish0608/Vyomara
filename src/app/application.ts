@@ -302,7 +302,11 @@ export async function runRequest(
   sessionId?: string,
   editProposals?: EditProposalManager,
   onText?: (text: string) => void,
+  projectDirectory?: string,
 ): Promise<RequestResult> {
+  const requestConfig = projectDirectory
+    ? { ...config, filesystemAllowedRoots: [projectDirectory] }
+    : config;
   const store = new SqliteStore(config.dataDirectory);
   try {
     const session = sessionId === undefined
@@ -319,13 +323,16 @@ export async function runRequest(
       : new PlaceholderProvider();
     const tools = new ToolExecutor({
       registry: createDefaultToolRegistry(
-        config,
+        requestConfig,
         editProposals,
-        config.filesystemAllowedRoots.length > 0 &&
-          (editProposals !== undefined || promptContainsAbsoluteLocalPath(prompt)),
+        (requestConfig.filesystemAllowedRoots.length > 0 &&
+          (editProposals !== undefined ||
+            projectDirectory !== undefined ||
+            promptContainsAbsoluteLocalPath(prompt))),
+        projectDirectory,
       ),
       policy: new PolicyGateway(),
-      config,
+      config: requestConfig,
       logger: taskLogger,
     });
 
@@ -335,7 +342,7 @@ export async function runRequest(
       response = await runAgent(prompt, signal, {
         provider,
         tools,
-        config,
+        config: requestConfig,
         session,
         logger: taskLogger,
         onText,

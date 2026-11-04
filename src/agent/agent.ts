@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -314,6 +314,7 @@ async function runAgentTask(
   const filesystemToolResults: string[] = [];
   const toolAttempts = new Map<string, number>();
   const inspectedProjectFiles = new Set<string>();
+  const inspectedProjectDirectories = new Set<string>();
   let selectedProjectRoot: string | undefined;
   const returnPartialFilesystemResult = (
     error: { readonly code: string; readonly message: string },
@@ -436,7 +437,15 @@ async function runAgentTask(
         });
         return safeResponse;
       }
-      if (filesystemToolResults.length > 0 && !successfulToolIds.has('filesystem.propose-edit')) {
+      const readOnlyProjectContext =
+        successfulToolIds.has('assistant.project-root') &&
+        !options.tools.modelTools().some(tool => tool.id === 'filesystem.propose-edit');
+      if (
+        filesystemToolResults.length > 0 &&
+        !successfulToolIds.has('filesystem.propose-edit') &&
+        !successfulToolIds.has('filesystem.propose-create') &&
+        !readOnlyProjectContext
+      ) {
         const finalResponse = filesystemResultResponse(
           filesystemToolResults,
           options.config.maxResponseChars,
@@ -522,6 +531,20 @@ async function runAgentTask(
             );
           }
         }
+        if (call.toolId === 'filesystem.propose-create') {
+          const proposedPath = args.path;
+          const absoluteParent = typeof proposedPath === 'string' &&
+            selectedProjectRoot !== undefined &&
+            !isAbsolute(proposedPath)
+            ? resolve(selectedProjectRoot, dirname(proposedPath))
+            : undefined;
+          if (!absoluteParent || !inspectedProjectDirectories.has(absoluteParent)) {
+            throw new ToolExecutionError(
+              'Inspect the existing destination folder from the selected project during this request before proposing a new file.',
+              'invalid-input',
+            );
+          }
+        }
         const result = await options.tools.execute(call.toolId, args, signal, context);
         const serialized = JSON.stringify(result);
         if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
@@ -558,7 +581,25 @@ async function runAgentTask(
             inspectedProjectFiles.add(filePath);
           }
         }
-        if (call.toolId.startsWith('filesystem.') && call.toolId !== 'filesystem.propose-edit') {
+        if (
+          ['filesystem.list-directory', 'filesystem.directory-tree'].includes(call.toolId) &&
+          typeof args.path === 'string' &&
+          selectedProjectRoot !== undefined
+        ) {
+          const directoryPath = resolve(args.path);
+          const relativePath = relative(selectedProjectRoot, directoryPath);
+          if (
+            !isAbsolute(relativePath) &&
+            relativePath !== '..' &&
+            !relativePath.startsWith(`..${sep}`)
+          ) {
+            inspectedProjectDirectories.add(directoryPath);
+          }
+        }
+        if (
+          call.toolId.startsWith('filesystem.') &&
+          !['filesystem.propose-edit', 'filesystem.propose-create'].includes(call.toolId)
+        ) {
           filesystemToolResults.push(`${call.toolId}: ${serialized}`);
         }
         if (failedToolId === call.toolId) {

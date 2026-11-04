@@ -101,11 +101,13 @@ chat-first shell. Retain, adapt, or replace them only when they serve the
 voice-first assistant and its visible, approval-based workflow. The existing
 approved project checks do not authorize a general shell or autonomous code
 execution. For a selected project, an explicit code-edit request can use
-read-only inspection and stage a full-file diff for an existing UTF-8 file up
-to 16 KiB. Each staged diff requires an independent apply/reject decision;
-staging does not write, and a changed source file invalidates its stale diff.
-This initial edit flow cannot create/delete files, edit known secret files or symlinks,
-run arbitrary commands, or automate the VS Code interface. The Project
+read-only inspection and stage full-file diffs for up to three UTF-8 files of
+16 KiB or less. It can replace an inspected existing file or propose a new
+file in an existing, inspected project folder. Each staged diff requires an
+independent apply/reject decision; staging does not write, stale edits fail
+closed, and a new file is never allowed to overwrite an existing destination.
+This bounded edit flow cannot create folders or delete files, edit known
+secret files or symlinks, run arbitrary commands, or automate the VS Code interface. The Project
 workspace can separately open the selected folder in the installed VS Code
 app and run only its listed, disclosed checks. Direct VS Code/Chrome launch
 and Chrome search requests require an in-app confirmation before invoking

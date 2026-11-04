@@ -17,7 +17,13 @@ import type {
   DesktopMemorySummary,
   DesktopSessionSummary,
 } from '../../../desktop/contracts.ts';
-import { detectDesktopAppAction, isCodeEditRequest, requestsVSCode } from '../../../desktop/action-intent.ts';
+import {
+  detectDesktopAppAction,
+  isCodeEditRequest,
+  isProjectContextRequest,
+  requestsNamedProjectOpen,
+  requestsVSCode,
+} from '../../../desktop/action-intent.ts';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
@@ -442,8 +448,12 @@ export function App() {
     try {
       const result = await window.vyomara.applyEditProposal(proposal.id);
       setEditProposals(current => current.filter(item => item.id !== proposal.id));
-      setEditProposalNotice(`Applied the approved edit to ${result.path}.`);
-      recordActivity(`Applied approved diff: ${result.path}`);
+      setEditProposalNotice(
+        result.status === 'created'
+          ? `Created the approved file ${result.path}.`
+          : `Applied the approved edit to ${result.path}.`,
+      );
+      recordActivity(`${result.status === 'created' ? 'Created approved file' : 'Applied approved diff'}: ${result.path}`);
     } catch (error) {
       recordActivity(`Edit failed: ${proposal.path}`);
       setEditProposalErrors(current => ({
@@ -496,6 +506,63 @@ export function App() {
       setAppActionProposal(appAction);
       setAppActionError(undefined);
       setAppActionResult(undefined);
+      return;
+    }
+
+    const requestedProjectName = requestsNamedProjectOpen(trimmed);
+    if (requestedProjectName) {
+      try {
+        const directory = await window.vyomara.selectCheckProject();
+        if (!directory) {
+          setMessages(current => [...current, {
+            id: Date.now() + 1,
+            role: 'assistant',
+            content: `Project selection was cancelled. Nothing was opened.`,
+          }]);
+          return;
+        }
+        const selectedProjectName = directory.split(/[\\/]/u).filter(Boolean).at(-1);
+        if (selectedProjectName?.toLocaleLowerCase() !== requestedProjectName.toLocaleLowerCase()) {
+          const message = `You asked to open "${requestedProjectName}", but selected "${selectedProjectName ?? 'an unnamed folder'}". Nothing was opened; choose the matching project folder.`;
+          setCheckProjectDirectory(directory);
+          setRequestError(message);
+          setMessages(current => [...current, {
+            id: Date.now() + 1,
+            role: 'assistant',
+            content: message,
+            failed: true,
+          }]);
+          return;
+        }
+        setCheckProjectDirectory(directory);
+        setAppActionProposal({ type: 'open-vscode', projectDirectory: directory });
+        setAppActionError(undefined);
+        setAppActionResult(undefined);
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : `The ${requestedProjectName} project folder could not be selected.`;
+        setCheckError(message);
+        setRequestError(message);
+        setMessages(current => [...current, {
+          id: Date.now() + 1,
+          role: 'assistant',
+          content: message,
+          failed: true,
+        }]);
+      }
+      return;
+    }
+
+    if (isProjectContextRequest(trimmed) && !checkProjectDirectory) {
+      const message = 'No project folder is selected yet. Open Project workspace, choose the project folder, then ask me to inspect it.';
+      setRequestError(message);
+      setMessages(current => [...current, {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: message,
+        failed: true,
+      }]);
       return;
     }
 
@@ -1491,12 +1558,13 @@ export function App() {
               </section>
             )}
             {editProposals.map(proposal => (
-              <section className="edit-proposal-card" key={proposal.id} aria-label={`Review code edit for ${proposal.path}`}>
+              <section className="edit-proposal-card" key={proposal.id} aria-label={`Review ${proposal.operation === 'create' ? 'new file' : 'code edit'} for ${proposal.path}`}>
                 <p className="eyebrow">PROJECT DIFF · AWAITING YOUR APPROVAL</p>
                 <h2>{proposal.path}</h2>
                 <p className="history-privacy">
-                  Vyom has not changed this file. Review the complete before/after diff. Applying it replaces only this
-                  existing file, and only after you approve this exact proposal.
+                  {proposal.operation === 'create'
+                    ? 'Vyom has not created this file. Review the complete diff. It will be created only after you approve this exact proposal.'
+                    : 'Vyom has not changed this file. Review the complete before/after diff. Applying it replaces only this existing file, and only after you approve this exact proposal.'}
                 </p>
                 <pre className="edit-proposal-diff">{proposal.diff}</pre>
                 {editProposalErrors[proposal.id] && (

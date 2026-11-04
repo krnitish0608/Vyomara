@@ -51,6 +51,83 @@ test('rejecting a proposal leaves the original project file untouched', async t 
   assert.equal(proposals.reject(staged.proposalId), false);
 });
 
+test('proposing a new file stages a diff without writing; explicit approval creates it', async t => {
+  const project = await createProject(t);
+  await mkdir(join(project, 'src'));
+  const path = join(project, 'src', 'feature.ts');
+  const proposals = new EditProposalManager(project);
+
+  const staged = await proposals.proposeCreate(
+    'src/feature.ts',
+    'export const feature = true;\n',
+    new AbortController().signal,
+  );
+  assert.equal(staged.status, 'awaiting-approval');
+  assert.equal(staged.path, 'src/feature.ts');
+  await assert.rejects(readFile(path, 'utf8'), { code: 'ENOENT' });
+
+  const [proposal] = proposals.list();
+  assert.ok(proposal);
+  assert.equal(proposal.operation, 'create');
+  assert.match(proposal.diff, /^--- \/dev\/null\n\+\+\+ b\/src\/feature\.ts/m);
+  assert.match(proposal.diff, /\+export const feature = true;/);
+
+  assert.deepEqual(await proposals.apply(staged.proposalId), {
+    path: 'src/feature.ts',
+    status: 'created',
+  });
+  assert.equal(await readFile(path, 'utf8'), 'export const feature = true;\n');
+  assert.deepEqual(proposals.list(), []);
+});
+
+test('new-file proposals reject existing paths, missing folders, and unsafe paths', async t => {
+  const project = await createProject(t);
+  await mkdir(join(project, 'src'));
+  await writeFile(join(project, 'src', 'existing.ts'), 'original\n');
+  const proposals = new EditProposalManager(project);
+  const signal = new AbortController().signal;
+
+  await assert.rejects(
+    proposals.proposeCreate('src/existing.ts', 'replacement\n', signal),
+    /already exists/i,
+  );
+  await assert.rejects(
+    proposals.proposeCreate('missing/new.ts', 'content\n', signal),
+    { code: 'ENOENT' },
+  );
+  await assert.rejects(
+    proposals.proposeCreate('../outside.ts', 'content\n', signal),
+    /relative path/i,
+  );
+  await assert.rejects(
+    proposals.proposeCreate('.env', 'TOKEN=private\n', signal),
+    /sensitive/i,
+  );
+  assert.deepEqual(proposals.list(), []);
+});
+
+test('new-file diffs mark content without a final newline', async t => {
+  const project = await createProject(t);
+  const proposals = new EditProposalManager(project);
+  await proposals.proposeCreate('new.ts', 'export {}', new AbortController().signal);
+
+  const [proposal] = proposals.list();
+  assert.ok(proposal);
+  assert.match(proposal.diff, /\+export \{\}\n\\ No newline at end of file$/);
+});
+
+test('applying a new-file proposal does not overwrite a file created after review', async t => {
+  const project = await createProject(t);
+  const path = join(project, 'new.ts');
+  const proposals = new EditProposalManager(project);
+  const staged = await proposals.proposeCreate('new.ts', 'proposed\n', new AbortController().signal);
+  await writeFile(path, 'user file\n');
+
+  await assert.rejects(proposals.apply(staged.proposalId), /already exists/i);
+  assert.equal(await readFile(path, 'utf8'), 'user file\n');
+  assert.equal(proposals.list().length, 1);
+});
+
 test('applying a stale proposal fails without overwriting newer user changes', async t => {
   const project = await createProject(t);
   await writeFile(join(project, 'file.ts'), 'before\n');

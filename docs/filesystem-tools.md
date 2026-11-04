@@ -6,6 +6,17 @@ with the existing tool executor as `read` effects, so every invocation passes
 through the policy gateway. No filesystem write, edit, delete, move, rename,
 shell, or process-execution tool is registered.
 
+The desktop has a separate, explicit project-edit workflow when a project is
+selected and the user asks for a code change. It can stage up to three
+full-file replacements or new files (maximum 16 KiB each); new files are
+limited to existing project folders inspected during that request. Staging
+does not write. Vyomara displays each complete diff, and every file requires
+its own apply/reject decision. Replacements fail if the source changed after
+review, and new files fail if the destination became occupied. Folder creation,
+file deletion, secret-file edits, and arbitrary commands are not supported.
+See [ADR-0014](./adr/0014-approved-project-edit-proposals.md) for the approval
+and filesystem safety boundary.
+
 ## Allowed roots
 
 Filesystem access is denied unless one or more roots are explicitly configured.

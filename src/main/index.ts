@@ -54,7 +54,7 @@ import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 import { EditProposalError, EditProposalManager } from '../desktop/edit-proposals.ts';
-import { isCodeEditRequest } from '../desktop/action-intent.ts';
+import { isCodeEditRequest, isProjectContextRequest } from '../desktop/action-intent.ts';
 
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
@@ -284,9 +284,13 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   if (!config) throw new Error('Application configuration is unavailable.');
   const request = parseDesktopChatRequest(input, config.maxInputChars);
   const isProjectEdit = isCodeEditRequest(request.prompt);
+  const isProjectContext = isProjectContextRequest(request.prompt);
   const selectedProjectDirectory = checkProjectDirectory;
   if (isProjectEdit && !selectedProjectDirectory) {
     throw new Error('Select a project folder in Project workspace before asking Vyom to edit code. No files were changed.');
+  }
+  if (isProjectContext && !selectedProjectDirectory) {
+    throw new Error('Select a project folder in Project workspace before asking Vyom to inspect it.');
   }
   if (pendingEditProposals) {
     throw new Error('Review, apply, or reject the pending project diff before starting another request.');
@@ -297,6 +301,9 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   if (activeApplicationAction) throw new Error('Wait for the application action to finish before starting a request.');
 
   const controller = new AbortController();
+  const projectDirectoryForRequest = isProjectEdit || isProjectContext
+    ? selectedProjectDirectory
+    : undefined;
   const editProposals = isProjectEdit && selectedProjectDirectory
     ? new EditProposalManager(selectedProjectDirectory)
     : undefined;
@@ -326,6 +333,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
           });
         }
       },
+      projectDirectoryForRequest,
     );
     if (editProposals && editProposals.list().length > 0) pendingEditProposals = editProposals;
     return result;
@@ -519,7 +527,7 @@ ipcMain.handle('vyomara:checks-project-select', async () => {
     throw new Error('Wait for the active operation to finish before selecting a project.');
   }
   const options: OpenDialogOptions = {
-    title: 'Choose a project for approved checks',
+    title: 'Select a project folder',
     buttonLabel: 'Select project',
     properties: ['openDirectory'],
   };

@@ -16,34 +16,39 @@ approval.
   the desktop Project workspace is active.
 - That request's filesystem tools are scoped to that selected root, even if
   broader read-only roots have been granted elsewhere.
-- The model can inspect files and stage a complete replacement for an existing,
-  regular UTF-8 file no larger than 16 KiB. It cannot create or delete files,
-  and sensitive environment/key files, symlinks, and multiply-linked files are
-  rejected.
+- The model can inspect files and stage a complete replacement for an existing
+  regular UTF-8 file or propose a new UTF-8 file in an existing, inspected
+  project folder. Files are limited to 16 KiB. It cannot create folders or
+  delete files, and sensitive environment/key files, symlinks, and
+  multiply-linked files are rejected.
 - Vyomara displays a complete before/after diff. Staging never changes a file.
-  Applying requires a separate click for that exact proposal; rejection leaves
-  the file unchanged. Before apply, the original content is re-read and
-  compared with the proposal's recorded hash so stale diffs fail closed.
+  Applying requires a separate click for each exact proposal; rejection leaves
+  project files unchanged. Before applying a replacement, the original content
+  is re-read and compared with the proposal's recorded hash. Before creating a
+  file, the destination is checked again and created exclusively so an
+  intervening file is never overwritten.
 - An approved replacement is written through a same-directory temporary file
-  and atomic rename. The project is not automatically executed. The user can
-  separately run one of the fixed, disclosed project checks or open the
-  selected folder in the installed VS Code app.
+  and atomic rename. A new file is staged in that same folder and linked into
+  place only if its path remains unoccupied. The project is not automatically
+  executed. The user can separately run one of the fixed, disclosed project
+  checks or open the selected folder in the installed VS Code app.
 - Pending proposals are in-memory only and must be resolved before another
   request or project switch. A restart discards pending proposals without
   changing project files.
 
 ## Consequences
 
-This is a deliberately bounded first coding workflow. It does not provide
-multi-file patching beyond three proposals per request, file creation/deletion,
-large-file edits, arbitrary shell access, generic IDE automation, or automatic
-test execution. Project file contents and model output remain untrusted. A
-proposal is not a completed change until the user applies it and sees the
-success status.
+This is a deliberately bounded first coding workflow. It supports at most three
+independently approved file proposals per request, but not deletion, folder
+creation, large-file edits, arbitrary shell access, generic IDE automation, or
+automatic test execution. Project file contents and model output remain
+untrusted. A proposal is not a completed change until the user applies it and
+sees the success status.
 
 ## Verification
 
-Unit and agent tests verify that the exact file is read before a proposal is
-staged, that staging and rejection do not modify it, that explicit approval
-applies it, and that traversal, symlinks, sensitive files, binaries, oversized
-content, and stale files are rejected.
+Unit and agent tests verify that existing files and destination folders are
+inspected before proposals are staged, that staging and rejection do not
+modify the project, that explicit approval applies or creates the reviewed
+file, and that traversal, symlinks, sensitive files, binaries, oversized
+content, occupied destinations, and stale files are rejected.

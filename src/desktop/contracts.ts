@@ -21,11 +21,12 @@ export interface DesktopEditProposal {
   readonly id: string;
   readonly path: string;
   readonly diff: string;
+  readonly operation: 'replace' | 'create';
 }
 
 export interface DesktopEditApplyResult {
   readonly path: string;
-  readonly status: 'applied';
+  readonly status: 'applied' | 'created';
 }
 
 export interface DesktopProviderStatus {

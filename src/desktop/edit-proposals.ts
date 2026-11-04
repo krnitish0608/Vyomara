@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, realpath, rename, unlink } from 'node:fs/promises';
+import { lstat, open, realpath, rename, link, unlink } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export interface DesktopEditProposal {
   readonly id: string;
   readonly path: string;
   readonly diff: string;
+  readonly operation: 'replace' | 'create';
 }
 
 export class EditProposalError extends Error {
@@ -18,7 +19,7 @@ export class EditProposalError extends Error {
 
 interface PendingEdit {
   readonly proposal: DesktopEditProposal;
-  readonly originalHash: string;
+  readonly originalHash?: string;
   readonly proposedContent: string;
   readonly mode: number;
 }
@@ -58,6 +59,25 @@ function makeDiff(path: string, before: string, after: string): string {
   ].join('\n');
 }
 
+function makeCreationDiff(path: string, content: string): string {
+  if (content === '') {
+    return `--- /dev/null\n+++ b/${path}`;
+  }
+  const endsWithNewline = content.endsWith('\n');
+  const lines = content.split('\n');
+  if (endsWithNewline) lines.pop();
+  return [
+    '--- /dev/null',
+    `+++ b/${path}`,
+    ...lines.map((line, index) => {
+      const marker = index === lines.length - 1 && !endsWithNewline
+        ? '\n\\ No newline at end of file'
+        : '';
+      return `+${line}${marker}`;
+    }),
+  ].join('\n');
+}
+
 function validateRelativePath(value: unknown): value is string {
   return typeof value === 'string' &&
     value.length > 0 &&
@@ -67,6 +87,48 @@ function validateRelativePath(value: unknown): value is string {
     !/[\u0000-\u001f\u007f]/u.test(value) &&
     !value.includes('\\') &&
     value.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+}
+
+async function validateNewProjectFile(root: string, path: string): Promise<string> {
+  if (!validateRelativePath(path)) throw new EditProposalError('Use a relative path inside the selected project.');
+  if (isSensitiveFile(path)) throw new EditProposalError('Sensitive environment and key files cannot be edited.');
+
+  const canonicalRoot = await realpath(root);
+  if (canonicalRoot !== root) throw new EditProposalError('The selected project folder changed; select it again.');
+  const absolutePath = resolve(root, ...path.split('/'));
+  const relativePath = relative(root, absolutePath);
+  if (
+    relativePath === '' ||
+    isAbsolute(relativePath) ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`)
+  ) {
+    throw new EditProposalError('The requested file is outside the selected project.');
+  }
+
+  let current = root;
+  const segments = relativePath.split(sep);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    current = resolve(current, segments[index]!);
+    const stats = await lstat(current);
+    if (stats.isSymbolicLink()) throw new EditProposalError('Symbolic links are not allowed in project edit paths.');
+    if (!stats.isDirectory()) throw new EditProposalError('A project path component is not a directory.');
+  }
+
+  try {
+    await lstat(absolutePath);
+  } catch (error) {
+    if (
+      typeof error !== 'object' ||
+      error === null ||
+      !('code' in error) ||
+      error.code !== 'ENOENT'
+    ) {
+      throw error;
+    }
+    return absolutePath;
+  }
+  throw new EditProposalError('A file already exists at this path; request an edit instead of a new file.');
 }
 
 function isSensitiveFile(path: string): boolean {
@@ -191,7 +253,7 @@ export class EditProposalManager {
     if (signal.aborted) throw new EditProposalError('The project edit proposal was cancelled.');
 
     const id = randomUUID();
-    const proposal = { id, path, diff: makeDiff(path, current.content, content) };
+    const proposal = { id, path, diff: makeDiff(path, current.content, content), operation: 'replace' as const };
     this.#pending.set(id, {
       proposal,
       originalHash: current.hash,
@@ -201,17 +263,57 @@ export class EditProposalManager {
     return { proposalId: id, path, status: 'awaiting-approval' };
   }
 
-  async apply(id: unknown): Promise<{ readonly path: string; readonly status: 'applied' }> {
+  async proposeCreate(path: unknown, content: unknown, signal: AbortSignal): Promise<{
+    readonly proposalId: string;
+    readonly path: string;
+    readonly status: 'awaiting-approval';
+  }> {
+    if (signal.aborted) throw new EditProposalError('The project file proposal was cancelled.');
+    if (this.#pending.size >= maximumProposals) {
+      throw new EditProposalError(`A request can propose at most ${maximumProposals} project files.`);
+    }
+    if (!validateRelativePath(path)) throw new EditProposalError('Use a relative path inside the selected project.');
+    if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > maximumFileBytes) {
+      throw new EditProposalError(`Proposed file content must be text no larger than ${maximumFileBytes} bytes.`);
+    }
+    if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(content)) {
+      throw new EditProposalError('Binary or control-character content cannot be proposed.');
+    }
+    if ([...this.#pending.values()].some(item => item.proposal.path === path)) {
+      throw new EditProposalError('This file already has a pending proposal in the current request.');
+    }
+
+    await validateNewProjectFile(this.#projectDirectory, path);
+    if (signal.aborted) throw new EditProposalError('The project file proposal was cancelled.');
+
+    const id = randomUUID();
+    const proposal = { id, path, diff: makeCreationDiff(path, content), operation: 'create' as const };
+    this.#pending.set(id, {
+      proposal,
+      proposedContent: content,
+      mode: 0o644,
+    });
+    return { proposalId: id, path, status: 'awaiting-approval' };
+  }
+
+  async apply(id: unknown): Promise<{
+    readonly path: string;
+    readonly status: 'applied' | 'created';
+  }> {
     if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
       throw new EditProposalError('The selected edit proposal is invalid.');
     }
     const pending = this.#pending.get(id);
     if (!pending) throw new EditProposalError('This edit proposal is no longer pending.');
 
-    const current = await readProjectFile(this.#projectDirectory, pending.proposal.path);
-    if (current.hash !== pending.originalHash) {
+    const current = pending.proposal.operation === 'replace'
+      ? await readProjectFile(this.#projectDirectory, pending.proposal.path)
+      : undefined;
+    if (current && current.hash !== pending.originalHash) {
       throw new EditProposalError('The file changed after this diff was created. Reject it and request a fresh proposal.');
     }
+    const targetPath = current?.absolutePath ??
+      await validateNewProjectFile(this.#projectDirectory, pending.proposal.path);
 
     const temporaryPath = resolve(
       this.#projectDirectory,
@@ -230,13 +332,21 @@ export class EditProposalManager {
       await temporaryFile.close();
       closed = true;
 
-      const latest = await readProjectFile(this.#projectDirectory, pending.proposal.path);
-      if (latest.hash !== pending.originalHash) {
-        throw new EditProposalError('The file changed while the approved edit was being applied; no replacement was made.');
+      if (current) {
+        const latest = await readProjectFile(this.#projectDirectory, pending.proposal.path);
+        if (latest.hash !== pending.originalHash) {
+          throw new EditProposalError('The file changed while the approved edit was being applied; no replacement was made.');
+        }
+        await rename(temporaryPath, targetPath);
+      } else {
+        await link(temporaryPath, targetPath);
+        await unlink(temporaryPath);
       }
-      await rename(temporaryPath, current.absolutePath);
       this.#pending.delete(id);
-      return { path: pending.proposal.path, status: 'applied' };
+      return {
+        path: pending.proposal.path,
+        status: current ? 'applied' : 'created',
+      };
     } catch (error) {
       if (!closed) await temporaryFile.close();
       try {
