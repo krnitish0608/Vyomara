@@ -1,6 +1,11 @@
 # ADR-0013: Voice-first assistant operating existing macOS apps
 
-- **Status:** Accepted
+- **Status:** Superseded
+
+> Historical decision. The current direction is in
+> [product-direction.md](../product-direction.md); manual project selection,
+> project editing, settings, and direct app integrations are not part of the
+> current desktop workflow.
 
 ## Context and problem
 

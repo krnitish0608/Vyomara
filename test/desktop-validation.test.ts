@@ -2,14 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   parseDesktopChatRequest,
-  parseDesktopDeleteAllRequest,
-  parseDesktopFilesystemRoot,
-  parseDesktopMemoryDeleteRequest,
-  parseDesktopMemoryId,
-  parseDesktopMemorySaveRequest,
-  parseDesktopOllamaModelName,
-  parseDesktopProviderSettings,
-  parseDesktopRestoreRequest,
   parseDesktopSessionDeleteRequest,
   parseDesktopSessionId,
 } from '../src/desktop/validation.ts';
@@ -48,40 +40,6 @@ test('desktop IPC accepts only UUID session identifiers', () => {
   }
 });
 
-test('desktop IPC accepts only local providers and bounded Ollama model names', () => {
-  assert.deepEqual(
-    parseDesktopProviderSettings({ provider: 'ollama', model: 'llama3.2:latest' }),
-    { provider: 'ollama', model: 'llama3.2:latest' },
-  );
-  assert.deepEqual(
-    parseDesktopProviderSettings({ provider: 'placeholder', model: 'qwen2.5-coder' }),
-    { provider: 'placeholder', model: 'qwen2.5-coder' },
-  );
-  for (const invalid of [
-    null,
-    {},
-    { provider: 'remote', model: 'model' },
-    { provider: 'ollama', model: 'model name' },
-    { provider: 'ollama', model: 'x'.repeat(129) },
-    { provider: 'ollama', model: 'model', extra: true },
-  ]) {
-    assert.throws(
-      () => parseDesktopProviderSettings(invalid),
-      /Provider settings|supported provider|Ollama model names/,
-    );
-  }
-});
-
-test('desktop IPC validates Ollama model availability check input', () => {
-  assert.equal(parseDesktopOllamaModelName(' qwen2.5-coder:latest '), 'qwen2.5-coder:latest');
-  for (const invalid of [null, {}, '', 'model name', 'https://example.com', 'x'.repeat(129)]) {
-    assert.throws(
-      () => parseDesktopOllamaModelName(invalid),
-      /Ollama model name|Ollama model names/,
-    );
-  }
-});
-
 test('desktop IPC requires an exact DELETE confirmation for reviewed session history', () => {
   assert.deepEqual(
     parseDesktopSessionDeleteRequest({ id: validSessionId, confirmation: 'DELETE' }),
@@ -98,89 +56,6 @@ test('desktop IPC requires an exact DELETE confirmation for reviewed session his
     assert.throws(
       () => parseDesktopSessionDeleteRequest(invalid),
       /Session deletion request|Session request|type DELETE/,
-    );
-  }
-});
-
-test('desktop IPC requires exact DELETE ALL confirmation with no extra fields', () => {
-  assert.deepEqual(
-    parseDesktopDeleteAllRequest({ confirmation: 'DELETE ALL' }),
-    { confirmation: 'DELETE ALL' },
-  );
-  for (const invalid of [
-    null,
-    [],
-    {},
-    { confirmation: 'DELETE' },
-    { confirmation: 'delete all' },
-    { confirmation: 'DELETE ALL', extra: true },
-  ]) {
-    assert.throws(
-      () => parseDesktopDeleteAllRequest(invalid),
-      /Delete-all request|Type DELETE ALL/,
-    );
-  }
-});
-
-test('desktop IPC requires exact RESTORE confirmation with no extra fields', () => {
-  assert.deepEqual(parseDesktopRestoreRequest({ confirmation: 'RESTORE' }), {
-    confirmation: 'RESTORE',
-  });
-  for (const invalid of [
-    null,
-    [],
-    {},
-    { confirmation: 'restore' },
-    { confirmation: 'RESTORE', path: '/unexpected.sqlite' },
-  ]) {
-    assert.throws(
-      () => parseDesktopRestoreRequest(invalid),
-      /Restore request|type RESTORE/,
-    );
-  }
-});
-
-test('desktop IPC accepts only bounded absolute filesystem roots', () => {
-  assert.equal(parseDesktopFilesystemRoot('/Users/test/Documents'), '/Users/test/Documents');
-  for (const invalid of [null, undefined, {}, '', 'relative/path', '/bad\0path', ' '.repeat(4097)]) {
-    assert.throws(() => parseDesktopFilesystemRoot(invalid), /Filesystem permission request is invalid/);
-  }
-});
-
-test('desktop IPC requires exact SAVE confirmation for reviewed memory content', () => {
-  assert.deepEqual(
-    parseDesktopMemorySaveRequest({ content: 'Keep my answer concise.', confirmation: 'SAVE' }),
-    { content: 'Keep my answer concise.', confirmation: 'SAVE' },
-  );
-  for (const invalid of [
-    null,
-    {},
-    { content: 'private note' },
-    { content: 'private note', confirmation: 'save' },
-    { content: '  ', confirmation: 'SAVE' },
-    { content: 'x'.repeat(32_001), confirmation: 'SAVE' },
-    { content: 'private note', confirmation: 'SAVE', unexpected: true },
-  ]) {
-    assert.throws(() => parseDesktopMemorySaveRequest(invalid), /Memory save request|type SAVE/);
-  }
-});
-
-test('desktop IPC requires a valid memory ID and exact DELETE confirmation', () => {
-  assert.equal(parseDesktopMemoryId(validSessionId), validSessionId);
-  assert.deepEqual(
-    parseDesktopMemoryDeleteRequest({ id: validSessionId, confirmation: 'DELETE' }),
-    { id: validSessionId, confirmation: 'DELETE' },
-  );
-  for (const invalid of [
-    null,
-    {},
-    { id: validSessionId, confirmation: 'delete' },
-    { id: '../outside', confirmation: 'DELETE' },
-    { id: validSessionId, confirmation: 'DELETE', extra: true },
-  ]) {
-    assert.throws(
-      () => parseDesktopMemoryDeleteRequest(invalid),
-      /Memory deletion request|Memory request|type DELETE/,
     );
   }
 });

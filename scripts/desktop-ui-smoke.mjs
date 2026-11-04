@@ -72,7 +72,21 @@ async function waitFor(operation, description, timeoutMs = 15_000) {
 async function send(method, params = {}) {
   const id = ++nextMessageId;
   return new Promise((resolveResponse, rejectResponse) => {
-    pending.set(id, { resolve: resolveResponse, reject: rejectResponse });
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      const request = method === 'Runtime.evaluate' ? ` (${params.expression})` : '';
+      rejectResponse(new Error(`DevTools request timed out: ${method}${request}`));
+    }, 10_000);
+    pending.set(id, {
+      resolve: response => {
+        clearTimeout(timer);
+        resolveResponse(response);
+      },
+      reject: error => {
+        clearTimeout(timer);
+        rejectResponse(error);
+      },
+    });
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
@@ -109,17 +123,6 @@ async function pressKey(key, code, windowsVirtualKeyCode) {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
 }
 
-async function tabUntil(elementId) {
-  for (let count = 0; count < 60; count++) {
-    if (await evaluate(`document.activeElement?.id === ${JSON.stringify(elementId)}`)) return;
-    await pressKey('Tab', 'Tab', 9);
-  }
-  const state = await evaluate(`({
-    targetExists: Boolean(document.getElementById(${JSON.stringify(elementId)})),
-    active: document.activeElement?.outerHTML?.slice(0, 160),
-  })`);
-  throw new Error(`Keyboard navigation did not reach "${elementId}": ${JSON.stringify(state)}`);
-}
 
 try {
   const target = await waitFor(async () => {
@@ -613,54 +616,6 @@ try {
       document.body.scrollHeight <= document.body.clientHeight`),
     'longer conversations do not create an outer page scrollbar',
   );
-  await evaluate('document.getElementById("prompt").focus()');
-  await typeText('Open VS Code');
-  await pressKey('Enter', 'Enter', 13);
-  await waitFor(
-    () => evaluate('document.querySelector(".app-action-approval")?.innerText.includes("Open Visual Studio Code")'),
-    'showing explicit approval before opening an application',
-  );
-  assert(
-    await evaluate('document.querySelector(".tool-execution-state")?.innerText.includes("Waiting for your application approval")'),
-    'current task status truthfully reflects a pending app approval',
-  );
-  assert(
-    await evaluate(`document.querySelector('.app-action-approval')?.innerText.includes('No files will be changed') &&
-      [...document.querySelectorAll('.app-action-approval button')].some(button => button.innerText === 'Open app')`),
-    'VS Code launch requires explicit review and approval',
-  );
-  await clickButton('Cancel');
-  await waitFor(
-    () => evaluate('document.querySelector(".app-action-approval") === null'),
-    'rejecting the proposed VS Code launch',
-  );
-  assert(
-    await evaluate('document.body.innerText.includes("Cancelled. No application was opened.")'),
-    'rejecting an app action performs no launch',
-  );
-  assert(
-    await evaluate(`!document.querySelector('.message-speak') &&
-      ![...document.querySelectorAll('.message-content button')].some(button =>
-        button.innerText.includes('Speak aloud'))`),
-    'received assistant messages do not show a Speak aloud control',
-  );
-
-  await evaluate('document.getElementById("prompt").focus()');
-  await typeText('Open Chrome and search for Vyomara privacy');
-  await pressKey('Enter', 'Enter', 13);
-  await waitFor(
-    () => evaluate('document.querySelector(".app-action-approval")?.innerText.includes("Vyomara privacy")'),
-    'showing the exact external search query for approval',
-  );
-  assert(
-    await evaluate(`document.querySelector('.app-action-approval')?.innerText.includes('send this search query to Google over the internet')`),
-    'Chrome search discloses that the query leaves the device',
-  );
-  await clickButton('Cancel');
-  await waitFor(
-    () => evaluate('document.querySelector(".app-action-approval") === null'),
-    'rejecting the proposed Chrome search',
-  );
   await pressKey('Tab', 'Tab', 9);
   const initialFocus = await evaluate(`({
     outline: getComputedStyle(document.activeElement).outlineStyle,
@@ -668,147 +623,37 @@ try {
   })`);
   assert(initialFocus.outline === 'solid' && initialFocus.width === '2px', 'keyboard focus has a visible outline');
 
-  for (const [label, panelId] of [
-    ['Settings', 'settings-panel'],
-    ['History', 'history-panel'],
-    ['Permissions', 'permissions-panel'],
-    ['Memory', 'memory-panel'],
-    ['Project workspace', 'checks-panel'],
-  ]) {
-    await clickButton(label);
-    await waitFor(() => evaluate(`document.getElementById(${JSON.stringify(panelId)}) !== null`), `opening ${label}`);
-    assert(
-      await evaluate(`      document.activeElement?.textContent.trim() === ${JSON.stringify(label)}`),
-      `${label} opens with focus on its heading`,
-    );
-    assert(
-      await evaluate(`(() => {
-        const trigger = [...document.querySelectorAll('button')].find(button => button.innerText.trim().endsWith(${JSON.stringify(label)}));
-        return trigger?.getAttribute('aria-expanded') === 'true' &&
-          trigger.getAttribute('aria-controls') === ${JSON.stringify(panelId)};
-      })()`),
-      `${label} trigger exposes expanded state and panel relationship`,
-    );
-    if (label === 'Project workspace') {
-      assert(
-        await evaluate(`['Run pnpm test', 'Run pnpm typecheck', 'Run pnpm build:desktop', 'Run pnpm test:desktop-ui']
-          .every(label => [...document.querySelectorAll('button')]
-            .find(button => button.innerText.trim() === label)?.disabled)`),
-        'fixed project checks stay disabled until a project folder is selected',
-      );
-      assert(
-        await evaluate(`document.body.innerText.includes('Every full diff needs your explicit approval') &&
-          [...document.querySelectorAll('#checks-panel button')].find(button => button.innerText.includes('Open selected project in VS Code'))?.disabled`),
-        'project edits require explicit approval and VS Code stays disabled without a selected folder',
-      );
-      assert(
-        await evaluate('document.querySelector("#checks-panel input, #checks-panel textarea") === null'),
-        'project checks do not expose free-form shell input',
-      );
-    }
-    await pressKey('Escape', 'Escape', 27);
-    await waitFor(
-      () => evaluate('document.querySelector(\'button[aria-expanded="true"]\') === null'),
-      `closing ${label} with Escape`,
-    );
-    assert(
-      (await evaluate('document.activeElement?.innerText.trim()')).endsWith(label),
-      `${label} Escape restores focus to its toolbar trigger`,
-    );
-  }
-
-  await clickButton('Settings');
-  await waitFor(() => evaluate('document.getElementById("settings-panel") !== null'), 'reopening Settings');
-  const voiceSettingsDisclosure = await evaluate(`({
-    hasSection: document.querySelector('#settings-panel')?.innerText.includes('Offline voice'),
-    hasKillSwitch: document.querySelector('#settings-panel')?.innerText.includes('Listening Off stops the microphone immediately'),
-  })`);
-  assert(
-    voiceSettingsDisclosure.hasSection && voiceSettingsDisclosure.hasKillSwitch,
-    'voice settings disclose local model status and the listening kill switch without starting the microphone',
-  );
-  await tabUntil('model-name');
-  const settingsInputFocus = await evaluate(`({
-    outline: getComputedStyle(document.activeElement).outlineStyle,
-    width: getComputedStyle(document.activeElement).outlineWidth,
-  })`);
-  assert(
-    settingsInputFocus.outline === 'solid' && settingsInputFocus.width === '2px',
-    'Settings text input retains its keyboard focus indicator',
-  );
-  await pressKey('Escape', 'Escape', 27);
-
-  await clickButton('Memory');
-  await waitFor(() => evaluate('document.getElementById("memory-panel") !== null'), 'reopening Memory');
-  await waitFor(
-    () => evaluate('document.getElementById("memory-draft")?.disabled === false'),
-    'waiting for the memory panel controls',
-  );
-  await tabUntil('memory-draft');
-  const memoryInputFocus = await evaluate(`({
-    outline: getComputedStyle(document.activeElement).outlineStyle,
-    width: getComputedStyle(document.activeElement).outlineWidth,
-  })`);
-  assert(
-    memoryInputFocus.outline === 'solid' && memoryInputFocus.width === '2px',
-    'Memory textarea has a visible keyboard focus indicator',
-  );
-  await pressKey('Escape', 'Escape', 27);
-
+  const removedSections = await evaluate(`['Memory', 'Permissions', 'Project workspace', 'Settings']
+    .every(label => ![...document.querySelectorAll('.side-nav button')]
+      .some(button => button.innerText.trim() === label))`);
+  assert(removedSections, 'removed configuration and project sections are absent from navigation');
   await clickButton('History');
-  await waitFor(() => evaluate('document.getElementById("history-panel") !== null'), 'reopening History');
-  await waitFor(
-    () => evaluate(`(() => {
-      const panel = document.getElementById('history-panel');
-      const backupButton = [...document.querySelectorAll('button')]
-        .find(button => button.textContent.trim() === 'Create local backup');
-      return Boolean(panel?.innerText.includes('unencrypted') && backupButton);
-    })()`),
-    'loading backup action and disclosure',
-  );
+  await waitFor(() => evaluate('document.getElementById("history-panel") !== null'), 'opening History');
   assert(
-    true,
-    'History exposes manual backup with an unencrypted-data disclosure',
+    await evaluate('document.activeElement?.textContent.trim() === "History"'),
+    'History opens with focus on its heading',
   );
   assert(
     await evaluate(`(() => {
-      const panel = document.getElementById('history-panel');
-      const selectButton = [...document.querySelectorAll('button')]
-        .find(button => button.textContent.trim() === 'Select backup to review…');
-      return Boolean(panel?.innerText.includes('Restore replaces all current local conversations') && selectButton);
+      const trigger = [...document.querySelectorAll('button')].find(button => button.innerText.trim().endsWith('History'));
+      return trigger?.getAttribute('aria-expanded') === 'true' &&
+        trigger.getAttribute('aria-controls') === 'history-panel';
     })()`),
-    'History exposes the backup-selection restore flow with a replacement disclosure',
+    'History trigger exposes expanded state and panel relationship',
   );
-  await tabUntil('history-delete-all-confirm');
-  await typeText('DELETE');
-  assert(
-    await evaluate(`[...document.querySelectorAll('button')]
-      .find(button => button.innerText.trim() === 'Delete all conversations and memories')?.disabled`),
-    'delete-all stays disabled until the exact confirmation is entered',
-  );
-  await evaluate('document.getElementById("history-delete-all-confirm").select()');
-  await typeText('DELETE ALL');
+  await pressKey('Escape', 'Escape', 27);
   await waitFor(
-    () => evaluate(`[...document.querySelectorAll('button')]
-      .find(button => button.innerText.trim() === 'Delete all conversations and memories')?.disabled === false`),
-    'enabling confirmed delete-all',
+    () => evaluate(`document.querySelector('button[aria-expanded="true"]') === null`),
+    'closing History with Escape',
   );
-  await clickButton('Delete all conversations and memories');
-  const deleteAllState = await waitFor(
-    () => evaluate(`(() => {
-      const notice = [...document.querySelectorAll('#history-panel [role="status"]')]
-        .map(element => element.innerText)
-        .find(text => text.includes('Deleted '));
-      const error = [...document.querySelectorAll('#history-panel [role="alert"]')]
-        .map(element => element.innerText)
-        .find(Boolean);
-      return notice ? { notice } : error ? { error } : undefined;
-    })()`),
-    'completing empty delete-all through IPC',
-  );
+  const historyRestoredFocus = await evaluate(`({
+    tag: document.activeElement?.tagName,
+    text: document.activeElement?.innerText,
+    expanded: document.activeElement?.getAttribute('aria-expanded'),
+  })`);
   assert(
-    deleteAllState.notice?.startsWith('Deleted 1 saved conversation(s) and 0 saved memories.') === true,
-    `confirmed delete-all completes through the desktop IPC bridge: ${JSON.stringify(deleteAllState)}`,
+    historyRestoredFocus.text?.trim().endsWith('History') === true,
+    `History Escape restores focus to its toolbar trigger: ${JSON.stringify(historyRestoredFocus)}`,
   );
 
   await send('Emulation.setEmulatedMedia', {

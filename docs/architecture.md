@@ -2,35 +2,19 @@
 
 ## Status
 
-This architecture blueprint was created in Phase 3 and is updated selectively
-to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
-adapter, tool registry/executor/policy gateway, and read-only filesystem
-tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
-local session history and separately managed explicit memory through SQLite.
-Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
-local session-history browser and continuation from the desktop UI. Phase 12
-added a local Ollama reachability check and persistent, revocable desktop
-filesystem roots. Phase 13 adds explicit desktop memory management. Phase 14
-adds review-before-delete controls for desktop session history. Phase 15 adds
-desktop settings for the local provider and Ollama model tag. Phase 16 adds an
-explicit read-only check for the configured model's local availability.
-Phase 17 adds a reset for the saved provider/model overrides. Phase 18 groups
-provider identity, Ollama reachability, and selected-model availability in
-the desktop Settings status view. Phase 19 improves keyboard focus, escape-key
-panel dismissal, and reduced-motion handling in the desktop shell. Phase 20
-adds explicit per-conversation JSON export to a new owner-only file, including
-the complete stored history. Phase 21 adds a repeatable Electron UI smoke
-check for keyboard navigation and reduced-motion behavior. Phase 22 adds
-explicit per-memory JSON export to new owner-only files. Phase 23 adds an
-exact-confirmation action to delete all saved conversations and memories
-without resetting provider settings or filesystem permissions. Phase 24 adds
-manual owner-only full-database backups. Phase 25 adds validated restore with
-an explicit confirmation and a pre-restore safety snapshot. The diagram and
-component boundaries also describe proposed or future components; their
-implementation status is called out below. Decisions labeled **Accepted** in
-the [ADR index](./adr/README.md) are supported by current project requirements
-or explicit project direction. Decisions labeled **Proposed** still need user
-confirmation.
+This architecture blueprint was created in Phase 3 and contains historical
+design decisions. The current desktop baseline is intentionally smaller:
+Assistant, History, chat, voice input, cancellation, and task activity. Desktop
+chat does not expose filesystem tools, project selection/editing, memory
+management, filesystem permission controls, or provider settings. The CLI
+continues to use its separate configured capabilities. Existing local data is
+not deleted when desktop controls are removed.
+
+The diagram and older phase notes below describe the previous target
+architecture, not a feature inventory for the current desktop app. Update
+those designs only when a future voice-first workflow is defined. Decisions
+labeled **Accepted** in the [ADR index](./adr/README.md) may also be historical
+and should not be treated as an instruction to re-add a removed UI.
 
 ## Architecture at a glance
 
@@ -76,50 +60,28 @@ flowchart TD
 ```
 
 The CLI stores local session history, supports review, continuation, and
-deletion, and offers separate explicitly confirmed memory operations. The
-desktop shell uses the same application service and exposes chat, cancellation,
-provider configuration status, request-scoped activity, and filtered session
-history through a restricted preload bridge. Desktop history entries can be
-reviewed and deleted only after a typed confirmation; deleting the active
-history entry also clears it from the current view. A reviewed conversation
-can be explicitly exported as JSON to a new owner-only file; exports include
-complete raw history and are not encrypted. Reviewed memories can likewise be
-exported individually as unencrypted JSON files with owner-only permissions.
-Provider configuration
-is editable between the local Ollama adapter and deterministic placeholder;
-the model tag and provider choice are stored in the local app settings table.
-The user can remove those two overrides to restore the current process
-environment defaults; unrelated app settings and filesystem permissions are
-preserved.
-The Ollama endpoint remains environment-configured and loopback-only. Provider
-configuration status is separate from reachability. The desktop can make
-explicit, loopback-only checks for service reachability and whether the
-selected model appears in Ollama's installed model list; both checks use a
-bounded GET to `/api/tags` and never download models. Memory is not currently
-injected into model context. Allowed filesystem roots are
-selected and revoked through the native folder picker, then persisted in the
-owner-only SQLite database. Memory content can be saved only after exact
-content review and typed confirmation, inspected, and deleted after review
-and typed confirmation; it is not automatically injected into requests. CLI
-roots are configured through environment
-variables. The desktop provides explicit per-file review and approval for
-bounded project edit proposals; other side effects remain denied. The current Ollama
-adapter advertises explicitly registered read-only tools and accepts
-structured tool calls. Every requested call still passes through executor
-validation and the policy gateway. Invalid arguments receive at most one
-structured correction opportunity through the same executor and policy path.
+deletion, and offers its separate memory and configured filesystem
+capabilities. The desktop bridge is narrower: it exposes provider status,
+chat/cancellation, speech, activity, and session history. Desktop chat creates
+its tool registry without filesystem tools. History supports review, typed
+deletion, continuation, and complete-session JSON export to a new owner-only
+file. Provider configuration comes from the current process environment;
+the desktop has no provider settings controls. Memory, filesystem roots, and
+older provider overrides may remain in the SQLite schema for compatibility,
+but the desktop does not expose or mutate them; saved provider overrides are
+no longer loaded by desktop startup.
+
+The Ollama endpoint is environment-configured and loopback-only. Tool
+arguments remain strictly validated through the registry and policy gateway.
 Unsupported shell, web, and direct filesystem mutation requests are refused;
-assistant claims about unsupported execution are not accepted as evidence.
-Project edits use a separate staging and explicit-approval flow described in
-[ADR-0014](./adr/0014-approved-project-edit-proposals.md). The policy gateway
-still denies side effects unless a narrow approved workflow authorizes them.
+assistant claims about unsupported execution are not evidence of success.
 
 ## Components and boundaries
 
 | Component | Responsibility | Must not do |
 |---|---|---|
 | Text interaction adapter | Accept user input; display state, response, errors, and approval requests. | Call a model or tool directly. |
-| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/filesystem-permission IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
+| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/speech IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
 | Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
 | Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |
@@ -166,9 +128,10 @@ font or renderer-side provider request is used.
    function by emitting arbitrary code.
 2. The registry rejects unknown names, validates arguments, and applies
    per-tool timeout/output limits and effect classification.
-3. Policy checks the request, configured roots, and current permission. MVP
-   filesystem tools are read-only. Any future side effect is denied unless a
-   separately approved capability and action-specific user approval exist.
+3. Policy checks the request, configured roots, and current permission. The
+   CLI filesystem tools are read-only; desktop chat does not register them.
+   Any future side effect is denied unless a separately approved capability
+   and action-specific user approval exist.
 4. The tool executes with least privilege. Filesystem paths are resolved and
    checked against allowed roots, including symlink targets, at the point of
    access.
@@ -194,7 +157,7 @@ registered read-only tools; structured assistant tool-call and tool-result
 messages stay in the temporary session. No provider framework or SDK has been
 added.
 
-## History and explicit memory data flow
+## History and retained local data
 
 Session messages and saved memories are distinct data classes in one local
 SQLite database. The CLI creates a new session or resumes one by ID. User
@@ -207,13 +170,12 @@ deletable but is not injected into model context.
 
 The accepted [ADR-0005](./adr/0005-persistence.md) selects the built-in Node
 SQLite API, local user-only permissions, retention until explicit deletion,
-and explicit-only memory. The database is not application-encrypted, and
-automatic backup is not provided. Users can create manual full-database
-backups from History; these contain private history and settings, are
-unencrypted, and can be restored after schema/integrity validation and an
-explicit confirmation. Restore creates a safety copy of current data before
-replacing it. macOS FileVault is recommended; operating-system backups may
-include the database.
+and explicit-only memory. Memory and older settings/permission data remain
+separate in the local store for compatibility, but desktop UI does not expose
+them. The database is not application-encrypted. Desktop History supports
+individual conversation export and deletion; desktop backup/restore controls
+are not available. macOS FileVault is recommended; operating-system backups
+may include the database.
 
 ## Trust boundaries and failure handling
 

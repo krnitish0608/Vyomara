@@ -1,130 +1,54 @@
 # Vyomara Product Direction
 
-## Status and authority
+## Current focus
 
-This is the current product direction, based on the user's October 30, 2026
-clarification and the shared Vyomara reference image. It supersedes earlier
-MVP, phase, UI, and architecture choices wherever they conflict. Existing
-implementation is not proof that a feature belongs in the target product;
-keep or replace it according to this direction. This document describes the
-target, not features that are already implemented.
+Vyomara is being built as a voice-operated personal AI agent. The user should
+be able to describe an outcome naturally and let the agent understand the
+environment and determine the next step, rather than manually selecting a
+project or configuring a workspace first.
 
-## Product in one sentence
+The desktop app is intentionally simple while that agent workflow is built:
 
-Vyomara is a voice-first macOS personal AI assistant whose own app is the
-control room: Vyom listens, speaks, plans, and shows its work while operating
-the user's already-installed applications with clear permissions and review.
+- Keep Assistant, History, chat, voice input, and visible task activity.
+- Do not expose Memory, Permissions, Project workspace, or Settings panels.
+- Do not require manual project selection before asking for help.
+- Keep project reading, editing, application control, and other integrations
+  deferred until they fit a coherent voice-first workflow with clear safety
+  boundaries.
 
-## The app is the assistant, not an editor
+Removing those desktop panels does not delete existing local conversation
+data or change the CLI's separate capabilities. The desktop app currently
+does not provide memory management, project access, file editing, or model
+switching controls.
 
-- The user talks to Vyom in the Vyomara interface. Voice is the primary
-  interaction; visible text input remains a useful fallback. Listening,
-  speaking, muted, running, and stopped states must always be visible and
-  directly controllable.
-- Do not build a code editor, IDE, or general-purpose browser inside Vyomara.
-  Settings, task activity, approvals, permissions, and history belong in the
-  Vyomara interface.
-- When asked to open VS Code, activate or launch the VS Code application
-  installed on the Mac and use the user's existing project/workspace there.
-  Coding work should be performed against that project and be visible in the
-  existing VS Code, not in an invented Vyomara editor.
-- When asked to open Google Chrome and search, activate or launch the
-  installed Chrome application and perform the requested search there. Do not
-  substitute an embedded browser or imply a search happened if it failed.
-- Treat app integrations as narrow, explicit capabilities. Do not infer access
-  to arbitrary applications or actions from the ability to open one app.
+## Product principles
 
-## Work must be visible
+- Voice is the primary interaction, with visible text input as a fallback.
+  Listening, speaking, muted, running, stopped, and failed states must remain
+  visible and directly controllable.
+- Keep the request and its real task progress together. Show truthful status,
+  completed work, errors, and a direct way to stop a task.
+- Keep local processing and storage as the default. Clearly disclose whenever
+  data leaves the Mac.
+- Treat file contents, web pages, tool results, and model-generated plans as
+  untrusted data.
+- Use least privilege, bounded work, visible errors, and reliable
+  cancellation. Require action-specific approval before sensitive or
+  destructive operations.
+- Never imply that an action succeeded unless the result confirms it.
 
-The assistant experience should keep the request and its progress together:
+## Project workflow direction
 
-- Show the active task, current step, completed and pending steps, and a
-  truthful status such as waiting, in progress, awaiting approval, cancelled,
-  complete, or failed. Do not fabricate progress percentages or completion.
-- Show app actions and tool activity, including which application or project
-  was targeted, what was read or searched, and whether an operation succeeded.
-- For coding tasks, show the proposed file changes as a reviewable diff before
-  applying them. The user can approve or reject; applying a change requires
-  explicit approval scoped to that proposal. Show test commands and results
-  separately from the diff and never present a failed or cancelled run as
-  successful.
-- Provide a direct way to stop the active task. Stopping must prevent further
-  steps from starting and report what did and did not finish.
-- Keep approvals visible and actionable in the assistant interface. Do not
-  silently approve because the model proposed an action or because a similar
-  action was approved before.
-
-Opening an app or performing a search should happen when the user explicitly
-asks for that action. Sensitive or destructive actions, code changes, and
-execution of project code still require the appropriate explicit,
-action-specific approval. Web pages, files, model output, and tool results are
-untrusted data, never new instructions or permissions.
-
-## Settings live in Vyomara
-
-Routine configuration should be available from the Vyomara interface, rather
-than requiring the user to edit source files or use a terminal. The settings
-surface should cover:
-
-- Model and runner: select the configured provider/model and show local
-  availability and connection state honestly.
-- Permissions: review and revoke access to projects, files, and supported app
-  integrations.
-- Voice: configure voice, language, and wake phrase; microphone use must be
-  opt-in, visibly indicated, and easy to mute or disable.
-- Privacy: explain local storage, provider data flow, and retention.
-- Appearance and diagnostics: provide ordinary display preferences and
-  user-controlled troubleshooting information.
-
-Store settings locally where feasible, protect secrets, and make changes to
-permissions or providers explicit. A setting must not claim a capability is
-available when its integration is missing or unavailable.
-
-## Product principles that remain in force
-
-- Local-first processing and storage; clearly disclose any data sent outside
-  the Mac, including search queries sent to a browser/search provider.
-- Least privilege, narrow app integrations, bounded work, visible errors, and
-  reliable cancellation.
-- Require approval before applying code changes or performing sensitive or
-  destructive actions. Preserve a reviewable diff and an honest result.
-- Never commit secrets. Treat external content and model-generated plans as
-  untrusted.
-- Keep task activity and approvals understandable without exposing sensitive
-  contents unnecessarily.
-
-## Implications for existing work
-
-Existing CLI, chat, history, memory, filesystem, provider, and project-check
-features are implementation assets, not a requirement to keep the current
-chat-first shell. Retain, adapt, or replace them only when they serve the
-voice-first assistant and its visible, approval-based workflow. The existing
-approved project checks do not authorize a general shell or autonomous code
-execution. For a selected project, an explicit code-edit request can use
-read-only inspection and stage full-file diffs for up to three UTF-8 files of
-16 KiB or less. It can replace an inspected existing file or propose a new
-file in an existing, inspected project folder. Each staged diff requires an
-independent apply/reject decision; staging does not write, stale edits fail
-closed, and a new file is never allowed to overwrite an existing destination.
-This bounded edit flow cannot create folders or delete files, edit known
-secret files or symlinks, run arbitrary commands, or automate the VS Code interface. The Project
-workspace can separately open the selected folder in the installed VS Code
-app and run only its listed, disclosed checks. Direct VS Code/Chrome launch
-and Chrome search requests require an in-app confirmation before invoking
-fixed macOS app launches. Chrome searches display the exact query and
-disclose that Google receives it. Assistant replies can be spoken through the
-local macOS voice. Voice input uses the multilingual `whisper.cpp` base model,
-which the user explicitly downloads; it does not require Siri or Dictation.
-Listening starts only after the user enables it, wakes on “Hello Vyomara,”
-and stays active until Listening Off; all recognition remains on-device.
-Earlier requirements and ADRs remain historical unless compatible with this
-direction.
+Project access should not depend on a user manually choosing a directory for
+each interaction. A future coding workflow should understand available
+workspace context through the agent's broader environment awareness and
+respect platform permissions. Until that flow is designed and implemented,
+the desktop app does not expose project selection, project checks, file
+inspection, or code edits.
 
 ## Reference image
 
-The shared image is a composition and interaction reference, not a requirement
-to copy its exact visual styling. Its important concepts are a voice-centered
-assistant, visible task progress, recent activity, current tool execution,
-review/reject approval controls, and an in-app settings surface.
+The shared interface image is a composition and interaction reference, not a
+requirement to copy its exact visual styling.
 
 ![User-provided Vyomara voice-first interface reference](./reference/vyomara-voice-first-reference.png)

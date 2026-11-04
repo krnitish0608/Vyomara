@@ -1,7 +1,11 @@
 # ADR-0014: Approved Project Edit Proposals
 
-- **Status:** Accepted
+- **Status:** Superseded
 - **Date:** 2026-10-30
+
+> This selected-project workflow has been removed from the desktop app. The
+> current product direction defers project access and code editing until they
+> work without requiring manual project selection.
 
 ## Context
 

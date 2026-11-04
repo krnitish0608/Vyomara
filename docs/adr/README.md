@@ -2,8 +2,9 @@
 
 ADRs capture project decisions and proposals. **Accepted** means supported by
 the current product requirements or established project configuration;
-**Proposed** means a reasoned recommendation awaiting user confirmation.
-Proposed decisions must not be presented as approved implementation choices.
+**Proposed** means a reasoned recommendation awaiting user confirmation;
+**Superseded** means a later product decision has replaced it. Superseded and
+proposed decisions must not be presented as current implementation choices.
 
 ## Records
 
@@ -21,15 +22,15 @@ Proposed decisions must not be presented as approved implementation choices.
 | [0010](./0010-testing-and-evaluation.md) | Testing and repeatable agent evaluation | Accepted |
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
 | [0012](./0012-desktop-interface.md) | Initial macOS desktop interaction shell | Superseded |
-| [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Accepted |
-| [0014](./0014-approved-project-edit-proposals.md) | User-approved, selected-project code edits | Accepted |
+| [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Superseded |
+| [0014](./0014-approved-project-edit-proposals.md) | User-approved, selected-project code edits | Superseded |
 
 ## Open decisions
 
 The current product direction is recorded in
-[ADR-0013](./0013-voice-first-app-integrations.md) and
 [docs/product-direction.md](../product-direction.md). Historical ADRs remain
-useful only where compatible with it.
+useful as context but do not authorize the removed desktop panels, manual
+project selection, or project-edit workflow.
 
 User confirmation is needed for:
 
