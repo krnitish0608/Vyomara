@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isApplicationLaunchRequest, requestedApplicationId } from './intents.ts';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
@@ -346,7 +346,8 @@ function asksForFileAnalysis(prompt: string): boolean {
 
 function asksForProjectAnalysis(prompt: string): boolean {
   return /\b(?:project|repo|repository|codebase)\b/i.test(prompt) &&
-    /\b(?:deep\s*dive|analy[sz]e|anly[sz]e|analysis|review|understand|assess|audit)\b/i.test(prompt);
+    (/\b(?:deep\s*dive|analy[sz]e|anly[sz]e|analysis|review|understand|assess|audit)\b/i.test(prompt) ||
+      asksForFileMutation(prompt));
 }
 
 function asksForTestAnalysis(prompt: string): boolean {
@@ -366,6 +367,40 @@ function asksForFileMutation(prompt: string): boolean {
   const action = /\b(?:create|write|fix|implement|refactor|edit|modify|change|replace|update|delete|remove)\b/i;
   const subject = /\b(?:file|folder|directory|code|codebase|project|repo|repository)\b|(?:^|\s)\/[^\s"'`]+/i;
   return action.test(prompt) && subject.test(prompt);
+}
+
+function dropsExistingComments(original: string, proposed: string, path: string): boolean {
+  const extension = extname(path).toLowerCase();
+  const supportsHashComments = new Set([
+    '.py', '.sh', '.bash', '.zsh', '.yml', '.yaml', '.toml', '.rb', '.pl', '.r', '.ini', '.conf',
+  ]).has(extension);
+  const supportsSlashComments = new Set([
+    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.java', '.go', '.rs', '.c', '.h', '.cpp', '.hpp', '.css', '.swift',
+  ]).has(extension);
+  const supportsHtmlComments = new Set(['.html', '.htm', '.xml', '.md', '.markdown']).has(extension);
+  let inBlockComment = false;
+  const originalComments: string[] = [];
+  for (const line of original.split(/\r?\n/u)) {
+    const trimmed = line.trimStart();
+    const lineComment = (supportsSlashComments && trimmed.startsWith('//')) ||
+      (supportsHashComments && trimmed.startsWith('#') && !trimmed.startsWith('#!')) ||
+      (supportsHtmlComments && (trimmed.startsWith('<!--') || trimmed.startsWith('-->')));
+    if (lineComment || inBlockComment || (supportsSlashComments && trimmed.startsWith('/*'))) {
+      originalComments.push(line);
+    }
+    if (supportsSlashComments && trimmed.startsWith('/*')) inBlockComment = true;
+    if (inBlockComment && trimmed.includes('*/')) inBlockComment = false;
+  }
+  if (originalComments.length === 0) return false;
+  const proposedLines = new Set(proposed.split(/\r?\n/u));
+  return originalComments.some(line => !proposedLines.has(line));
+}
+
+const COMMENT_PRESERVATION_ERROR =
+  'The proposed full-file edit removes existing comments. Preserve unrelated comments or use a localized text replacement.';
+
+function explicitlyRequestsCommentChange(prompt: string): boolean {
+  return /\b(?:remove|delete|drop|change|update|rewrite)\s+(?:(?:all|the|existing|this)\s+)*(?:comments?|documentation)\b/i.test(prompt);
 }
 
 function exactTextReplacement(prompt: string): { readonly oldText: string; readonly newText: string } | undefined {
@@ -470,6 +505,39 @@ function pathWithinConfiguredRoots(
     return fromRoot === '' ||
       (!isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`));
   });
+}
+
+function explicitProjectRoot(
+  prompt: string,
+  allowedRoots: readonly string[],
+): string | undefined {
+  const match = /\b(?:project|repo(?:sitory)?|codebase)(?:\s+(?:path|directory|folder))?\s*(?::|\bat\b|\bis\b)\s*["'`]?(\/[^\s"'`]+)/i.exec(prompt);
+  const candidate = match?.[1]?.replace(/[.,;!?)}\]]+$/u, '');
+  return candidate && pathWithinConfiguredRoots(candidate, allowedRoots)
+    ? resolve(candidate)
+    : undefined;
+}
+
+function requestedProjectFilePath(prompt: string): string | undefined {
+  const match = /(?:^|[\s"'`])((?:[A-Za-z0-9_@.+-]+[/\\])+[A-Za-z0-9_@.+-]+\.(?:tsx?|jsx?|mjs|cjs|json|py|go|rs|java|swift|css|html))(?=$|[\s"'`.,!?;:)])/i.exec(prompt);
+  const candidate = match?.[1]?.replaceAll('\\', '/').replace(/^\.\//u, '');
+  return candidate && !candidate.split('/').includes('..') ? candidate : undefined;
+}
+
+function verifiedProjectFile(
+  trees: ReadonlyMap<string, ReadonlySet<string>>,
+  relativePath: string,
+): string | undefined {
+  if (relativePath.split(/[\\/]/).includes('..')) return undefined;
+  if (isAbsolute(relativePath)) {
+    const candidate = resolve(relativePath);
+    return [...trees.values()].some(files => files.has(candidate)) ? candidate : undefined;
+  }
+  for (const [root, files] of trees) {
+    const candidate = resolve(root, relativePath.replaceAll('\\', sep));
+    if (files.has(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 function executionArguments(
@@ -722,6 +790,7 @@ async function runAgentTask(
   let applicationLaunchCompleted = false;
   const fileOperationResults: string[] = [];
   const readFilePaths = new Set<string>();
+  const verifiedFileContents = new Map<string, string>();
   const verifiedTreeFilesByRoot = new Map<string, Set<string>>();
   const filesystemToolResults: string[] = [];
   let editToolRepairInstruction: string | undefined;
@@ -879,6 +948,34 @@ async function runAgentTask(
       const fallbackProposal = readPath === undefined || fileOperationResults.length > 0
         ? undefined
         : proposalFromFinalResponse(prompt, response.text, readPath);
+      if (
+        fallbackProposal?.toolId === 'filesystem.propose-edit' &&
+        typeof fallbackProposal.arguments.path === 'string' &&
+        typeof fallbackProposal.arguments.content === 'string' &&
+        !explicitlyRequestsCommentChange(prompt) &&
+        dropsExistingComments(
+          verifiedFileContents.get(resolve(fallbackProposal.arguments.path)) ?? '',
+          fallbackProposal.arguments.content,
+          fallbackProposal.arguments.path,
+        )
+      ) {
+        if (editToolRepairAttempts === 0 && toolCalls < options.config.maxToolCalls) {
+          editToolRepairAttempts++;
+          editToolRepairInstruction =
+            'Correction: this complete file edit removes an existing comment. Preserve all unrelated comments and make only the requested change. For a localized change, use filesystem.propose-replace-text with the exact source snippet.';
+          continue;
+        }
+        const safeResponse = 'I couldn’t prepare a safe edit without removing existing comments, so no files were changed.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
       if (fallbackProposal && toolCalls < options.config.maxToolCalls) {
         const proposalContext = task.context(randomUUID(), 1);
         options.logger.emit({
@@ -1160,11 +1257,58 @@ async function runAgentTask(
           options.config.filesystemAllowedRoots,
         );
         if (call.toolId === 'filesystem.directory-tree' && asksForProjectAnalysis(prompt)) {
+          const projectRoot = explicitProjectRoot(prompt, options.config.filesystemAllowedRoots);
           args = {
             ...args,
+            ...(projectRoot === undefined ? {} : { path: projectRoot }),
             maxDepth: options.config.maxTreeDepth,
             maxEntries: options.config.maxDirectoryEntries,
           };
+        }
+        if (
+          call.toolId === 'filesystem.read-file' &&
+          asksForProjectAnalysis(prompt) &&
+          verifiedTreeFilesByRoot.size > 0
+        ) {
+          const requestedPath = requestedProjectFilePath(prompt);
+          const requestedFile = requestedPath === undefined
+            ? undefined
+            : verifiedProjectFile(verifiedTreeFilesByRoot, requestedPath);
+          const hasReadRequestedFile = requestedFile !== undefined && readFilePaths.has(requestedFile);
+          const hasReadTestFile = [...readFilePaths].some(path =>
+            /(?:^|[/_.-])(?:tests?|__tests__|spec)(?:[/_.-]|$)/i.test(path));
+          const testFile = [...verifiedTreeFilesByRoot.values()].flatMap(files =>
+            [...files].filter(path =>
+              /(?:^|[/_.-])(?:tests?|__tests__|spec)(?:[/_.-]|$)/i.test(path) ||
+              /\.(?:test|spec)\.[^.]+$/i.test(path))
+              .sort((left, right) => left.localeCompare(right)),
+          )[0];
+          if (requestedFile && !hasReadRequestedFile) {
+            args = { ...args, path: requestedFile };
+          } else if (
+            asksForTestAnalysis(prompt) &&
+            !hasReadTestFile &&
+            testFile &&
+            readFilePaths.size > 0
+          ) {
+            args = { ...args, path: testFile };
+          }
+        }
+        if (
+          ['filesystem.propose-edit', 'filesystem.propose-replace-text'].includes(call.toolId) &&
+          asksForProjectAnalysis(prompt) &&
+          verifiedTreeFilesByRoot.size > 0
+        ) {
+          const requestedPath = requestedProjectFilePath(prompt);
+          const requestedFile = requestedPath === undefined
+            ? undefined
+            : verifiedProjectFile(verifiedTreeFilesByRoot, requestedPath);
+          const modelPath = typeof args.path === 'string'
+            ? verifiedProjectFile(verifiedTreeFilesByRoot, args.path)
+            : undefined;
+          if (requestedFile ?? modelPath) {
+            args = { ...args, path: requestedFile ?? modelPath };
+          }
         }
         if (
           call.toolId === 'filesystem.read-file' &&
@@ -1242,6 +1386,9 @@ async function runAgentTask(
               });
               successfulToolIds.add('filesystem.read-file');
               readFilePaths.add(editPath);
+              if (isRecord(readResult) && typeof readResult.content === 'string') {
+                verifiedFileContents.set(editPath, readResult.content);
+              }
               filesystemToolResults.push(
                 `filesystem.read-file (${args.path}): ${serializedReadResult}`,
               );
@@ -1265,6 +1412,22 @@ async function runAgentTask(
               continue;
             }
           }
+        }
+        if (
+          executionToolId === 'filesystem.propose-edit' &&
+          typeof executionToolArguments.path === 'string' &&
+          typeof executionToolArguments.content === 'string' &&
+          !explicitlyRequestsCommentChange(prompt) &&
+          dropsExistingComments(
+            verifiedFileContents.get(resolve(executionToolArguments.path)) ?? '',
+            executionToolArguments.content,
+            executionToolArguments.path,
+          )
+        ) {
+          throw new ToolExecutionError(
+            COMMENT_PRESERVATION_ERROR,
+            'invalid-input',
+          );
         }
         const result = await options.tools.execute(executionToolId, executionToolArguments, signal, context);
         const serialized = JSON.stringify(result);
@@ -1326,7 +1489,11 @@ async function runAgentTask(
           appliedFileOperationToolIds.add(call.toolId);
         }
         if (call.toolId === 'filesystem.read-file' && typeof args.path === 'string') {
-          readFilePaths.add(resolve(args.path));
+          const readPath = resolve(args.path);
+          readFilePaths.add(readPath);
+          if (isRecord(result) && typeof result.content === 'string') {
+            verifiedFileContents.set(readPath, result.content);
+          }
           if (asksForProjectAnalysis(prompt) && projectAnalysisRepairAttempts > 0) {
             projectAnalysisRepairInstruction = hasRequiredProjectAnalysisReads(prompt, readFilePaths)
                 ? asksForFileMutation(prompt)
@@ -1363,6 +1530,38 @@ async function runAgentTask(
             return returnPartialFilesystemResult(error, iteration);
           }
           throw new AgentError('Requested tool was denied by policy.', 'policy-denied');
+        }
+        if (
+          error instanceof ToolExecutionError &&
+          error.code === 'invalid-input' &&
+          error.message === COMMENT_PRESERVATION_ERROR &&
+          editToolRepairAttempts === 0 &&
+          toolCalls < options.config.maxToolCalls
+        ) {
+          editToolRepairAttempts++;
+          editToolRepairInstruction =
+            'Correction: the previous complete-file proposal was rejected because it omitted existing comments. Retry the requested change with a minimal localized filesystem.propose-replace-text call using the exact source snippet, or include every existing comment in a complete-file proposal. Do not claim the edit was applied.';
+          options.logger.emit({
+            event: 'tool.retry-scheduled',
+            taskId: task.taskId,
+            runId: task.runId,
+            toolCallId,
+            toolId: call.toolId,
+            nextAttempt: attempt + 1,
+            reasonCode: error.code,
+          });
+          options.session.add({
+            role: 'tool',
+            toolId: call.toolId,
+            content: JSON.stringify({
+              ok: false,
+              error: {
+                code: error.code,
+                message: error.message,
+              },
+            }),
+          });
+          continue;
         }
         if (
           error instanceof ToolExecutionError &&
@@ -1422,6 +1621,36 @@ async function runAgentTask(
         }
         throw wrappedError;
       }
+    }
+    const completedFileOperation = verifiedFileOperationResponse(fileOperationResults);
+    if (completedFileOperation) {
+      options.session.add({ role: 'assistant', content: completedFileOperation });
+      options.logger.emit({
+        event: 'request.completed',
+        taskId: task.taskId,
+        runId: task.runId,
+        durationMs: Date.now() - start,
+        iterations: iteration,
+      });
+      return completedFileOperation;
+    }
+    if (applicationLaunchCompleted) {
+      const application = requestedApplicationId(prompt);
+      const applicationName = application?.split('-')
+        .map(part => part[0]?.toUpperCase() + part.slice(1))
+        .join(' ');
+      const response = application
+        ? `Opened ${applicationName}.`
+        : 'The requested application was opened.';
+      options.session.add({ role: 'assistant', content: response });
+      options.logger.emit({
+        event: 'request.completed',
+        taskId: task.taskId,
+        runId: task.runId,
+        durationMs: Date.now() - start,
+        iterations: iteration,
+      });
+      return response;
     }
     if (task.state === 'running') task.transition('planning');
   }

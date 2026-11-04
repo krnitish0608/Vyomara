@@ -870,9 +870,9 @@ test('opening an application is exposed only for an explicit request and reports
 
   const response = await app.run(new AbortController().signal, 'Open Calculator.');
 
-  assert.equal(response, 'I opened Calculator.');
+  assert.equal(response, 'Opened Calculator.');
   assert.deepEqual(launched, ['calculator']);
-  assert.deepEqual(advertised, [['application.open'], ['application.open']]);
+  assert.deepEqual(advertised, [['application.open']]);
 });
 
 test('the agent never claims an application opened without a successful tool result', async () => {

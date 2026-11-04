@@ -15,7 +15,7 @@ import { PolicyGateway } from '../src/tools/policy.ts';
 import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
 import type { ModelProvider } from '../src/providers/provider.ts';
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, autoApproveRepeatedProposal = false) {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-review-'));
   const root = join(parent, 'allowed');
   await mkdir(root);
@@ -28,12 +28,16 @@ async function fixture(t: TestContext) {
   let resolveProposal!: (proposal: DesktopFileOperationProposal) => void;
   const proposal = new Promise<DesktopFileOperationProposal>(resolve => { resolveProposal = resolve; });
   let proposalCount = 0;
+  let approvals: FileOperationApprovalManager;
   const trashedPaths: string[] = [];
-  const approvals = new FileOperationApprovalManager({
+  approvals = new FileOperationApprovalManager({
     config,
     onProposal(value) {
       proposalCount++;
       resolveProposal(value);
+      if (autoApproveRepeatedProposal && proposalCount > 1) {
+        queueMicrotask(() => { void approvals.approve(value.id); });
+      }
     },
     async moveToTrash(path) {
       trashedPaths.push(path);
@@ -296,8 +300,124 @@ test('agent turns a complete model edit into a review proposal rather than displ
   assert.equal(await readFile(path, 'utf8'), original);
 });
 
-test('agent can analyze a project and tests, then submit and apply the requested code fix', async t => {
+test('agent repairs a fallback full-file edit that drops comments before review', async t => {
   const { root, config, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'existing.ts');
+  const comment = '// Keep this project note.\n';
+  const original = `${comment}export const greeting = "Hello";\n`;
+  const updated = `${comment}export const greeting = "Hi";\n`;
+  await writeFile(path, original);
+  const responses: unknown[] = [
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path } }],
+    },
+    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\nexport const greeting = "Hi";\n\`\`\`` },
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.propose-replace-text',
+        arguments: { path, oldText: '"Hello"', newText: '"Hi"' },
+      }],
+    },
+  ];
+  let providerCalls = 0;
+  const provider: ModelProvider = {
+    id: 'test.complete-edit-comment-recovery',
+    async complete() {
+      providerCalls++;
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const session = new Session();
+  const resultPromise = runAgent(
+    'Edit the existing file to change the greeting from Hello to Hi.',
+    new AbortController().signal,
+    {
+      provider,
+      tools: executor,
+      config,
+      session,
+      logger: createLogger(() => {}),
+    },
+  );
+  const review = await proposal;
+
+  approvals.reject(review.id);
+
+  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
+  assert.equal(providerCalls, 3);
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.equal(await readFile(path, 'utf8'), original);
+});
+
+test('agent retries a comment-losing proposal and accepts a corrected complete-file edit', async t => {
+  const { root, config, proposal, approvals, executor } = await fixture(t);
+  const project = join(root, 'comment-preservation');
+  const path = join(project, 'src', 'index.ts');
+  const comment = '// Keep this project note.\n';
+  const original = `${comment}export function add(a: number, b: number): number { return a - b; }\n`;
+  const updated = `${comment}export function add(a: number, b: number): number { return a + b; }\n`;
+  await mkdir(join(project, 'src'), { recursive: true });
+  await writeFile(path, original);
+  const responses: unknown[] = [
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.directory-tree',
+      arguments: { path: project },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.read-file',
+      arguments: { path },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.propose-edit',
+      arguments: {
+        path,
+        content: 'export function add(a: number, b: number): number { return a + b; }\n',
+      },
+    }] },
+    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\n${updated}\`\`\`` },
+  ];
+  const provider: ModelProvider = {
+    id: 'test.preserve-comments',
+    async complete() {
+      const response = responses.shift();
+      if (response === undefined) throw new Error('No fake provider response remains.');
+      return response;
+    },
+  };
+  const session = new Session();
+  const resultPromise = runAgent(
+    `Analyze and fix the bug in this project, preserving existing comments. Project: ${project}`,
+    new AbortController().signal,
+    {
+      provider,
+      tools: executor,
+      config,
+      session,
+      logger: createLogger(() => {}),
+    },
+  );
+  const review = await proposal;
+
+  assert.equal(review.currentContent, original);
+  assert.equal(review.proposedContent, updated);
+  assert.equal(await readFile(path, 'utf8'), original);
+  assert.ok(session.messages().some(message =>
+    message.role === 'tool' &&
+    message.content.includes('The proposed full-file edit removes existing comments')));
+
+  await approvals.approve(review.id);
+
+  assert.equal(await resultPromise, 'The approved edit was applied.');
+  assert.equal(await readFile(path, 'utf8'), updated);
+});
+
+test('agent can analyze a project and tests, then submit and apply the requested code fix', async t => {
+  const { root, config, proposal, approvals, executor, proposalCount } = await fixture(t, true);
   const project = join(root, 'sample-project');
   const sourcePath = join(project, 'src', 'index.ts');
   const testPath = join(project, 'test', 'index.test.ts');
@@ -310,7 +430,7 @@ test('agent can analyze a project and tests, then submit and apply the requested
   const responses: unknown[] = [
     { kind: 'tool-calls', calls: [{
       toolId: 'filesystem.directory-tree',
-      arguments: { path: project },
+      arguments: { path: join(project, 'src') },
     }] },
     { kind: 'tool-calls', calls: [{
       toolId: 'filesystem.read-file',
@@ -318,11 +438,15 @@ test('agent can analyze a project and tests, then submit and apply the requested
     }] },
     { kind: 'tool-calls', calls: [{
       toolId: 'filesystem.read-file',
-      arguments: { path: testPath },
+      arguments: { path: sourcePath },
     }] },
     { kind: 'tool-calls', calls: [{
       toolId: 'filesystem.propose-edit',
-      arguments: { path: sourcePath, content: updated },
+      arguments: { path: 'src/index.ts', content: updated },
+    }] },
+    { kind: 'tool-calls', calls: [{
+      toolId: 'filesystem.propose-edit',
+      arguments: { path: 'src/index.ts', content: updated },
     }] },
     { kind: 'final', text: 'The fix is ready for your review.' },
   ];
@@ -362,7 +486,25 @@ test('agent can analyze a project and tests, then submit and apply the requested
   await approvals.approve(review.id);
 
   assert.equal(await resultPromise, 'The approved edit was applied.');
+  assert.equal(proposalCount(), 1);
+  assert.equal(advertisedToolIds.length, 4);
   assert.equal(await readFile(sourcePath, 'utf8'), updated);
+  const toolMessages = session.messages().filter(message => message.role === 'tool');
+  const treeResult = toolMessages.find(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.directory-tree');
+  assert.ok(treeResult && treeResult.role === 'tool');
+  const treeEntries = (JSON.parse(treeResult.content) as {
+    entries: Array<{ path: string; type: string }>;
+  }).entries;
+  assert.ok(
+    treeEntries.some(entry => entry.path === 'test/index.test.ts'),
+    `Unexpected project tree: ${JSON.stringify(treeEntries)}`,
+  );
+  const readResults = toolMessages.filter(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.read-file');
+  assert.deepEqual(readResults.map(message =>
+    message.role === 'tool' ? (JSON.parse(message.content) as { content: string }).content : ''),
+  [original, 'assert.equal(add(2, 3), 5);\n']);
   assert.deepEqual(
     session.messages().filter(message => message.role === 'tool').map(message =>
       message.role === 'tool' ? message.toolId : undefined),
