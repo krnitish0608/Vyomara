@@ -113,6 +113,12 @@ function filesystemToolsForPrompt(
   if (!hasFilesystemSubject || !asksForFilesystemAction) {
     return tools.filter(tool => !tool.id.startsWith('filesystem.'));
   }
+  if (asksForMarkdownRead(prompt, recentUserContext)) {
+    return tools.filter(tool =>
+      !tool.id.startsWith('filesystem.') ||
+      tool.id === 'filesystem.directory-tree' ||
+      tool.id === 'filesystem.read-file');
+  }
   if (asksForProjectAnalysis(intentPrompt)) {
     return tools.filter(tool =>
       !tool.id.startsWith('filesystem.') ||
@@ -237,6 +243,7 @@ function filesystemResultResponse(
   maxResponseChars: number,
   prompt: string,
   followupFailed = false,
+  markdownReadRequest = asksForMarkdownRead(prompt),
 ): string {
   const includeNames =
     /\b(?:check|list|show|which|what\s+are)\b[\s\S]{0,40}\b(?:files?|folders?|contents?|names?)\b/i.test(prompt) ||
@@ -305,6 +312,9 @@ function filesystemResultResponse(
         return `${summary}\n${names}`;
       }
       if (toolName === 'read-file' && typeof value.content === 'string') {
+        if (markdownReadRequest && typeof path === 'string' && /\.(?:md|markdown)$/i.test(path)) {
+          return `Read Markdown file \`${path}\` (${typeof value.bytes === 'number' ? value.bytes : 'unknown'} bytes).`;
+        }
         return typeof path === 'string'
           ? `Here’s the content of \`${path}\`:\n${value.content}`
           : value.content;
@@ -329,11 +339,20 @@ function filesystemPartialResultResponse(
   failureMessage: string,
   maxResponseChars: number,
   prompt: string,
+  markdownReadRequest = asksForMarkdownRead(prompt),
 ): string {
-  const summary = filesystemResultResponse(results, maxResponseChars, prompt);
-  const failureNote = failureCode === 'not-found' || /not found/i.test(failureMessage)
-    ? 'I couldn’t find the location needed to finish the check.'
-    : 'A later filesystem step failed, so the results above may be incomplete.';
+  const summary = filesystemResultResponse(
+    results,
+    maxResponseChars,
+    prompt,
+    false,
+    markdownReadRequest,
+  );
+  const failureNote = failureCode === 'response-too-large' && markdownReadRequest
+    ? 'I read the Markdown files listed above, but the model response exceeded its configured limit, so I couldn’t summarize their contents.'
+    : failureCode === 'not-found' || /not found/i.test(failureMessage)
+      ? 'I couldn’t find the location needed to finish the check.'
+      : 'A later filesystem step failed, so the results above may be incomplete.';
   const response = `${summary}\n\n${failureNote}`;
   return response.length <= maxResponseChars
     ? response
@@ -348,6 +367,30 @@ function asksForProjectAnalysis(prompt: string): boolean {
   return /\b(?:project|repo|repository|codebase)\b/i.test(prompt) &&
     (/\b(?:deep\s*dive|analy[sz]e|anly[sz]e|analysis|review|understand|assess|audit)\b/i.test(prompt) ||
       asksForFileMutation(prompt));
+}
+
+function asksForMarkdownRead(prompt: string, recentUserContext = ''): boolean {
+  const markdownMention = /\bmarkdown\b|\bmd\s+files?\b|\.md(?:\b|$)/i;
+  const readIntent = /\b(?:read|open|inspect|review|summari[sz]e|understand)\b/i;
+  return (readIntent.test(prompt) && markdownMention.test(prompt)) ||
+    (markdownMention.test(recentUserContext) &&
+      /\b(?:read|open|inspect|review|summari[sz]e|understand)\s+(?:those|them|these)\b/i.test(prompt));
+}
+
+function verifiedMarkdownFiles(
+  trees: ReadonlyMap<string, ReadonlySet<string>>,
+): string[] {
+  const files = [...trees.values()].flatMap(paths =>
+    [...paths].filter(path => /\.(?:md|markdown)$/i.test(path)));
+  const priority = (path: string): number => {
+    const name = path.split(/[\\/]/).at(-1)?.toLowerCase();
+    if (name === 'readme.md' || name === 'readme.markdown') return 0;
+    if (name === 'agents.md' || name === 'claude.md') return 1;
+    if (name === 'contributing.md') return 2;
+    return 3;
+  };
+  return [...new Set(files)].sort((left, right) =>
+    priority(left) - priority(right) || left.localeCompare(right));
 }
 
 function asksForTestAnalysis(prompt: string): boolean {
@@ -792,11 +835,15 @@ async function runAgentTask(
   const readFilePaths = new Set<string>();
   const verifiedFileContents = new Map<string, string>();
   const verifiedTreeFilesByRoot = new Map<string, Set<string>>();
+  let markdownTreeTruncated = false;
   const filesystemToolResults: string[] = [];
   let editToolRepairInstruction: string | undefined;
   let editToolRepairAttempts = 0;
   let projectAnalysisRepairAttempts = 0;
   let projectAnalysisRepairInstruction: string | undefined;
+  let markdownReadRepairAttempts = 0;
+  let markdownReadRepairInstruction: string | undefined;
+  let markdownPartialSummaryRequested = false;
   const toolAttempts = new Map<string, number>();
   const recentUserContext = options.session.messages()
     .slice(0, -1)
@@ -804,7 +851,17 @@ async function runAgentTask(
     .slice(-3)
     .map(message => message.content)
     .join('\n');
+  const markdownReadRequest = asksForMarkdownRead(prompt, recentUserContext);
   const recentSearchDirectory = latestVerifiedSearchDirectory(options.session.messages());
+  const currentTurnMessages = () => {
+    const messages = options.session.messages();
+    if (!markdownReadRequest) return [...messages];
+    let currentUserIndex = messages.length - 1;
+    while (currentUserIndex > 0 && messages[currentUserIndex]?.role !== 'user') {
+      currentUserIndex--;
+    }
+    return messages.slice(currentUserIndex);
+  };
   const promptTools = filesystemToolsForPrompt(
     prompt,
     recentUserContext,
@@ -824,6 +881,7 @@ async function runAgentTask(
       error.message,
       options.config.maxResponseChars,
       prompt,
+      markdownReadRequest,
     );
     options.session.add({ role: 'assistant', content: response });
     task.needsAttention();
@@ -838,30 +896,45 @@ async function runAgentTask(
   };
 
   for (let iteration = 1; iteration <= options.config.maxAgentIterations; iteration++) {
-    const analysisRepairTools = !asksForProjectAnalysis(prompt)
-      ? availableTools
-      : hasRequiredProjectAnalysisReads(prompt, readFilePaths)
-        ? asksForFileMutation(prompt)
-          ? availableTools.filter(tool => tool.id.startsWith('filesystem.propose-'))
-          : []
-        : availableTools.filter(tool =>
-          tool.id === (
-            successfulToolIds.has('filesystem.directory-tree')
-              ? 'filesystem.read-file'
-              : 'filesystem.directory-tree'
-          ));
+    const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
+    const unreadMarkdownFiles = markdownFiles.filter(path => !readFilePaths.has(path));
+    const analysisRepairTools = markdownReadRequest
+      ? availableTools.filter(tool =>
+        tool.id === (
+          successfulToolIds.has('filesystem.directory-tree')
+            ? unreadMarkdownFiles.length > 0 ? 'filesystem.read-file' : ''
+            : 'filesystem.directory-tree'
+        ))
+      : !asksForProjectAnalysis(prompt)
+        ? availableTools
+        : hasRequiredProjectAnalysisReads(prompt, readFilePaths)
+          ? asksForFileMutation(prompt)
+            ? availableTools.filter(tool => tool.id.startsWith('filesystem.propose-'))
+            : []
+          : availableTools.filter(tool =>
+            tool.id === (
+              successfulToolIds.has('filesystem.directory-tree')
+                ? 'filesystem.read-file'
+                : 'filesystem.directory-tree'
+            ));
     const iterationTools =
       toolCalls < options.config.maxToolCalls ? analysisRepairTools : [];
     let rawResponse: unknown;
     try {
       rawResponse = await runBounded(
         providerSignal => options.provider.complete(
-          editToolRepairInstruction || projectAnalysisRepairInstruction
+          editToolRepairInstruction || markdownReadRepairInstruction || projectAnalysisRepairInstruction
             ? [
-              ...options.session.messages(),
-              { role: 'user', content: editToolRepairInstruction ?? projectAnalysisRepairInstruction ?? '' },
+              ...currentTurnMessages(),
+              {
+                role: 'user',
+                content: editToolRepairInstruction ??
+                  markdownReadRepairInstruction ??
+                  projectAnalysisRepairInstruction ??
+                  '',
+              },
             ]
-            : options.session.messages(),
+            : currentTurnMessages(),
           providerSignal,
             iterationTools,
           options.onText,
@@ -871,16 +944,53 @@ async function runAgentTask(
       );
     } catch (error) {
       if (
+        markdownReadRequest &&
+        error instanceof ProviderError &&
+        error.code === 'response-too-large' &&
+        filesystemToolResults.length === 0
+      ) {
+        if (markdownReadRepairAttempts === 0 && toolCalls < options.config.maxToolCalls) {
+          markdownReadRepairAttempts++;
+          markdownReadRepairInstruction =
+            'Retry with one concise filesystem.directory-tree call for the requested project. Do not output file contents or explanations in this step.';
+          continue;
+        }
+        const safeResponse =
+          'Ollama exceeded its response limit before I could verify the project files. No Markdown contents were read.';
+        options.session.add({ role: 'assistant', content: safeResponse });
+        task.needsAttention();
+        options.logger.emit({
+          event: 'request.completed',
+          taskId: task.taskId,
+          runId: task.runId,
+          durationMs: Date.now() - start,
+          iterations: iteration,
+        });
+        return safeResponse;
+      }
+      if (
         filesystemToolResults.length > 0 &&
         ((error instanceof OperationStoppedError && error.reason === 'timeout') ||
           (error instanceof ProviderError && error.code !== 'cancelled'))
       ) {
-        const partialResponse = filesystemResultResponse(
-          filesystemToolResults,
-          options.config.maxResponseChars,
-          prompt,
-          true,
-        );
+        const partialResponse = markdownReadRequest &&
+            error instanceof ProviderError &&
+            error.code === 'response-too-large'
+          ? filesystemPartialResultResponse(
+            filesystemToolResults,
+            error.code,
+            error.message,
+            options.config.maxResponseChars,
+            prompt,
+            true,
+          )
+          : filesystemResultResponse(
+            filesystemToolResults,
+            options.config.maxResponseChars,
+            prompt,
+            true,
+            markdownReadRequest,
+          );
         options.session.add({ role: 'assistant', content: partialResponse });
         task.needsAttention();
         options.logger.emit({
@@ -916,6 +1026,61 @@ async function runAgentTask(
           return returnPartialFilesystemResult(recoverableToolFailure, iteration);
         }
         throw recoverableToolFailure;
+      }
+      if (markdownReadRequest && successfulToolIds.has('filesystem.directory-tree')) {
+        const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
+        const unreadMarkdownFiles = markdownFiles.filter(path => !readFilePaths.has(path));
+        if (markdownFiles.length === 0) {
+          const safeResponse = 'I checked the verified project tree and found no Markdown files to read.';
+          options.session.add({ role: 'assistant', content: safeResponse });
+          options.logger.emit({
+            event: 'request.completed',
+            taskId: task.taskId,
+            runId: task.runId,
+            durationMs: Date.now() - start,
+            iterations: iteration,
+          });
+          return safeResponse;
+        }
+        if (
+          unreadMarkdownFiles.length > 0 &&
+          toolCalls < options.config.maxToolCalls &&
+          markdownReadRepairAttempts < 3
+        ) {
+          markdownReadRepairAttempts++;
+          markdownReadRepairInstruction =
+            `Read the next unread Markdown file from the verified tree, using this exact path: ${unreadMarkdownFiles[0]}. After reading the available files, summarize what the project is in a few sentences. Do not reproduce document text.`;
+          continue;
+        }
+        if (readFilePaths.size === 0) {
+          const safeResponse = 'I found Markdown files in the project, but I couldn’t verify their contents, so I can’t describe what they say.';
+          options.session.add({ role: 'assistant', content: safeResponse });
+          options.logger.emit({
+            event: 'request.completed',
+            taskId: task.taskId,
+            runId: task.runId,
+            durationMs: Date.now() - start,
+            iterations: iteration,
+          });
+          return safeResponse;
+        }
+        const markdownReadIsPartial = unreadMarkdownFiles.length > 0 || markdownTreeTruncated;
+        if (markdownReadIsPartial && !markdownPartialSummaryRequested) {
+          markdownPartialSummaryRequested = true;
+          markdownReadRepairAttempts++;
+          markdownReadRepairInstruction =
+            `Summarize only the Markdown files actually read. State that the read was partial${unreadMarkdownFiles.length > 0 ? `; ${unreadMarkdownFiles.length} Markdown file(s) in the verified tree remain unread` : ''}${markdownTreeTruncated ? '; the Markdown file listing was truncated' : ''}. Keep the answer to a few sentences and do not reproduce document text.`;
+          continue;
+        }
+        markdownReadRepairInstruction = markdownReadIsPartial
+          ? `Summarize only the Markdown files actually read. State that the read was partial${unreadMarkdownFiles.length > 0 ? `; ${unreadMarkdownFiles.length} Markdown file(s) in the verified tree remain unread` : ''}${markdownTreeTruncated ? '; the Markdown file listing was truncated' : ''}. Keep the answer to a few sentences and do not reproduce document text.`
+          : 'Summarize what the project is in a few sentences using only the Markdown files actually read. Do not reproduce document text or claim to have read any other files.';
+        if (markdownPartialSummaryRequested && markdownReadIsPartial) {
+          response = {
+            kind: 'final',
+            text: `${response.text}\n\nNote: I could read only part of the Markdown documentation; some files may be unread.`,
+          };
+        }
       }
       if (
         asksForProjectAnalysis(prompt) &&
@@ -1148,7 +1313,8 @@ async function runAgentTask(
         filesystemToolResults.length > 0 &&
         !completedFileOperation &&
         !readOnlyProjectContext &&
-        !(successfulToolIds.has('filesystem.read-file') && asksForFileAnalysis(prompt))
+        !(successfulToolIds.has('filesystem.read-file') &&
+          (asksForFileAnalysis(prompt) || markdownReadRequest))
       ) {
         const finalResponse = filesystemResultResponse(
           filesystemToolResults,
@@ -1256,8 +1422,13 @@ async function runAgentTask(
           availableTools,
           options.config.filesystemAllowedRoots,
         );
-        if (call.toolId === 'filesystem.directory-tree' && asksForProjectAnalysis(prompt)) {
-          const projectRoot = explicitProjectRoot(prompt, options.config.filesystemAllowedRoots);
+        if (
+          call.toolId === 'filesystem.directory-tree' &&
+          (asksForProjectAnalysis(prompt) || markdownReadRequest)
+        ) {
+          const projectRoot =
+            explicitProjectRoot(prompt, options.config.filesystemAllowedRoots) ??
+            (markdownReadRequest ? recentSearchDirectory : undefined);
           args = {
             ...args,
             ...(projectRoot === undefined ? {} : { path: projectRoot }),
@@ -1332,6 +1503,15 @@ async function runAgentTask(
               break;
             }
           }
+        }
+        if (
+          call.toolId === 'filesystem.read-file' &&
+          markdownReadRequest &&
+          verifiedTreeFilesByRoot.size > 0
+        ) {
+          const nextMarkdownFile = verifiedMarkdownFiles(verifiedTreeFilesByRoot)
+            .find(path => !readFilePaths.has(path));
+          if (nextMarkdownFile) args = { ...args, path: nextMarkdownFile };
         }
         let executionToolId = call.toolId;
         let executionToolArguments = args;
@@ -1445,6 +1625,9 @@ async function runAgentTask(
           Array.isArray(result.entries)
         ) {
           const treeRoot = resolve(args.path);
+          if (markdownReadRequest && result.truncated === true) {
+            markdownTreeTruncated = true;
+          }
           const treeFiles = new Set<string>();
           for (const entry of result.entries) {
             if (
@@ -1476,6 +1659,12 @@ async function runAgentTask(
           projectAnalysisRepairInstruction =
             'You have verified the project file names. Read at most one relevant entry-point/source file and, if the user asked about tests, one relevant test file, using exact paths from the tree. Call filesystem.read-file for these files (preferably together) and do not spend calls rereading the tree, README, or package metadata unless directly relevant. Then base conclusions only on those contents.';
         }
+        if (call.toolId === 'filesystem.directory-tree' && markdownReadRequest) {
+          const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
+          markdownReadRepairInstruction = markdownFiles.length > 0
+            ? `Read the Markdown files from the verified tree, starting with this exact path: ${markdownFiles[0]}. After the files have been read, summarize what the project is in a few sentences.${markdownTreeTruncated ? ' The tree was truncated, so clearly state that this is a partial read.' : ''} Do not reproduce document text.`
+            : 'The verified project tree contains no Markdown files. Report that clearly without guessing about the project.';
+        }
         if (call.toolId.startsWith('filesystem.propose-')) {
           fileOperationResults.push(serialized);
         }
@@ -1493,6 +1682,15 @@ async function runAgentTask(
           readFilePaths.add(readPath);
           if (isRecord(result) && typeof result.content === 'string') {
             verifiedFileContents.set(readPath, result.content);
+          }
+          if (markdownReadRequest) {
+            const unreadMarkdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot)
+              .filter(path => !readFilePaths.has(path));
+            markdownReadRepairInstruction = unreadMarkdownFiles.length > 0
+              ? `Continue reading the next Markdown file from the verified tree, starting with this exact path: ${unreadMarkdownFiles[0]}. Once the available Markdown files have been read, summarize the project in a few sentences using only that content.${markdownTreeTruncated ? ' The tree was truncated, so clearly state that this is a partial read.' : ''} Do not reproduce document text.`
+              : markdownTreeTruncated
+                ? 'Summarize what the project is in a few sentences using only the Markdown files actually read. Clearly state that the tree was truncated and the read is partial. Do not reproduce document text.'
+                : 'All selected Markdown files have been read. Summarize what the project is in a few sentences using only those files; do not reproduce document text or claim to have read other files.';
           }
           if (asksForProjectAnalysis(prompt) && projectAnalysisRepairAttempts > 0) {
             projectAnalysisRepairInstruction = hasRequiredProjectAnalysisReads(prompt, readFilePaths)

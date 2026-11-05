@@ -586,6 +586,179 @@ test('deep-dive analysis with a common analyze typo reads source and tests', asy
   );
 });
 
+test('Markdown read requests deterministically read verified docs and summarize them briefly', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-markdown-read-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const allowedRoot = await realpath(root);
+  const projectPath = join(allowedRoot, 'sample-project');
+  const readme = join(projectPath, 'README.md');
+  const guide = join(projectPath, 'docs', 'guide.md');
+  const source = join(projectPath, 'src', 'index.ts');
+  await mkdir(join(projectPath, 'docs'), { recursive: true });
+  await mkdir(join(projectPath, 'src'));
+  await writeFile(readme, '# Sample project\nA desktop inventory manager.\n');
+  await writeFile(guide, '# Architecture\nIt stores inventory records locally.\n');
+  await writeFile(source, 'export const internal = true;\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [allowedRoot],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.directory-tree', arguments: { path: '/wrong/path' } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: source } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: source } }],
+    },
+    { kind: 'final', text: 'It is a local desktop inventory manager that stores records on the device.' },
+  ], (messages, tools) => {
+    advertised.push((tools ?? []).map(tool => tool.id));
+    if (advertised.length === 2) {
+      assert.ok(messages?.some(message =>
+        message.role === 'user' &&
+        message.content.includes('Read the Markdown files from the verified tree')));
+    }
+  }), registry, config);
+
+  const result = await app.run(
+    undefined,
+    `Go inside this repo, read the md files so you understand what it is. Project: ${projectPath}`,
+  );
+
+  assert.match(result, /local desktop inventory manager/u);
+  assert.deepEqual(advertised, [
+    ['filesystem.directory-tree'],
+    ['filesystem.read-file'],
+    ['filesystem.read-file'],
+    [],
+  ]);
+  const readResults = app.session.messages().filter(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.read-file');
+  assert.deepEqual(readResults.map(message =>
+    message.role === 'tool' ? message.content : undefined).map(content =>
+    JSON.parse(content ?? '').content), [
+    '# Sample project\nA desktop inventory manager.\n',
+    '# Architecture\nIt stores inventory records locally.\n',
+  ]);
+  assert.equal(readResults.length, 2);
+});
+
+test('Markdown read follow-ups retain the requested workflow and report model output limits safely', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-markdown-limit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const allowedRoot = await realpath(root);
+  const projectPath = join(allowedRoot, 'sample-project');
+  const readme = join(projectPath, 'README.md');
+  await mkdir(projectPath);
+  const content = '# Verified title\nSecret body text should not be echoed by the fallback.\n';
+  await writeFile(readme, content);
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [allowedRoot],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const session = new Session(undefined, [
+    { role: 'user', content: 'Old unrelated conversation about a different repo.' },
+    { role: 'assistant', content: 'Unrelated history. '.repeat(300) },
+    { role: 'user', content: 'Go inside this repo and read the md files.' },
+    {
+      role: 'tool',
+      toolId: 'filesystem.search',
+      content: JSON.stringify({
+        matches: [{ path: projectPath, type: 'directory' }],
+        scannedDirectories: 1,
+        skippedDirectories: 0,
+        truncated: false,
+      }),
+    },
+  ]);
+  const tools = new ToolExecutor({
+    registry,
+    policy: new PolicyGateway(),
+    config,
+    logger: createLogger(() => {}),
+  });
+  let providerCalls = 0;
+  const advertised: string[][] = [];
+  const provider: ModelProvider = {
+    id: 'test.markdown-response-limit',
+    async complete(messages, _signal, advertisedTools) {
+      providerCalls++;
+      advertised.push((advertisedTools ?? []).map(tool => tool.id));
+      assert.equal(messages.some(message => message.content.includes('Old unrelated conversation')), false);
+      if (providerCalls === 1) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ toolId: 'filesystem.directory-tree', arguments: { path: '/wrong' } }],
+        };
+      }
+      if (providerCalls === 2) {
+        return {
+          kind: 'tool-calls',
+          calls: [{ toolId: 'filesystem.read-file', arguments: { path: '/wrong/README.md' } }],
+        };
+      }
+      throw new ProviderError('response-too-large');
+    },
+  };
+  const result = await runAgent(
+    'Read those.',
+    new AbortController().signal,
+    {
+      provider,
+      tools,
+      config,
+      session,
+      logger: createLogger(() => {}),
+    },
+  );
+
+  assert.match(result, /README\.md/u);
+  assert.match(result, /exceeded its configured limit/u);
+  assert.doesNotMatch(result, /Secret body text/u);
+  assert.deepEqual(advertised, [
+    ['filesystem.directory-tree'],
+    ['filesystem.read-file'],
+    [],
+  ]);
+});
+
+test('Markdown read requests give a truthful response if retries exceed the provider limit', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-markdown-retry-limit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = await realpath(root);
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [projectPath],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  let calls = 0;
+  const app = harness({
+    id: 'test.markdown-retry-limit',
+    async complete() {
+      calls++;
+      throw new ProviderError('response-too-large');
+    },
+  }, registry, config);
+
+  const result = await app.run(undefined, `Read the md files in this repo. Project: ${projectPath}`);
+
+  assert.equal(calls, 2);
+  assert.match(result, /No Markdown contents were read/u);
+  assert.equal(app.session.messages().some(message => message.role === 'tool'), false);
+});
+
 test('agent expands a home-relative model search path before filesystem validation', async () => {
   const config = {
     ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
