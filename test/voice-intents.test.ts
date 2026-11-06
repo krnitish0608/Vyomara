@@ -154,6 +154,8 @@ test('everyday words that sound like Vyom do not wake it', () => {
 
 test('doubled noise words are dropped but doubled answers are kept', () => {
   assert.equal(isLikelyNoise('झाल झाल'), true);
+  assert.equal(isLikelyNoise('um'), true);
+  assert.equal(isLikelyNoise('Hmm.'), true);
   assert.equal(isLikelyNoise('haan haan'), false);
   assert.equal(isLikelyNoise('nahi nahi'), false);
 });

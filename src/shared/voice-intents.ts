@@ -357,6 +357,7 @@ const HALLUCINATIONS = [
   /^bye[.!]?$/iu,
   /^so[.!?]?$/iu,
   /^झाल[.!?]?$/u,
+  /^(?:u+m+|u+h+|h+m+|a+h+)[.!?]?$/iu,
 ];
 
 /**

@@ -251,14 +251,13 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .thinking-indicator i:nth-child(3) { animation-delay: 0.4s; }
 @keyframes pulse { from { opacity: 0.35; transform: translateY(1px); } to { opacity: 1; transform: translateY(-2px); } }
 
-.composer { padding: 8px 10px 9px; border: 1px solid #303846; border-radius: 13px; background: #151b24; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.15); }
+.composer { display: grid; grid-template-columns: minmax(0, 1fr) 40px; column-gap: 10px; align-items: start; padding: 8px 8px 8px 12px; border: 1px solid #303846; border-radius: 13px; background: #151b24; box-shadow: 0 14px 36px rgba(0, 0, 0, 0.15); }
 .composer:focus-within { border-color: rgba(119, 151, 238, 0.64); box-shadow: 0 0 0 2px rgba(78, 118, 224, 0.1); }
-.composer textarea { display: block; width: 100%; height: 36px; min-height: 36px; max-height: 28vh; padding: 7px 4px 5px; resize: none; overflow-y: hidden; border: 0; outline: 0; background: transparent; color: #e7eaf0; font-size: 13px; line-height: 1.55; }
+.composer textarea { grid-column: 1; grid-row: 1; display: block; width: 100%; height: 36px; min-height: 88px; max-height: 28vh; padding: 7px 4px 5px; resize: none; overflow-y: hidden; border: 0; outline: 0; background: transparent; color: #e7eaf0; font-size: 13px; line-height: 1.55; }
 .composer textarea:focus-visible { outline: 0; }
 .composer textarea::placeholder { color: #778291; }
 .composer textarea:disabled { opacity: 0.6; }
-.composer-footer { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #6f7a88; font-size: 10px; }
-.composer-actions { height: 40px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.composer-rail { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; gap: 8px; }
 .voice-input-button { width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(107, 143, 235, .34); border-radius: 50%; background: rgba(15, 31, 65, .64); color: #a9b9e2; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease, box-shadow .16s ease; }
 .voice-input-button:hover:not(:disabled) { border-color: rgba(126, 158, 238, .72); background: rgba(38, 63, 120, .72); color: #eef3ff; }
 .voice-input-button:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
@@ -273,7 +272,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .send-button:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
 .send-button:disabled { background: #343a45; color: #737d89; cursor: not-allowed; }
 .send-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.2; }
-.composer-voice-status { margin: 8px 0 0; color: #aebfe4; font-size: 10px; line-height: 1.5; }
+.composer-voice-status { grid-column: 1 / -1; margin: 6px 0 0; color: #aebfe4; font-size: 10px; line-height: 1.5; }
 .composer-voice-error { color: #f0a8ae; }
 @keyframes mic-recording-pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(248, 112, 132, .1); } 50% { box-shadow: 0 0 0 6px rgba(248, 112, 132, .2); } }
 .privacy-note { min-height: 13px; margin: 9px 0 0; color: #697583; font-size: 9px; text-align: center; }
@@ -414,6 +413,15 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 @keyframes orb-breathe { 0%, 100% { box-shadow: 0 0 0 5px rgba(42, 91, 245, .16), 0 0 28px rgba(56, 83, 255, .4), inset 0 0 18px rgba(148, 127, 255, .62); } 50% { box-shadow: 0 0 0 9px rgba(42, 91, 245, .2), 0 0 42px rgba(91, 83, 255, .65), inset 0 0 24px rgba(169, 148, 255, .72); } }
 .conversation .composer { border-color: rgba(71, 105, 194, .38); border-radius: 20px; background: rgba(7, 18, 45, .94); box-shadow: 0 0 20px rgba(19, 61, 171, .12); }
 .conversation .composer:focus-within { border-color: rgba(107, 143, 235, .7); box-shadow: 0 0 0 2px rgba(51, 101, 240, .1); }
+/* Voice states live in the message box itself: glow while listening, speaking, or recording. */
+.composer.composer-listening, .conversation .composer.composer-listening { border-color: rgba(39, 217, 255, .55); box-shadow: 0 0 0 1px rgba(39, 217, 255, .1), 0 0 28px rgba(39, 217, 255, .12); }
+.composer.composer-speaking, .conversation .composer.composer-speaking { border-color: rgba(150, 120, 255, .7); box-shadow: 0 0 0 1px rgba(150, 120, 255, .12), 0 0 28px rgba(150, 120, 255, .16); }
+.composer.composer-recording, .conversation .composer.composer-recording { border-color: rgba(248, 112, 132, .6); box-shadow: 0 0 0 1px rgba(248, 112, 132, .1), 0 0 24px rgba(248, 112, 132, .1); }
+.composer-listening textarea::placeholder { color: #9fdcf0; }
+.composer-speaking textarea::placeholder { color: #c4b6ff; }
+.composer-recording textarea::placeholder { color: #f3b3bf; }
+/* Words heard so far in a spoken turn read like typed text. */
+.composer.composer-hearing textarea::placeholder { color: #e7eaf0; }
 .conversation .privacy-note { font-size: 8px; }
 
 .activity-panel { gap: 12px; }

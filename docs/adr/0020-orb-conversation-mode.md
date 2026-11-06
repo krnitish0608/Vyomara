@@ -33,6 +33,11 @@ Typed and dictated requests stay silent (unchanged).
      The microphone ignores them.
    - The orb and the mini window show listening, hearing, thinking and
      speaking.
+   - In the main window the message box itself shows the voice state: its
+     border glows (cyan listening, violet speaking, red recording), its
+     placeholder says what Vyom is doing, and the words of the turn appear in
+     it as they are heard. There are no separate status lines under the orb
+     or the box. Record and Send sit in a vertical rail inside the box.
    - Pressing the orb while Vyom speaks interrupts it and listens again.
 4. **Noise safety.**
    - While a task runs, only "ruko/stop" or a request that names Vyom is

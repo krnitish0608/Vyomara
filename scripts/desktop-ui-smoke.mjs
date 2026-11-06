@@ -373,8 +373,8 @@ try {
         microphone.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)} &&
         microphone.getBoundingClientRect().width === 40 &&
         microphone.getBoundingClientRect().height === 40 &&
-        document.querySelector('.composer').getBoundingClientRect().height <= 104 &&
-        document.querySelector('#prompt').getBoundingClientRect().height <= 40;
+        document.querySelector('.composer').getBoundingClientRect().height <= 112 &&
+        document.querySelector('#prompt').getBoundingClientRect().height <= 92;
     })()`),
     'composer starts compact with the record button and a disabled send button when the message is empty',
   );
@@ -396,12 +396,14 @@ try {
       const sendBox = send.getBoundingClientRect();
       const microphone = ${JSON.stringify(microphonePosition)};
       const now = microphoneButton.getBoundingClientRect();
-      // Record and Send sit side by side; the record button does not move while typing.
+      // Record sits above Send in a vertical rail inside the box; neither moves while typing.
+      const box = document.querySelector('.composer').getBoundingClientRect();
       return sendBox.width === microphone.width && sendBox.height === microphone.height &&
         Math.abs(now.x - microphone.x) < 1 && Math.abs(now.y - microphone.y) < 1 &&
-        sendBox.x > now.x && Math.abs(sendBox.y - now.y) < 1;
+        Math.abs(sendBox.x - now.x) < 1 && sendBox.y > now.y + now.height - 1 &&
+        sendBox.right <= box.right && sendBox.bottom <= box.bottom;
     })()`),
-    'typing enables a same-size Send button beside the record button, which stays in place',
+    'typing enables a same-size Send button below the record button, inside the message box',
   );
   assert(
     await evaluate(`document.querySelectorAll('.message-user').length === 0 &&

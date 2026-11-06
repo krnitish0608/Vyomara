@@ -88,6 +88,8 @@ export function App() {
   const [voiceHearing, setVoiceHearing] = useState(false);
   /** Vyom is speaking a reply aloud. */
   const [vyomSpeaking, setVyomSpeaking] = useState(false);
+  /** Words of the spoken turn in progress, shown live in the message box. */
+  const [liveTurn, setLiveTurn] = useState('');
   const speakingRef = useRef(false);
   const handleTurn = useRef<((text: string) => void) | undefined>(undefined);
   /** Joins the phrases of one spoken request and waits until the speaker has finished. */
@@ -182,6 +184,7 @@ export function App() {
         voiceSession.current.setOpen(false);
         turn.current.reset();
         setVoiceTranscript('');
+        setLiveTurn('');
         releaseCapture.current?.();
         if (wasListening) void playEarcon('end');
       }
@@ -453,6 +456,7 @@ export function App() {
         if (fillTurn) {
           fillTurn(heard);
           setVoiceTranscript(turn.current.text);
+          setLiveTurn(turn.current.text);
           return;
         }
         if (!heard) return;
@@ -469,6 +473,7 @@ export function App() {
 
   /** The speaker finished a turn in conversation: decide what it means. */
   handleTurn.current = text => {
+    setLiveTurn('');
     setVoiceTranscript(text);
     handleHeard.current?.(text);
   };
@@ -535,6 +540,7 @@ export function App() {
     // Do not record Vyom's own voice as a command.
     voiceCapture.current.setMuted(true);
     turn.current.reset();
+    setLiveTurn('');
     setVoiceHearing(false);
     speakingRef.current = true;
     setVyomSpeaking(true);
@@ -996,6 +1002,26 @@ export function App() {
     : speechSetup?.modelReady
       ? 'Talk to Vyom'
       : 'Download offline voice model and start listening';
+  // The message box shows what voice is doing: no separate status lines.
+  const inConversation = voiceListening && dictation !== 'main';
+  const composerMood = dictation === 'main'
+    ? 'recording'
+    : inConversation
+      ? vyomSpeaking ? 'speaking' : 'listening'
+      : undefined;
+  const composerPlaceholder = dictation === 'main'
+    ? voiceHearing ? 'Recording… tap ■ to stop' : 'Recording… speak, then tap ■ to stop'
+    : voiceStarting
+      ? 'Starting the microphone…'
+      : inConversation
+        ? liveTurn || (vyomSpeaking
+          ? 'Vyom is speaking… tap the orb to interrupt'
+          : requestPending
+            ? 'Vyom is working on it… say “ruko” to stop'
+            : voiceHearing
+              ? 'Listening…'
+              : 'Boliye, main sun raha hoon…  (say “bas” to end)')
+        : 'Message Vyom…';
   const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
   const voiceOrbTitle = speechSetup?.runtimeAvailable === false
     ? 'Install whisper.cpp to enable offline voice'
@@ -1151,11 +1177,8 @@ export function App() {
                   title={voiceOrbTitle}
                   onActivate={() => void voiceOrbAction()}
                 />
-                <p
-                  className={`${voiceError || voiceDownloading || voiceStarting || voiceListening ? '' : 'visually-hidden '}voice-orbit-status${voiceError ? ' voice-orbit-error' : ''}`}
-                  role={voiceError ? 'alert' : 'status'}
-                  aria-live="polite"
-                >
+                {/* Voice state is shown in the message box; this stays for screen readers. */}
+                <p className="visually-hidden voice-orbit-status" role="status" aria-live="polite">
                   {voiceError
                     ? voiceError
                     : voiceDownloading
@@ -1219,7 +1242,7 @@ export function App() {
             ))}
             </div>
           </div>
-          <form className="composer" onSubmit={event => void submit(event)}>
+          <form className={`composer${composerMood ? ` composer-${composerMood}` : ''}${liveTurn && !prompt ? ' composer-hearing' : ''}`} onSubmit={event => void submit(event)}>
             <label className="visually-hidden" htmlFor="prompt">Message Vyom</label>
             <textarea
               ref={promptInput}
@@ -1228,7 +1251,7 @@ export function App() {
               onChange={event => {
                 setPrompt(event.target.value);
               }}
-              placeholder={dictation === 'main' ? 'Listening… your words appear here' : 'Message Vyom…'}
+              placeholder={composerPlaceholder}
               rows={1}
               maxLength={32000}
               disabled={requestPending}
@@ -1243,8 +1266,7 @@ export function App() {
                 }
               }}
             />
-            <div className="composer-footer">
-              <div className="composer-actions">
+            <div className="composer-rail">
                 <button
                   className={`voice-input-button${dictation === 'main' ? ' voice-input-dictating' : ''}`}
                   type="button"
@@ -1279,23 +1301,10 @@ export function App() {
                     <path d="M12 19V5m-7 7 7-7 7 7" />
                   </svg>
                 </button>
-              </div>
             </div>
-            {(voiceError || voiceDownloading || voiceStarting || voiceListening || dictation === 'main') && (
-              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${messages.length === 0 && !voiceError && dictation !== 'main' ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
-                {voiceError
-                  ? voiceError
-                  : voiceDownloading
-                    ? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`
-                    : voiceStarting
-                      ? 'Starting local microphone…'
-                      : dictation === 'main'
-                        ? voiceHearing ? 'Recording… tap ■ to stop' : 'Recording… speak, then tap ■ to stop'
-                        : voiceListening
-                          ? vyomSpeaking
-                            ? 'Vyom is speaking · tap the orb to interrupt'
-                            : voiceTranscript || 'Boliye, main sun raha hoon · say “bas” to end'
-                          : ''}
+            {(voiceError || voiceDownloading) && (
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}`} role={voiceError ? 'alert' : 'status'}>
+                {voiceError ?? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`}
               </p>
             )}
           </form>
