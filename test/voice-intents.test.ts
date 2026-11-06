@@ -64,6 +64,9 @@ test('voice session: wake phrase, follow-up window, queueing, cancel, and spoken
   assert.deepEqual(session.decide('aur Chrome bhi', false), { type: 'ignore' }, 'follow-up window expired');
   assert.deepEqual(session.decide('Vyom, maximize karo', true), { type: 'queue', text: 'maximize karo' });
   assert.deepEqual(session.decide('ruko', true), { type: 'cancel' });
+  // Noise heard in the follow-up window (real case: static transcribed as "झाल").
+  assert.deepEqual(session.decide('झाल', false), { type: 'ignore' });
+  assert.deepEqual(session.decide('Chrome bhi kholo', false), { type: 'submit', text: 'Chrome bhi kholo' });
 
   session.awaitApproval('other');
   assert.deepEqual(session.decide('hmm what changed', false), { type: 'reask' });
@@ -107,4 +110,19 @@ test('speech voice follows the script of the reply', async () => {
   assert.equal(await voiceFor('हाँ, बदलाव लागू कर दिया।', installed), 'Lekha');
   assert.equal(await voiceFor('Theek hai, VS Code khol diya.', installed), 'Rishi');
   assert.equal(await voiceFor('Hello', new Set(['Samantha'])), undefined);
+});
+
+// Heard through the real microphone in the app: macOS saying "Hello Vyomara", and room noise.
+test('real-microphone transcripts: Devanagari greeting before the name, and noise hallucinations', async () => {
+  const { isLikelyNoise, matchWakePhrase } = await import('../src/shared/voice-intents.ts');
+  assert.deepEqual(matchWakePhrase('आलो वायोमरा'), { command: '' });
+  assert.deepEqual(matchWakePhrase('आलो वायोमरा, कैलकुलेटर खोलो'), { command: 'कैलकुलेटर खोलो' });
+  assert.deepEqual(matchWakePhrase('ok Vyom open Chrome'), { command: 'open Chrome' });
+  assert.equal(matchWakePhrase('so what are we doing for lunch'), undefined);
+  assert.equal(matchWakePhrase('yesterday we visited the museum'), undefined);
+  assert.equal(matchWakePhrase('लड़ लड़ लड़ लड़'), undefined);
+  assert.equal(isLikelyNoise('लड़ लड़ लड़ लड़'), true);
+  assert.equal(isLikelyNoise('Thank you.'), true);
+  assert.equal(isLikelyNoise('हाँ, कर दो'), false);
+  assert.equal(isLikelyNoise('Hello Vyomara, open Chrome'), false);
 });

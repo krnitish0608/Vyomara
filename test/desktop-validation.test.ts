@@ -59,3 +59,15 @@ test('desktop IPC requires an exact DELETE confirmation for reviewed session his
     );
   }
 });
+
+test('microphone requests are trusted only from Vyomara\'s own page', async () => {
+  const { isTrustedPageRequest } = await import('../src/desktop/validation.ts');
+  const page = 'file:///Users/me/vyomara/out/renderer/index.html';
+  // Regression: Chromium reports the origin as "file:///", which an origin check of "file://" rejected.
+  assert.equal(isTrustedPageRequest(page, page), true);
+  assert.equal(isTrustedPageRequest(`${page}#pip`, page), true);
+  assert.equal(isTrustedPageRequest('file:///Users/me/Downloads/evil.html', page), false);
+  assert.equal(isTrustedPageRequest('https://example.com/', page), false);
+  assert.equal(isTrustedPageRequest('http://localhost:5173/', page, 'http://localhost:5173'), true);
+  assert.equal(isTrustedPageRequest('http://localhost:9999/', page, 'http://localhost:5173'), false);
+});

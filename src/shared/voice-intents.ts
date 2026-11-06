@@ -8,7 +8,7 @@
 const WAKE_NAMES = ['vyomara', 'vyom'];
 const GREETINGS = new Set([
   'hello', 'hallo', 'helo', 'hey', 'hi', 'ok', 'okay', 'oye', 'arey', 'are', 'namaste', 'namaskar',
-  'हेलो', 'हैलो', 'नमस्ते', 'नमस्ति', 'अरे', 'ओके',
+  'हेलो', 'हैलो', 'हलो', 'आलो', 'हल्लो', 'नमस्ते', 'नमस्ति', 'अरे', 'ओके', 'aalo', 'halo', 'allo',
 ]);
 
 function editDistance(left: string, right: string): number {
@@ -110,16 +110,20 @@ export interface WakeMatch {
  */
 export function matchWakePhrase(transcript: string): WakeMatch | undefined {
   const words = speechWords(transcript);
-  let index = 0;
-  while (index < words.length && index < 2 && GREETINGS.has(words[index]!)) index += 1;
-  for (const span of [1, 2, 3]) {
-    if (index + span > words.length) break;
-    const candidate = words.slice(index, index + span).join('');
-    if (candidate && soundsLikeName(candidate, span > 1)) {
-      const rawWords = transcript.trim().split(/\s+/u);
-      // Drop the greeting and name words from the original text.
-      const command = rawWords.slice(index + span).join(' ').replace(/^[\s,.;:!?।-]+/u, '').trim();
-      return { command };
+  // The name may follow up to two greeting words, which whisper spells many
+  // ways ("Hello", "हैलो", "आलो", "ok"). Other leading words are not skipped:
+  // "what are" would otherwise sound like "Vyomara".
+  for (let index = 0; index <= Math.min(2, words.length - 1); index += 1) {
+    if (index > 0 && !GREETINGS.has(words[index - 1]!)) break;
+    for (const span of [1, 2, 3]) {
+      if (index + span > words.length) break;
+      const candidate = words.slice(index, index + span).join('');
+      if (candidate && soundsLikeName(candidate, span > 1)) {
+        const rawWords = transcript.trim().split(/\s+/u);
+        // Drop the greeting and name words from the original text.
+        const command = rawWords.slice(index + span).join(' ').replace(/^[\s,.;:!?।-]+/u, '').trim();
+        return { command };
+      }
     }
   }
   return undefined;
@@ -264,8 +268,14 @@ export class VoiceSession {
     }
 
     if (!wake && !this.inConversation) return { type: 'ignore' };
+    if (requestPending && STOP_COMMAND.test(words)) {
+      this.extend();
+      return { type: 'cancel' };
+    }
+    // Without the wake phrase, a lone word is usually noise that whisper turned
+    // into text ("झाल"); real follow-up requests have several words.
+    if (!wake && words.split(' ').length < 2) return { type: 'ignore' };
     this.extend();
-    if (requestPending && STOP_COMMAND.test(words)) return { type: 'cancel' };
     if (wake && request === '') return { type: 'greet' };
     return requestPending ? { type: 'queue', text: request } : { type: 'submit', text: request };
   }
@@ -301,4 +311,25 @@ export function approvalQuestion(proposal:
     default:
       return `${proposal.application} ko ${proposal.action} karun?`;
   }
+}
+
+const HALLUCINATIONS = [
+  /^thank(?:s| you)(?: (?:for watching|so much))?[.!]?$/iu,
+  /^(?:please )?subscribe/iu,
+  /^subtitles? by/iu,
+  /^you$/iu,
+  /^bye[.!]?$/iu,
+];
+
+/**
+ * Whisper invents text for silence or noise: one word repeated ("लड़ लड़ लड़"),
+ * or stock phrases ("Thank you."). These are dropped before intent matching.
+ */
+export function isLikelyNoise(transcript: string): boolean {
+  const text = transcript.trim();
+  if (text === '') return true;
+  if (HALLUCINATIONS.some(pattern => pattern.test(text))) return true;
+  const words = speechWords(text);
+  if (words.length === 0) return true;
+  return words.length >= 3 && new Set(words).size === 1;
 }

@@ -101,3 +101,19 @@ export function parseDesktopChatRequest(
     ...(record.voice === true ? { voice: true } : {}),
   };
 }
+
+/**
+ * Whether a microphone request comes from Vyomara's own page. Chromium reports
+ * file pages with the origin "file:///", so the exact page URL is compared
+ * (ignoring the hash, e.g. "#pip"). In development the dev-server origin is used.
+ */
+export function isTrustedPageRequest(requestingUrl: string, pageUrl: string, devServerUrl?: string): boolean {
+  if (devServerUrl) {
+    try {
+      return new URL(requestingUrl).origin === new URL(devServerUrl).origin;
+    } catch {
+      return false;
+    }
+  }
+  return requestingUrl.split('#')[0] === pageUrl;
+}

@@ -19,7 +19,7 @@ import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
-import { approvalQuestion, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { approvalQuestion, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
 import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
@@ -166,7 +166,7 @@ export function App() {
             setVoiceTranscript('…');
             window.vyomara.transcribeSpeech(wav)
               .then(text => {
-                if (text) handleHeard.current?.(text);
+                if (text && !isLikelyNoise(text)) handleHeard.current?.(text);
                 else setVoiceTranscript('');
               })
               .catch(error => setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.'));

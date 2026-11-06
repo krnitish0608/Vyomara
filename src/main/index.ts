@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, session, shell, systemPreferences } from 'electron';
 import type { SaveDialogOptions } from 'electron';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -27,6 +27,7 @@ import type { AppConfig } from '../config/config.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import {
   DesktopValidationError,
+  isTrustedPageRequest,
   parseDesktopChatRequest,
   parseDesktopFileOperationApprovalRequest,
   parseDesktopSessionDeleteRequest,
@@ -882,23 +883,22 @@ app.whenReady().then(async () => {
     const audioOnlyRequest = 'mediaTypes' in details &&
       details.mediaTypes?.includes('audio') === true &&
       details.mediaTypes.every(mediaType => mediaType === 'audio');
-    let trustedOrigin = false;
-    if ('securityOrigin' in details && details.securityOrigin) {
-      trustedOrigin = details.securityOrigin === 'file://';
-      if (!trustedOrigin && process.env.ELECTRON_RENDERER_URL) {
-        try {
-          trustedOrigin = new URL(details.securityOrigin).origin === new URL(process.env.ELECTRON_RENDERER_URL).origin;
-        } catch {
-          trustedOrigin = false;
-        }
-      }
-    }
-    callback(
-      webContents === mainWindow?.webContents &&
+    // Only Vyomara's own page may use the microphone. Chromium reports file
+    // pages with the origin "file:///", so also check the exact page URL.
+    const requestingUrl = 'requestingUrl' in details && typeof details.requestingUrl === 'string' ? details.requestingUrl : '';
+    const trustedOrigin = isTrustedPageRequest(
+      requestingUrl,
+      pathToFileURL(fileURLToPath(new URL('../renderer/index.html', import.meta.url))).href,
+      process.env.ELECTRON_RENDERER_URL,
+    );
+    const allowed = webContents === mainWindow?.webContents &&
       permission === 'media' &&
       audioOnlyRequest &&
-      trustedOrigin,
-    );
+      trustedOrigin;
+    if (!allowed) {
+      console.error(JSON.stringify({ event: 'permission.denied', permission, requestingUrl: requestingUrl.split('#')[0] }));
+    }
+    callback(allowed);
   });
   try {
     const loaded = loadConfig(process.env);
