@@ -23,19 +23,23 @@ proposed decisions must not be presented as current implementation choices.
 | [0011](./0011-platform-baseline.md) | macOS, Node.js, and compatibility baseline | Accepted |
 | [0012](./0012-desktop-interface.md) | Initial macOS desktop interaction shell | Superseded |
 | [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Superseded |
-| [0014](./0014-human-reviewed-filesystem-operations.md) | Human-reviewed machine-wide filesystem operations | Accepted |
+| [0014](./0014-human-reviewed-filesystem-operations.md) | Human-reviewed machine-wide filesystem operations | Accepted; amended by 0015 |
+| [0015](./0015-coding-agent-loop-and-approved-actions.md) | Coding-agent loop, approved commands/apps/web, selectable models | Accepted |
 
 ## Open decisions
 
 The current product direction is recorded in
 [docs/product-direction.md](../product-direction.md). Historical ADRs remain
 useful as context but do not authorize the removed desktop panels or manual
-project selection. ADR-0014 defines the current reviewed filesystem workflow.
+project selection. ADR-0014 defines the reviewed filesystem workflow, and
+ADR-0015 defines the current agent loop, tools, approved actions, and model
+selection.
 
 User confirmation is needed for:
 
-1. **Approval UX:** how future side-effect requests beyond reviewed filesystem
-   operations are displayed and scoped.
+1. **Approval UX:** whether frequently used read-only commands (for example
+   `git status`, test runs) may be pre-approved per project, and how spoken
+   approvals are confirmed in the voice phase.
 2. **Configuration:** secret injection for any future credential-bearing
    provider.
 3. **Diagnostics:** retention/rotation policy and any future opt-in content

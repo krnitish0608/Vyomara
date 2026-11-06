@@ -1,50 +1,88 @@
 # Vyomara Product Direction
 
-## Current focus
+> This document is authoritative. Where it conflicts with the historical
+> [requirements](./requirements.md) or older ADRs, this document and
+> [ADR-0015](./adr/0015-coding-agent-loop-and-approved-actions.md) win.
 
-Vyomara is being built as a voice-operated personal AI agent. The user should
-be able to describe an outcome naturally and let the agent understand the
-environment and determine the next step, rather than manually selecting a
-project or configuring a workspace first.
+## Vision
 
-The desktop app is intentionally simple while that agent workflow is built:
+Vyom is a personal AI agent that operates the user's Mac on their behalf. The
+user states an outcome and the agent does the work:
 
-- Keep Assistant, History, chat, voice input, and visible task activity.
-- Do not expose Memory, Permissions, Project workspace, or Settings panels.
-- Do not require manual project selection before asking for help.
-- Let the desktop search and inspect files across the machine, subject to OS
-  permissions and blocked system/credential paths.
-- Require a review of every proposed file/folder creation or text edit, and a
-  separate confirmation for each deletion. Move approved deletions to Trash.
-- Keep shell execution, app control, and other integrations deferred until
-  they fit a coherent voice-first workflow with clear safety boundaries.
+- **Code like a capable coding agent:**
+  - Find the project and the relevant files without being told where they
+    are.
+  - Read and understand the code.
+  - Make focused edits, run tests and builds, and fix what fails.
+- **Operate apps:** open VS Code on a project, open Chrome and search or browse,
+  and other applications and tasks over time.
+- **By voice:** typing first, then a voice-first experience with the same
+  capabilities.
 
-Removing those desktop panels does not delete existing local conversation
-data or change the CLI's separate capabilities. The desktop app currently
-does not provide memory management or model switching controls.
+## Phases
+
+1. **Coding agent, typed (current focus).** Make Vyom reliable at coding work
+   in the desktop chat and CLI:
+   - Discovery: project folders, name/glob search, content search, and
+     ranged reads.
+   - Reviewed edits.
+   - Approved shell commands for tests, builds, and git.
+   - Honest verified-action reporting.
+   - Model choice in the UI.
+2. **Apps and the web.** Today: open any app (optionally with a file or
+   folder) and open web pages or Google searches in a chosen browser, each
+   after approval. Next:
+   - Read web pages (fetch and summarize), with disclosure of what is sent.
+   - Richer app integrations (VS Code workspace/terminal, Finder, Notes,
+     Calendar).
+   - Reusable task recipes.
+3. **Voice-first.** Make the existing offline voice input and spoken replies
+   the primary way to work:
+   - Wake phrase ("Hello Vyomara").
+   - Spoken approvals with a visible confirmation.
+   - Concise spoken summaries of long results.
+
+## Desktop app
+
+Keep the interface focused:
+
+- **Assistant chat:**
+  - Markdown replies.
+  - A live list of every step the agent takes.
+  - A Stop button.
+- **Approvals:**
+  - A diff for each file change.
+  - The exact command and folder for each shell command.
+  - The app and target, or the URL and receiving website, for each launch.
+  - `DELETE` confirmation for each deletion.
+- **History:** review, export, and delete conversations.
+- **Models:** list installed Ollama models, switch models, and download new
+  ones.
+- **Voice:** offline input and local spoken replies.
+
+No manual project selection. Memory management and other settings panels are
+deferred until there is a clear need.
 
 ## Product principles
 
-- Voice is the primary interaction, with visible text input as a fallback.
-  Listening, speaking, muted, running, stopped, and failed states must remain
-  visible and directly controllable.
-- Keep the request and its real task progress together. Show truthful status,
-  completed work, errors, and a direct way to stop a task.
-- Keep local processing and storage as the default. Clearly disclose whenever
-  data leaves the Mac.
-- Treat file contents, web pages, tool results, and model-generated plans as
-  untrusted data.
-- Use least privilege, bounded work, visible errors, and reliable
-  cancellation. Require action-specific approval before sensitive or
-  destructive operations.
-- Never imply that an action succeeded unless the result confirms it.
-
-## Project workflow direction
-
-Project access does not depend on manually choosing a directory. The desktop
-uses bounded filesystem discovery and a per-operation human review boundary
-for changes. File contents remain untrusted input, and platform permissions
-and protected-path rules remain in force.
+- **Outcome first.** The agent explores, acts, and verifies until the task is
+  done, within visible step limits. It does not stop to ask permission for
+  read-only steps.
+- **The user approves every change to the world.** This covers edits,
+  deletions, commands, app launches, and web pages. Each approval covers
+  exactly one action, and rejection is respected.
+- **Truthful status.** Show real progress and errors. Only claim what a tool
+  result confirms; the verified-actions list is the source of truth.
+- **Local-first.** Models run in local Ollama. Clearly disclose anything that
+  leaves the Mac, for example a URL opened in a browser.
+- **Untrusted content.** File contents, web pages, tool results, and model
+  plans are data, never instructions.
+- **Least privilege and bounded work:**
+  - Protected system and credential paths are blocked.
+  - Steps and output are bounded.
+  - Cancellation is reliable.
+- **Speak the user's language.** Support English, Hindi, and Hinglish (in
+  Roman script when the user writes that way).
 
 ## Reference image
 

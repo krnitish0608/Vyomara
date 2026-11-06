@@ -2,25 +2,33 @@
 
 ## Status
 
-This architecture blueprint was created in Phase 3 and contains historical
-design decisions. The desktop currently provides Assistant, History, chat,
-voice input, cancellation, task activity, machine-wide file discovery, and
-user-reviewed file operations. System and credential paths are blocked.
-The CLI continues to use its separately configured, read-only filesystem
-capabilities. Existing local data is not deleted when desktop controls change.
+Current as of [ADR-0015](./adr/0015-coding-agent-loop-and-approved-actions.md).
+The desktop app and the CLI share one agent that works like a coding agent:
 
-The diagram and older phase notes below describe the previous target
-architecture, not a feature inventory for the current desktop app. Update
-those designs only when a future voice-first workflow is defined. Decisions
-labeled **Accepted** in the [ADR index](./adr/README.md) may also be historical
-and should not be treated as an instruction to re-add a removed UI.
+- It loops over model calls and tools until the task is done.
+- It discovers projects without manual selection.
+- It reads, searches, and edits code through reviewed proposals.
+- It runs approved shell commands, and opens apps and web pages after
+  approval.
+
+The desktop adds:
+- live step activity;
+- diff-based review cards;
+- History;
+- a Models panel for choosing or downloading Ollama models;
+- offline voice input.
+
+Later sections still contain some MVP-era phase notes. Where they conflict
+with ADR-0015 or [the product direction](./product-direction.md), those
+documents win.
 
 ## Architecture at a glance
 
 The MVP is a single-process modular monolith with one primary agent. UI,
 provider, storage, and tool implementations sit behind narrow interfaces.
-There is no worker-agent service, cloud fallback, shell tool, or direct,
-unreviewed filesystem mutation capability in the MVP.
+There is no worker-agent service, cloud fallback, or direct, unreviewed
+filesystem mutation. Shell commands, app launches, and web pages exist only as
+approval-gated actions.
 
 ```mermaid
 flowchart TD
@@ -34,8 +42,8 @@ flowchart TD
     Ollama[Local Ollama adapter]
     ToolRegistry[Tool registry and schemas]
     Policy[Policy and approval gateway]
-    Tools[Bounded filesystem tools]
-    Roots[CLI configured roots / desktop machine scope with exclusions]
+    Tools[Filesystem tools and approved actions]
+    Roots[Machine scope with protected-path exclusions]
     Store[Local persistence interface]
     History[Session history]
     Memory[Explicit memory]
@@ -58,21 +66,28 @@ flowchart TD
     Tools --> Audit
 ```
 
-The CLI stores local session history, supports review, continuation, and
-deletion, and uses its separate configured, read-only filesystem capabilities.
-Desktop chat exposes bounded search/read tools and approval-only file
-operations through a typed preload bridge. Each create/edit requires review of
-the exact path and full text; each deletion requires its own typed confirmation
-and moves the item to Trash. Filesystem approvals are in-memory and scoped to
-one active request. History supports review, typed deletion, continuation, and
-complete-session JSON export to a new owner-only file. Provider configuration
-comes from the current process environment; the desktop has no provider
-settings controls.
+Both hosts (Electron main and the CLI) compose the same request service
+(`src/app/application.ts`). They differ only in how approvals are shown:
 
-The Ollama endpoint is environment-configured and loopback-only. Tool
-arguments remain strictly validated through the registry and policy gateway.
-Unsupported shell, web, and direct filesystem mutation requests are refused;
-assistant claims about unsupported execution are not evidence of success.
+- **Desktop:** cards sent over a typed preload bridge.
+- **CLI:** terminal prompts that print a diff.
+
+Each request works like this:
+1. It opens or continues a stored session.
+2. It builds the tool registry with the host's approval ports.
+3. It runs the agent loop (`src/agent/agent.ts`).
+
+The agent's system prompt (`src/agent/system-prompt.ts`) describes:
+- the environment: home directory, project folders, and the active project;
+- the working rules for the tools that are actually available.
+
+Before each model call, history is fitted to the context budget
+(`src/agent/context.ts`). Every reply ends with a verified-actions list built
+from tool results.
+
+The Ollama endpoint is loopback-only. The model can be chosen in the desktop
+Models panel (stored in local app settings), with `--model` on the CLI, or
+with `VYOM_OLLAMA_MODEL`.
 
 ## Components and boundaries
 
@@ -82,19 +97,21 @@ assistant claims about unsupported execution are not evidence of success.
 | Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/speech IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
 | Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
-| Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, bypass file-operation approval, or execute model-generated shell. |
+| Primary agent | Loop: send history + tools to the model, execute requested tool calls, feed results/errors back, stop on a final answer or a step limit; nudge stalled models; report verified actions. | Grant permissions, bypass approvals, or claim actions no tool result confirms. |
 | Provider interface | Define normalized request, response, cancellation, and error contracts. | Expose provider-specific objects to agent or tools. |
 | Ollama adapter | Translate the provider contract to the selected local Ollama-compatible API/model. | Silently contact a remote provider or decide policy. |
 | Tool registry | Resolve stable tool names, validate input/output schemas, classify effects, and enforce limits. | Allow unknown or model-invented tools to execute. |
 | Policy/approval gateway | Check identity, scope, permission, and approval before any side effect; deny by default. | Let model output or a tool self-authorize. |
-| Filesystem tools | Search/list/read with bounded traversal; stage changes for explicit approval; enforce protected paths and symlink containment. | Apply an unreviewed change, traverse a symlink, or return unbounded content. |
+| Filesystem tools | Name/glob and content search, tree/list, ranged reads; stage edits/creations/deletions for explicit review; enforce protected paths and symlink containment. | Apply an unreviewed change, traverse a symlink, or return unbounded content. |
+| Action tools | `run_command`, `open_application`, `open_url`: validate, show the exact action, and run only after per-action approval; bound command output and time. | Run, launch, or open anything without approval, or open non-http(s) URLs. |
 | Persistence interface | Separate session history from explicit memory and expose inspect/review/delete operations. | Automatically promote conversation into durable memory. |
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 
 These are logical boundaries within one process, not separate services.
 
 The desktop renderer runs with context isolation, sandboxing, disabled Node
-integration, and web security. It renders assistant output as text. No remote
+integration, and web security. It renders assistant Markdown with a small
+React renderer (no HTML injection). No remote
 font or renderer-side provider request is used.
 
 ## Request and tool flows
@@ -126,10 +143,13 @@ font or renderer-side provider request is used.
    function by emitting arbitrary code.
 2. The registry rejects unknown names, validates arguments, and applies
    per-tool timeout/output limits and effect classification.
-3. Policy checks the request, configured roots, and current permission. The
-   CLI filesystem tools are read-only. Desktop proposal tools are registered
-   only with an active approval port; direct write/delete effects remain denied.
-   Each exact proposal must be approved by the renderer before application.
+3. Policy checks the effect:
+   - `read` and `propose` are always allowed.
+   - `shell`, `launch`, and `network` are allowed only when the host supplied
+     approval ports.
+   - Raw `write`/`delete` effects are always denied.
+
+   Proposal and action tools wait for the user to approve each exact action.
 4. The tool executes with least privilege. Filesystem paths are resolved and
    checked against allowed roots, including symlink targets, at the point of
    access.
@@ -147,10 +167,16 @@ responses, cancellation, and typed errors. An adapter owns Ollama transport,
 serialization, endpoint/model compatibility, and local availability errors.
 No automatic cloud fallback is allowed.
 
-The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
-default model `llama3.2`, and loopback endpoint documented in
-[ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
-the installed Ollama version was not recorded. Tool definitions come from
+The adapter uses Ollama `/api/chat`:
+- It streams in the desktop and makes plain requests in the CLI.
+- It always sends `options.num_ctx`.
+- It sends `think: false` to thinking-capable models unless
+  `VYOM_OLLAMA_THINK=true`.
+- It merges tool calls spread across stream chunks.
+- It can list and pull models for the Models panel.
+
+The default model is `qwen3:14b`, tested with Ollama 0.40.13 (see
+[the Ollama guide](./ollama.md)). Tool definitions come from
 registered tools; structured assistant tool-call and tool-result
 messages stay in the temporary session. No provider framework or SDK has been
 added.
@@ -196,39 +222,31 @@ may include the database.
   work; re-check policy on retry; never turn a failed or cancelled operation
   into a success.
 
-## Proposed Phase 4 source layout
-
-This is a proposal, not a commitment to a specific CLI framework or storage
-package. Module interfaces should remain testable without Ollama or real user
-files.
+## Source layout
 
 ```text
 src/
-  app/                 # composition root and lifecycle
-  interaction/         # proposed text adapter
-  sessions/            # session state, turns, cancellation
-  agent/               # one primary agent and bounded loop
-  providers/
-    contracts/         # provider port and normalized types
-    ollama/            # isolated local adapter
+  agent/
+    agent.ts            # model/tool loop, nudges, verified actions, activity labels
+    system-prompt.ts    # environment discovery (project folders, active project) and rules
+    context.ts          # fit history into the model's context budget
+  app/application.ts    # request service shared by desktop and CLI; model selection storage
+  cli.ts                # terminal chat/REPL with diff and y/N approvals
+  config/               # validated environment configuration
+  desktop/              # approval managers, macOS launcher, speech, IPC contracts/validation
+  main/ preload/        # Electron main process and typed bridge
+  providers/provider.ts # provider port, Ollama adapter (chat, list, pull), placeholder
+  renderer/             # React UI (chat, approvals with diffs, activity, History, Models)
+  session/ tasks/       # in-memory session and task-run lifecycle events
+  shared/               # bounded execution, line diff (also used by the renderer)
+  storage/              # SQLite sessions, memory, audit events, app settings
   tools/
-    contracts/         # schemas, registry, result limits
-    filesystem/        # bounded discovery, protected paths, and reviewed changes
-  policy/              # authorization and approval gateway
-  persistence/
-    contracts/         # history and explicit-memory ports
-  diagnostics/         # redaction, audit event contract
-  config/              # validated non-secret configuration
-test/
-  unit/
-  contracts/
-  security/
-  evaluations/
+    contracts.ts executor.ts policy.ts default-tools.ts
+    filesystem-tools.ts # discovery, search, ranged reads, reviewed changes
+    action-tools.ts     # run_command, open_application, open_url
+    command-runner.ts   # zsh runner with bounded output and process-group timeouts
+test/                   # node:test suites (agent, tools, approvals, provider, storage, CLI)
 ```
-
-Implementation may adjust names after the language, interaction, and
-persistence decisions are confirmed. Keep platform-specific code and
-provider-specific behavior inside adapters.
 
 ## MVP implementation sequence
 

@@ -1,6 +1,9 @@
 # ADR-0006: Structured tool registry and execution boundary
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by [ADR-0015](./0015-coding-agent-loop-and-approved-actions.md) — the registry now also holds
+  reviewed file-change tools and approval-gated `run_command`, `open_application`,
+  and `open_url`. The model still cannot execute anything directly: every call is
+  a validated, registered tool, and commands run only after per-command approval.
 
 ## Context and problem
 

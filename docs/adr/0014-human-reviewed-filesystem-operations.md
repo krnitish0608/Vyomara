@@ -1,6 +1,9 @@
 # ADR-0014: Human-Reviewed Filesystem Operations
 
-- **Status:** Accepted; supersedes the selected-project edit workflow
+- **Status:** Accepted; supersedes the selected-project edit workflow;
+  amended by [ADR-0015](./0015-coding-agent-loop-and-approved-actions.md)
+  (content search, ranged reads, diff review, `replace_all`, CLI edits with
+  terminal approval, approved shell/app/web actions, larger size limits)
 - **Date:** 2026-10-30
 
 ## Context

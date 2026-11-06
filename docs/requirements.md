@@ -1,16 +1,15 @@
 # Vyomara Product Requirements
 
-> **Current direction:** [Vyomara Product Direction](./product-direction.md)
-> is authoritative and supersedes any conflicting MVP, phase, interaction,
-> scope, or acceptance decision in this historical requirements document.
-> In particular, Vyomara is now voice-first and can act on local files through
-> reviewed filesystem operations; it is not a full IDE or embedded browser.
-> Do not treat later-phase labels below as a reason to postpone that direction.
->
-> The historical read-only/write-out-of-scope requirements below describe the
-> original MVP. Current filesystem scope and per-operation review are defined
-> in [ADR-0014](./adr/0014-human-reviewed-filesystem-operations.md) and
-> [the filesystem guide](./filesystem-tools.md).
+> **Historical document.** [Vyomara Product Direction](./product-direction.md)
+> and [ADR-0015](./adr/0015-coding-agent-loop-and-approved-actions.md) are
+> authoritative and supersede any conflicting MVP, phase, interaction, scope,
+> or acceptance decision below. In particular, Vyomara is now a coding agent
+> that is typed first and voice later. It edits files through reviewed
+> operations and runs shell commands, opens apps, and opens web pages only
+> after per-action approval. See [the agent tools](./tools.md). The read-only,
+> no-shell, and "out of scope for MVP" statements below describe the original
+> MVP, not the current product. The wake phrase is now “Hello Vyomara”, with
+> no end phrase; listening stays on until it is turned off.
 
 ## 1. Product vision and target user
 
