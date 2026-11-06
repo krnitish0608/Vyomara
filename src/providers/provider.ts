@@ -516,6 +516,30 @@ export class OllamaProvider implements ModelProvider {
     }
   }
 
+  /**
+   * Load the model into memory ahead of the first request (Ollama loads a
+   * model when it receives an empty prompt). Uses the same context size as
+   * real requests, since a different size would reload the model.
+   */
+  async warmUp(signal: AbortSignal = AbortSignal.timeout(120_000)): Promise<void> {
+    try {
+      const response = await this.fetchImplementation(new URL(`${this.baseUrl}/api/generate`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        redirect: 'error',
+        signal,
+        body: JSON.stringify({
+          model: this.model,
+          keep_alive: '30m',
+          ...(this.numCtx === undefined ? {} : { options: { num_ctx: this.numCtx } }),
+        }),
+      });
+      await response.body?.cancel().catch(() => undefined);
+    } catch {
+      // Best effort: the first real request will load the model instead.
+    }
+  }
+
   /** Remove an installed model from Ollama to free disk space. */
   async deleteModel(name: string): Promise<void> {
     let response: Response;

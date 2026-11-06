@@ -7,6 +7,8 @@ import type {
   DesktopSpeechSetupStatus,
   DesktopSessionHistory,
   DesktopSessionSummary,
+  DesktopPipCommand,
+  DesktopPipState,
   DesktopPlan,
   DesktopToolActivity,
 } from '../../../desktop/contracts.ts';
@@ -72,6 +74,7 @@ export function App() {
   const pendingActionProposals = useRef<DesktopActionProposal[]>([]);
   const handleVoiceCommand = useRef<((transcript: string) => void) | undefined>(undefined);
   const askByVoice = useRef<((question: string, kind: 'delete' | 'other') => void) | undefined>(undefined);
+  const handlePipCommand = useRef<((command: DesktopPipCommand) => void) | undefined>(undefined);
   const composerDictationRef = useRef(false);
   const composerDictationBase = useRef('');
   const currentRequestPending = useRef(requestPending);
@@ -120,6 +123,7 @@ export function App() {
       requestAnimationFrame(() => actionReview.current?.scrollIntoView({ block: 'nearest' }));
       askByVoice.current?.(approvalQuestion(proposal), 'other');
     });
+    const unsubscribePip = window.vyomara.onPipCommand(command => handlePipCommand.current?.(command));
     const unsubscribePlan = window.vyomara.onPlan(update => {
       if (activeChatRequestId.current === update.requestId) setPlan(update.steps);
     });
@@ -197,6 +201,7 @@ export function App() {
       unsubscribeActions();
       unsubscribeToolActivity();
       unsubscribePlan();
+      unsubscribePip();
       unsubscribeSpeech();
     };
   }, []);
@@ -750,6 +755,64 @@ export function App() {
     : 'When a task starts, every step it takes appears here.';
   const pendingApprovals = fileOperationProposals.length + actionProposals.length;
   const voiceOrbAction = speechSetup?.modelReady ? toggleVoiceListening : downloadVoiceModel;
+
+  // Commands from the mini window (PiP) act exactly like the main window's buttons.
+  handlePipCommand.current = command => {
+    switch (command.type) {
+      case 'toggle-listening':
+        if (speechSetup?.modelReady) void toggleVoiceListening();
+        break;
+      case 'stop':
+        void cancel();
+        break;
+      case 'approve':
+      case 'reject': {
+        const approve = command.type === 'approve';
+        voiceSession.current.clearApproval();
+        const file = fileOperationProposals.find(item => item.id === command.id);
+        if (file) {
+          if (file.operation === 'delete') return; // needs the typed DELETE in this window
+          void (approve ? approveFileOperation(file) : rejectFileOperation(file));
+          return;
+        }
+        const action = actionProposals.find(item => item.id === command.id);
+        if (action) void decideAction(action, approve);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  const lastReply = [...messages].reverse().find(message => message.role === 'assistant' && !message.failed)?.content;
+  const pipFile = fileOperationProposals[0];
+  const pipAction = actionProposals[0];
+  const pipState: DesktopPipState = {
+    listening: voiceListening,
+    voiceReady: speechSetup?.modelReady === true && speechSetup.runtimeAvailable,
+    busy: requestPending,
+    status: pipFile || pipAction
+      ? 'Waiting for your answer'
+      : requestPending
+        ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
+        : voiceStarting
+          ? 'Starting microphone…'
+          : voiceListening
+            ? 'Say “Hello Vyomara …”'
+            : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
+    ...(voiceTranscript ? { heard: voiceTranscript } : {}),
+    ...(lastReply ? { reply: speechText(lastReply, 160) } : {}),
+    ...(plan.length > 0 ? { plan: { done: plan.filter(step => step.status === 'done').length, total: plan.length } } : {}),
+    ...(pipFile
+      ? { approval: { id: pipFile.id, question: approvalQuestion({ kind: 'file', operation: pipFile.operation, path: pipFile.path }), needsMainWindow: pipFile.operation === 'delete' } }
+      : pipAction
+        ? { approval: { id: pipAction.id, question: approvalQuestion(pipAction), needsMainWindow: false } }
+        : {}),
+  };
+  const pipStateJson = JSON.stringify(pipState);
+  useEffect(() => {
+    window.vyomara.publishPipState(JSON.parse(pipStateJson) as DesktopPipState);
+  }, [pipStateJson]);
   const voiceOrbLabel = voiceListening
     ? 'Turn voice listening off'
     : speechSetup?.modelReady

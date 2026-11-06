@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, session, shell, systemPreferences } from 'electron';
 import type { SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -48,6 +48,12 @@ import type { SpeechModelId } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 
 let mainWindow: BrowserWindow | undefined;
+/** The mini controller window shown over other apps while the main window is away. */
+let pipWindow: BrowserWindow | undefined;
+let quitting = false;
+const PIP_SIZE = { width: 340, height: 132 };
+/** Last state published by the main window, replayed when the mini window (re)loads. */
+let lastPipState: unknown;
 let activeRequest: AbortController | undefined;
 let activeFileOperationApproval: FileOperationApprovalManager | undefined;
 let activeActionApproval: ActionApprovalManager | undefined;
@@ -234,8 +240,22 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // The conversation keeps running (voice, approvals) while the window is hidden.
+      backgroundThrottling: false,
     },
   });
+  // Closing hides the window so voice and the mini window keep working; Cmd+Q quits.
+  window.on('close', event => {
+    if (quitting || process.platform !== 'darwin') return;
+    event.preventDefault();
+    window.hide();
+  });
+  window.on('hide', () => showPip());
+  window.on('minimize', () => showPip());
+  window.on('blur', () => showPip());
+  window.on('show', () => hidePipIfMainActive());
+  window.on('restore', () => hidePipIfMainActive());
+  window.on('focus', () => hidePipIfMainActive());
   window.webContents.on('preload-error', () => {
     console.error(JSON.stringify({ event: 'desktop.preload-failed', code: 'secure-bridge-unavailable' }));
     dialog.showErrorBox(
@@ -252,17 +272,146 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
-  const loadRenderer = rendererUrl
-    ? window.loadURL(rendererUrl)
-    : window.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)));
-  void loadRenderer.catch(() => {
+  void loadRenderer(window).catch(() => {
     dialog.showErrorBox(
       'Vyomara could not start',
       'The desktop interface could not be loaded. Restart Vyomara after updating the application.',
     );
   });
   return window;
+}
+
+function loadRenderer(window: BrowserWindow, hash?: string): Promise<void> {
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  return rendererUrl
+    ? window.loadURL(hash ? `${rendererUrl}#${hash}` : rendererUrl)
+    : window.loadFile(fileURLToPath(new URL('../renderer/index.html', import.meta.url)), hash ? { hash } : {});
+}
+
+function pipPreferencePath(): string {
+  return join(app.getPath('userData'), 'pip.json');
+}
+
+async function readPipPosition(): Promise<{ x: number; y: number } | undefined> {
+  try {
+    const value: unknown = JSON.parse(await readFile(pipPreferencePath(), 'utf8'));
+    if (typeof value === 'object' && value !== null && 'x' in value && 'y' in value &&
+        Number.isSafeInteger(value.x) && Number.isSafeInteger(value.y)) {
+      const position = { x: value.x as number, y: value.y as number };
+      // Ignore positions on a display that is no longer connected.
+      const visible = screen.getAllDisplays().some(display =>
+        position.x >= display.workArea.x && position.y >= display.workArea.y &&
+        position.x + PIP_SIZE.width <= display.workArea.x + display.workArea.width &&
+        position.y + PIP_SIZE.height <= display.workArea.y + display.workArea.height);
+      return visible ? position : undefined;
+    }
+  } catch {
+    // No saved position yet.
+  }
+  return undefined;
+}
+
+async function createPipWindow(): Promise<BrowserWindow> {
+  const area = screen.getPrimaryDisplay().workArea;
+  const position = await readPipPosition() ??
+    { x: area.x + area.width - PIP_SIZE.width - 24, y: area.y + area.height - PIP_SIZE.height - 24 };
+  const window = new BrowserWindow({
+    ...PIP_SIZE,
+    ...position,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: true,
+    alwaysOnTop: true,
+    // Not a macOS "panel": panels hide whenever Vyomara is not the active app,
+    // which is exactly when the mini window is needed. It is shown inactive instead.
+    title: 'Vyom',
+    webPreferences: {
+      preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  window.setAlwaysOnTop(true, 'floating');
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.on('did-finish-load', () => {
+    if (lastPipState !== undefined) window.webContents.send('vyomara:pip-state', lastPipState);
+  });
+  window.on('moved', () => {
+    const [x, y] = window.getPosition();
+    void writeFile(pipPreferencePath(), JSON.stringify({ x, y }), { encoding: 'utf8', mode: 0o600 }).catch(() => undefined);
+  });
+  window.on('closed', () => {
+    if (pipWindow === window) pipWindow = undefined;
+  });
+  await loadRenderer(window, 'pip');
+  return window;
+}
+
+function showPip(): void {
+  if (!pipWindow || pipWindow.isDestroyed() || quitting) return;
+  // Only when Vyomara itself is not in front.
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused()) return;
+  if (!pipWindow.isVisible()) pipWindow.showInactive();
+}
+
+function hidePipIfMainActive(): void {
+  if (!pipWindow || pipWindow.isDestroyed()) return;
+  if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) pipWindow.hide();
+}
+
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  app.focus({ steal: true });
+}
+
+ipcMain.on('vyomara:pip-state', (event, state: unknown) => {
+  if (event.sender !== mainWindow?.webContents) return;
+  lastPipState = state;
+  if (pipWindow && !pipWindow.isDestroyed()) pipWindow.webContents.send('vyomara:pip-state', state);
+});
+
+ipcMain.on('vyomara:pip-command', (event, command: unknown) => {
+  if (!pipWindow || event.sender !== pipWindow.webContents) return;
+  if (typeof command !== 'object' || command === null || !('type' in command)) return;
+  const type = (command as { type: unknown }).type;
+  if (type === 'open-main') {
+    showMainWindow();
+    return;
+  }
+  const id = (command as { id?: unknown }).id;
+  if (!['toggle-listening', 'approve', 'reject', 'stop'].includes(String(type))) return;
+  if ((type === 'approve' || type === 'reject') && typeof id !== 'string') return;
+  mainWindow?.webContents.send('vyomara:pip-command', type === 'approve' || type === 'reject' ? { type, id } : { type });
+});
+
+function registerVoiceShortcut(): void {
+  // Option+Space toggles listening from any app; fall back if another app owns it.
+  for (const accelerator of ['Alt+Space', 'Alt+Shift+Space']) {
+    const registered = globalShortcut.register(accelerator, () => {
+      mainWindow?.webContents.send('vyomara:pip-command', { type: 'toggle-listening' });
+      showPip();
+    });
+    if (registered) {
+      console.error(JSON.stringify({ event: 'shortcut.registered', accelerator }));
+      return;
+    }
+  }
 }
 
 function providerStatus(current: AppConfig) {
@@ -275,6 +424,16 @@ function providerStatus(current: AppConfig) {
 
 function ollamaProvider(current: AppConfig): OllamaProvider {
   return new OllamaProvider({ baseUrl: current.ollamaBaseUrl, model: current.ollamaModel });
+}
+
+/** Load the chosen model in the background so the first request does not wait for it. */
+function warmUpModel(current: AppConfig | undefined): void {
+  if (!current || current.provider !== 'ollama') return;
+  void new OllamaProvider({
+    baseUrl: current.ollamaBaseUrl,
+    model: current.ollamaModel,
+    numCtx: current.ollamaNumCtx,
+  }).warmUp();
 }
 
 ipcMain.handle('vyomara:provider-status', () => {
@@ -317,6 +476,7 @@ ipcMain.handle('vyomara:model-settings-set', (_event, input: unknown) => {
   };
   saveModelSettings(config, settings);
   config = withSavedModelSettings(config, settings);
+  if (numCtx !== undefined) warmUpModel(config);
   return providerStatus(config);
 });
 
@@ -377,6 +537,7 @@ ipcMain.handle('vyomara:model-select', async (_event, input: unknown) => {
     throw new Error(error instanceof Error && !(error instanceof ProviderError) ? error.message : publicErrorMessage(error));
   }
   config = candidate;
+  warmUpModel(config);
   return providerStatus(config);
 });
 
@@ -769,12 +930,23 @@ app.whenReady().then(async () => {
   }
 
   mainWindow = createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
-  });
+  warmUpModel(config);
+  app.on('activate', () => showMainWindow());
+  registerVoiceShortcut();
+  try {
+    pipWindow = await createPipWindow();
+  } catch {
+    console.error(JSON.stringify({ event: 'pip.create-failed' }));
+  }
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on('before-quit', () => {
+  quitting = true;
+  pipWindow?.destroy();
   activeRequest?.abort();
   activeModelPull?.abort();
   macSpeechRunner.stop();

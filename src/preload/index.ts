@@ -4,6 +4,8 @@ import type {
   DesktopChatRequest,
   DesktopFileOperationProposal,
   DesktopModelPullProgress,
+  DesktopPipCommand,
+  DesktopPipState,
   DesktopPlan,
   DesktopSpeechRecognitionEvent,
   DesktopToolActivity,
@@ -18,6 +20,18 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 const api: VyomaraDesktopApi = {
+  publishPipState(state: DesktopPipState) {
+    ipcRenderer.send('vyomara:pip-state', state);
+  },
+  onPipState(listener: (state: DesktopPipState) => void) {
+    return subscribe('vyomara:pip-state', listener);
+  },
+  sendPipCommand(command: DesktopPipCommand) {
+    ipcRenderer.send('vyomara:pip-command', command);
+  },
+  onPipCommand(listener: (command: DesktopPipCommand) => void) {
+    return subscribe('vyomara:pip-command', listener);
+  },
   getProviderStatus() {
     return ipcRenderer.invoke('vyomara:provider-status');
   },

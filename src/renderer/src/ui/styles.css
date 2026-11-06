@@ -540,3 +540,34 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .permission-list { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
 .permission-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid rgba(65, 91, 156, .25); border-radius: 8px; background: rgba(6, 15, 36, .55); color: #c6ccd6; font-size: 10px; }
 .permission-row button { flex: 0 0 auto; }
+
+/* --- Mini controller (PiP) --- */
+body.pip-body { background: transparent !important; overflow: hidden; }
+body.pip-body #root { height: 100vh; }
+.pip {
+  -webkit-app-region: drag;
+  box-sizing: border-box; height: calc(100vh - 8px); margin: 4px;
+  display: grid; grid-template-columns: 56px minmax(0, 1fr) 22px; align-items: center; gap: 10px;
+  padding: 10px 10px 10px 12px; border: 1px solid rgba(111, 130, 211, .45); border-radius: 18px;
+  background: rgba(10, 15, 32, .92); color: #e6e9f2; font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+.pip button { -webkit-app-region: no-drag; cursor: pointer; }
+.pip-orb { width: 52px; height: 52px; padding: 6px; border: 1px solid rgba(110, 120, 255, .45); border-radius: 50%; background: radial-gradient(circle at 40% 35%, #3b3fd1, #15174f); }
+.pip-orb:disabled { opacity: .5; cursor: default; }
+.pip-orb svg { width: 100%; height: 100%; }
+.pip-listening .pip-orb { box-shadow: 0 0 0 3px rgba(39, 217, 255, .35), 0 0 18px rgba(39, 217, 255, .45); animation: pip-pulse 1.6s ease-in-out infinite; }
+.pip-busy .pip-orb { box-shadow: 0 0 0 3px rgba(189, 156, 255, .35); }
+@keyframes pip-pulse { 50% { box-shadow: 0 0 0 6px rgba(39, 217, 255, .15), 0 0 24px rgba(39, 217, 255, .35); } }
+@media (prefers-reduced-motion: reduce) { .pip-listening .pip-orb { animation: none; } }
+.pip-text { min-width: 0; display: grid; gap: 3px; }
+.pip-status { margin: 0; overflow: hidden; color: #f2f0fa; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.pip-plan { color: #a99bff; font-weight: 500; }
+.pip-detail { margin: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; color: #aab3c6; font-size: 11px; }
+.pip-approval { border-color: rgba(237, 198, 154, .7); }
+.pip-actions { display: flex; gap: 6px; margin-top: 2px; }
+.pip-actions button { padding: 3px 10px; border-radius: 8px; font-size: 11px; }
+.pip-yes { border: 1px solid #5c63d6; background: #2a2e8f; color: #fff; }
+.pip-no { border: 1px solid #4a3b45; background: #231a22; color: #f0b3bb; }
+.pip-expand { align-self: start; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #8e9ab8; font-size: 13px; }
+.pip-expand:hover { background: rgba(255, 255, 255, .08); color: #fff; }

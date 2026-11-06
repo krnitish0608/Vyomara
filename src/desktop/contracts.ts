@@ -164,7 +164,41 @@ export interface DesktopSpeechSetupStatus {
   readonly models: readonly DesktopSpeechModel[];
 }
 
+/** What the mini window (PiP) shows; published by the main window, which owns the conversation. */
+export interface DesktopPipState {
+  readonly listening: boolean;
+  readonly voiceReady: boolean;
+  readonly busy: boolean;
+  /** One line: what Vyom is doing or waiting for. */
+  readonly status: string;
+  /** The last phrase heard by the microphone. */
+  readonly heard?: string;
+  /** A short version of the last reply. */
+  readonly reply?: string;
+  readonly plan?: { readonly done: number; readonly total: number };
+  /** The approval waiting for the user, if any. */
+  readonly approval?: {
+    readonly id: string;
+    readonly question: string;
+    /** Deletions must be confirmed in the main window (typed DELETE). */
+    readonly needsMainWindow: boolean;
+  };
+}
+
+export type DesktopPipCommand =
+  | { readonly type: 'toggle-listening' }
+  | { readonly type: 'approve'; readonly id: string }
+  | { readonly type: 'reject'; readonly id: string }
+  | { readonly type: 'stop' }
+  | { readonly type: 'open-main' };
+
 export interface VyomaraDesktopApi {
+  /** Main window → mini window. */
+  publishPipState(state: DesktopPipState): void;
+  onPipState(listener: (state: DesktopPipState) => void): () => void;
+  /** Mini window → main window. */
+  sendPipCommand(command: DesktopPipCommand): void;
+  onPipCommand(listener: (command: DesktopPipCommand) => void): () => void;
   getProviderStatus(): Promise<DesktopProviderStatus>;
   sendMessage(request: DesktopChatRequest): Promise<DesktopChatResponse>;
   onChatText(listener: (chunk: DesktopChatTextChunk) => void): () => void;

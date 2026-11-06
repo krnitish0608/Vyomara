@@ -94,6 +94,24 @@ pnpm preview:desktop   # build and open the app
 pnpm test:desktop-ui   # Electron keyboard/focus/reduced-motion smoke test
 ```
 
+### Mini Vyom
+
+When you switch to VS Code, Chrome, or any other app, a small Vyom stays on
+top in the screen corner. It shows:
+
+- whether it is listening;
+- what it heard;
+- what it is doing;
+- any approval question, with **Haan / Nahi** buttons.
+
+You can use it like this:
+
+- Press **⌥Space** anywhere to turn listening on or off.
+- Drag it wherever you like.
+- Click ↗ to open the full window.
+
+Closing the main window keeps Vyom running in the mini window; ⌘Q quits.
+
 ### Voice
 
 Speak in Hindi, English, or a mix of the two:
