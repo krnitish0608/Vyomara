@@ -32,7 +32,8 @@ and Vyomara (female), chosen in the app.
      Roman letters (`romanForSpeech`) before speaking.
    - The speaking rate is lowered from 190 to 180 words per minute.
 4. **Interface.**
-   - Two cards at the top of the sidebar switch the assistant, and the new
+   - The Assistant tab at the top of the sidebar shows the current
+     assistant. Tapping it opens a small menu to switch, and the new
      assistant greets in its own voice.
    - Names in the window and in the mini window follow the choice.
 

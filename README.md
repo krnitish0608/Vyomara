@@ -153,7 +153,7 @@ In a conversation:
 - “Ruko” or “stop” cancels a running task.
 - Replies are spoken briefly, always in the chosen assistant's voice.
 
-Choose the assistant at the top of the sidebar:
+Choose the assistant from the Assistant tab at the top of the sidebar (tap it to switch):
 
 | Assistant | Voice | Notes |
 |---|---|---|

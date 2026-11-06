@@ -659,19 +659,23 @@ body.pip-body #root { height: 100vh; }
 .composer-rail .send-button svg { width: 16px; height: 16px; stroke-width: 2.3; }
 .composer-rail .voice-input-button.voice-input-dictating { border-color: rgba(248, 112, 132, .75); background: rgba(130, 32, 56, .45); color: #ffc2cc; box-shadow: 0 0 0 3px rgba(248, 112, 132, .12); }
 
-/* Assistant switch: Vyom (male voice) or Vyomara (female voice). */
-.persona-switch { display: grid; gap: 5px; margin: 0 0 8px; }
-.persona-option { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 6px 9px; border: 1px solid rgba(90, 116, 190, .22); border-radius: 10px; background: rgba(255, 255, 255, .025); color: #9babcd; text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease; }
-.persona-option:hover:not(:disabled) { border-color: rgba(120, 150, 230, .45); background: rgba(59, 83, 150, .18); color: #edf2ff; }
-.persona-option:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
-.persona-option:disabled { opacity: .5; cursor: not-allowed; }
-.persona-avatar { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 700; }
-.persona-vyom .persona-avatar { background: linear-gradient(135deg, #2b8cff, #3c48d8); }
-.persona-vyomara .persona-avatar { background: linear-gradient(135deg, #b46cff, #e0559e); }
-.persona-text { min-width: 0; display: grid; line-height: 1.2; }
-.persona-text strong { overflow: hidden; color: inherit; font-size: 10.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.persona-text small { overflow: hidden; color: #6c7c9e; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
-.persona-option-active { color: #f2f5ff; }
-.persona-vyom.persona-option-active { border-color: rgba(65, 130, 250, .6); background: linear-gradient(100deg, rgba(28, 93, 229, .38), rgba(38, 57, 153, .3)); }
-.persona-vyomara.persona-option-active { border-color: rgba(200, 110, 240, .6); background: linear-gradient(100deg, rgba(150, 60, 210, .34), rgba(190, 60, 140, .26)); }
-.persona-option-active .persona-text small { color: #b9c5e6; }
+/* Assistant tab: shows the current assistant; tapping it opens a small menu to switch. */
+.persona-picker { position: relative; }
+.persona-current { gap: 9px; }
+.persona-current-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.persona-chevron { width: 13px; height: 13px; flex: 0 0 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; opacity: .7; }
+.persona-current[aria-expanded="true"] .persona-chevron { opacity: 1; }
+.persona-avatar { width: 20px; height: 20px; flex: 0 0 20px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 700; }
+.side-nav-item > .persona-avatar:first-child { width: 20px; color: #fff; font-size: 10px; }
+.persona-avatar-vyom { background: linear-gradient(135deg, #2b8cff, #3c48d8); }
+.persona-avatar-vyomara { background: linear-gradient(135deg, #b46cff, #e0559e); }
+.persona-menu { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; right: 0; display: grid; gap: 2px; padding: 5px; border: 1px solid rgba(90, 116, 190, .35); border-radius: 11px; background: #0b1430; box-shadow: 0 14px 34px rgba(0, 0, 0, .45); }
+.persona-menu-item { width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: #b5c2e2; text-align: left; cursor: pointer; }
+.persona-menu-item:hover:not(:disabled), .persona-menu-item:focus-visible { background: rgba(59, 83, 150, .28); color: #fff; outline: 0; }
+.persona-menu-item:disabled { opacity: .45; cursor: not-allowed; }
+.persona-menu-item-active { color: #fff; }
+.persona-menu-text { flex: 1; min-width: 0; display: grid; line-height: 1.25; }
+.persona-menu-text strong { font-size: 10.5px; font-weight: 650; }
+.persona-menu-text small { color: #7184ad; font-size: 8.5px; }
+.persona-check { color: #8fb4ff; font-size: 11px; }
+.persona-menu-note { margin: 4px 8px 3px; color: #7184ad; font-size: 8.5px; }

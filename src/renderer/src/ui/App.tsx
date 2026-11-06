@@ -92,6 +92,9 @@ export function App() {
   /** Which assistant answers: Vyom (male voice) or Vyomara (female voice). */
   const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA);
   const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
+  const personaPicker = useRef<HTMLDivElement>(null);
+  const personaTrigger = useRef<HTMLButtonElement>(null);
   const assistantName = PERSONAS[persona].name;
   /** Words of the spoken turn in progress, shown live in the message box. */
   const [liveTurn, setLiveTurn] = useState('');
@@ -720,6 +723,26 @@ export function App() {
     }
   }
 
+  // The assistant menu closes on Escape or a click elsewhere.
+  useEffect(() => {
+    if (!personaMenuOpen) return;
+    const onPointer = (event: MouseEvent): void => {
+      if (!personaPicker.current?.contains(event.target as Node)) setPersonaMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setPersonaMenuOpen(false);
+      personaTrigger.current?.focus();
+    };
+    document.addEventListener('mousedown', onPointer);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [personaMenuOpen]);
+
   async function cancel(): Promise<void> {
     await window.vyomara.cancelRequest();
   }
@@ -1117,29 +1140,53 @@ export function App() {
         <nav className="side-nav" aria-label="Main navigation">
           <div className="side-nav-group">
             <p className="side-nav-label">ASSISTANT</p>
-            <div className="persona-switch" role="radiogroup" aria-label="Choose your assistant">
-              {(Object.values(PERSONAS)).map(option => (
-                <button
-                  key={option.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={persona === option.id}
-                  className={`persona-option persona-${option.id}${persona === option.id ? ' persona-option-active' : ''}`}
-                  disabled={requestPending || personaSaving}
-                  onClick={() => void choosePersona(option.id)}
-                  title={`${option.name} · ${option.gender === 'male' ? 'male' : 'female'} voice`}
-                >
-                  <span className="persona-avatar" aria-hidden="true">{option.name.charAt(0)}</span>
-                  <span className="persona-text">
-                    <strong>{option.name}</strong>
-                    <small>{option.gender === 'male' ? 'Male voice' : 'Female voice'}</small>
-                  </span>
-                </button>
-              ))}
+            {/* One tab: the current assistant; tap it to switch between Vyom and Vyomara. */}
+            <div className="persona-picker" ref={personaPicker}>
+              <button
+                ref={personaTrigger}
+                className="side-nav-item side-nav-item-active persona-current"
+                type="button"
+                aria-current="page"
+                aria-haspopup="menu"
+                aria-expanded={personaMenuOpen}
+                aria-controls={personaMenuOpen ? 'persona-menu' : undefined}
+                onClick={() => setPersonaMenuOpen(open => !open)}
+                disabled={personaSaving}
+                title="Switch assistant"
+              >
+                <span className={`persona-avatar persona-avatar-${persona}`} aria-hidden="true">{assistantName.charAt(0)}</span>
+                <span className="persona-current-name">{assistantName}</span>
+                <svg className="persona-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 6.5 8 3.5l3 3M5 9.5l3 3 3-3" /></svg>
+              </button>
+              {personaMenuOpen && (
+                <div id="persona-menu" className="persona-menu" role="menu" aria-label="Switch assistant">
+                  {Object.values(PERSONAS).map(option => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={persona === option.id}
+                      className={`persona-menu-item${persona === option.id ? ' persona-menu-item-active' : ''}`}
+                      disabled={requestPending && persona !== option.id}
+                      onClick={event => {
+                        setPersonaMenuOpen(false);
+                        // Keyboard users get focus back on the tab; a mouse click leaves no ring.
+                        if (event.detail === 0) personaTrigger.current?.focus();
+                        void choosePersona(option.id);
+                      }}
+                    >
+                      <span className={`persona-avatar persona-avatar-${option.id}`} aria-hidden="true">{option.name.charAt(0)}</span>
+                      <span className="persona-menu-text">
+                        <strong>{option.name}</strong>
+                        <small>{option.gender === 'male' ? 'Male voice' : 'Female voice'}</small>
+                      </span>
+                      {persona === option.id && <span className="persona-check" aria-hidden="true">✓</span>}
+                    </button>
+                  ))}
+                  {requestPending && <p className="persona-menu-note">Switch after the current task finishes.</p>}
+                </div>
+              )}
             </div>
-            <button className="side-nav-item side-nav-item-active" type="button" aria-current="page">
-              <span aria-hidden="true">♩</span> Assistant
-            </button>
             <button className="side-nav-item" type="button" onClick={() => activityHeading.current?.focus()}>
               <span aria-hidden="true">▤</span> Tasks &amp; Activity
               {requestPending && <span className="nav-indicator" aria-label="Task running">●</span>}
