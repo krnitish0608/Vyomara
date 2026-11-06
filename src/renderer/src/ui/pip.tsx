@@ -1,15 +1,23 @@
 import { useEffect, useState } from 'react';
 import type { DesktopPipCommand, DesktopPipState } from '../../../desktop/contracts.ts';
-import { VyomaraMark } from './brand.tsx';
+import { VoiceOrb } from './brand.tsx';
 
 function send(command: DesktopPipCommand): void {
   window.vyomara.sendPipCommand(command);
 }
 
+function MiniWave() {
+  return (
+    <span className="pip-wave" aria-hidden="true">
+      {Array.from({ length: 5 }, (_, index) => <i key={index} />)}
+    </span>
+  );
+}
+
 /**
- * The mini controller shown over other apps (VS Code, Chrome, …): voice
- * state, what Vyom is doing, and the approval question with Yes/No.
- * It holds no conversation state of its own; the main window publishes it.
+ * The mini controller shown over other apps (VS Code, Chrome, …): the live
+ * orb, what Vyom heard or is doing, and the approval question with
+ * Haan/Nahi. It holds no conversation state; the main window publishes it.
  */
 export function PipView() {
   const [state, setState] = useState<DesktopPipState>();
@@ -20,27 +28,34 @@ export function PipView() {
   }, []);
 
   const approval = state?.approval;
+  const listening = state?.listening === true;
   const detail = approval?.question ?? (state?.heard ? `“${state.heard}”` : state?.reply);
+  const mood = approval ? 'approval' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
 
   return (
-    <main className={`pip${state?.listening ? ' pip-listening' : ''}${state?.busy ? ' pip-busy' : ''}${approval ? ' pip-approval' : ''}`}>
-      <button
-        className="pip-orb"
-        type="button"
-        onClick={() => send({ type: 'toggle-listening' })}
-        disabled={!state?.voiceReady}
-        aria-pressed={state?.listening === true}
-        aria-label={state?.listening ? 'Turn listening off' : 'Turn listening on'}
-        title={state?.voiceReady ? 'Listening on/off (⌥Space)' : 'Set up voice in the Vyomara window'}
-      >
-        <VyomaraMark tile={false} />
-      </button>
+    <main className={`pip pip-${mood}`}>
+      <div className="pip-orb-slot">
+        <VoiceOrb
+          mini
+          listening={listening || state?.busy === true}
+          pressed={listening}
+          disabled={!state?.voiceReady}
+          label={listening ? 'Turn listening off' : 'Turn listening on'}
+          title={state?.voiceReady ? 'Listening on/off (⌥Space)' : 'Set up voice in the Vyomara window'}
+          onActivate={() => send({ type: 'toggle-listening' })}
+        />
+      </div>
       <section className="pip-text" aria-live="polite">
         <p className="pip-status">
-          {state ? state.status : 'Connecting…'}
-          {state?.plan ? <span className="pip-plan"> · {state.plan.done}/{state.plan.total}</span> : null}
+          {listening && !approval && !state?.busy && <MiniWave />}
+          {state?.busy && !approval && <span className="pip-dots" aria-hidden="true"><i /><i /><i /></span>}
+          <span className="pip-status-text">{state ? state.status : 'Connecting…'}</span>
+          {state?.plan ? <span className="pip-plan">{state.plan.done}/{state.plan.total}</span> : null}
         </p>
         {detail && <p className="pip-detail">{detail}</p>}
+        {state && !state.voiceReady && !approval && (
+          <button type="button" className="pip-link" onClick={() => send({ type: 'open-main' })}>Set up voice →</button>
+        )}
         {approval && (
           <div className="pip-actions">
             {approval.needsMainWindow ? (
@@ -59,7 +74,14 @@ export function PipView() {
           </div>
         )}
       </section>
-      <button className="pip-expand" type="button" onClick={() => send({ type: 'open-main' })} aria-label="Open Vyomara" title="Open Vyomara">↗</button>
+      <div className="pip-corner">
+        <button type="button" onClick={() => send({ type: 'open-main' })} aria-label="Open Vyomara" title="Open Vyomara">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7M13 3 4 12" /></svg>
+        </button>
+        <button type="button" onClick={() => send({ type: 'hide-pip' })} aria-label="Hide mini window" title="Hide">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
     </main>
   );
 }

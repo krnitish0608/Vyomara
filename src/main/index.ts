@@ -51,7 +51,7 @@ let mainWindow: BrowserWindow | undefined;
 /** The mini controller window shown over other apps while the main window is away. */
 let pipWindow: BrowserWindow | undefined;
 let quitting = false;
-const PIP_SIZE = { width: 340, height: 132 };
+const PIP_SIZE = { width: 372, height: 120 };
 /** Last state published by the main window, replayed when the mini window (re)loads. */
 let lastPipState: unknown;
 let activeRequest: AbortController | undefined;
@@ -331,6 +331,9 @@ async function createPipWindow(): Promise<BrowserWindow> {
     // Not a macOS "panel": panels hide whenever Vyomara is not the active app,
     // which is exactly when the mini window is needed. It is shown inactive instead.
     title: 'Vyom',
+    // Native frosted glass behind the card on macOS.
+    ...(process.platform === 'darwin' ? { vibrancy: 'hud' as const, visualEffectState: 'active' as const } : {}),
+    roundedCorners: true,
     webPreferences: {
       preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
       contextIsolation: true,
@@ -392,6 +395,11 @@ ipcMain.on('vyomara:pip-command', (event, command: unknown) => {
   const type = (command as { type: unknown }).type;
   if (type === 'open-main') {
     showMainWindow();
+    return;
+  }
+  if (type === 'hide-pip') {
+    // Stays hidden until the main window is used again and then left.
+    pipWindow.hide();
     return;
   }
   const id = (command as { id?: unknown }).id;

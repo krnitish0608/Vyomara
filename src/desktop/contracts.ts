@@ -190,7 +190,8 @@ export type DesktopPipCommand =
   | { readonly type: 'approve'; readonly id: string }
   | { readonly type: 'reject'; readonly id: string }
   | { readonly type: 'stop' }
-  | { readonly type: 'open-main' };
+  | { readonly type: 'open-main' }
+  | { readonly type: 'hide-pip' };
 
 export interface VyomaraDesktopApi {
   /** Main window → mini window. */

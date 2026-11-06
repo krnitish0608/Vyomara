@@ -31,6 +31,7 @@ export function VoiceOrb({
   label,
   title,
   compact = false,
+  mini = false,
   onActivate,
 }: {
   readonly listening: boolean;
@@ -39,10 +40,12 @@ export function VoiceOrb({
   readonly label: string;
   readonly title: string;
   readonly compact?: boolean;
+  /** The small orb used in the mini controller window. */
+  readonly mini?: boolean;
   readonly onActivate: () => void;
 }) {
   return (
-    <div className={`voice-orbit${listening ? ' voice-orbit-listening' : ''}${compact ? ' voice-orbit-compact' : ''}`} aria-label="Offline voice input">
+    <div className={`voice-orbit${listening ? ' voice-orbit-listening' : ''}${compact ? ' voice-orbit-compact' : ''}${mini ? ' voice-orbit-mini' : ''}`} aria-label="Offline voice input">
       <VoiceWave side="left" />
       <button
         className="voice-orb-button"
