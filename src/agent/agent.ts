@@ -94,6 +94,10 @@ export function describeToolCall(toolId: string, args: Readonly<Record<string, u
       return `Opening ${String(args.application ?? 'app')}${args.path ? ` with ${shortPath(args.path)}` : ''}`;
     case 'open_url':
       return `Opening ${clip(String(args.url ?? ''), 60)}`;
+    case 'fetch_url':
+      return `Reading ${clip(String(args.url ?? ''), 60)}`;
+    case 'web_search':
+      return `Searching the web for “${clip(String(args.query ?? ''), 50)}”`;
     default:
       return `Using ${toolId}`;
   }
@@ -128,7 +132,8 @@ function verifiedAction(
     const command = `\`${clip(String(result.command ?? args.command ?? ''), 70)}\``;
     if (result.status === 'rejected') return { ok: false, text: `You rejected running ${command}` };
     if (result.timedOut === true) return { ok: false, text: `Ran ${command} — timed out` };
-    return { ok: result.exitCode === 0, text: `Ran ${command} — exit code ${String(result.exitCode)}` };
+    const remembered = result.approval === 'remembered' ? ' (always-allowed)' : '';
+    return { ok: result.exitCode === 0, text: `Ran ${command}${remembered} — exit code ${String(result.exitCode)}` };
   }
   if (toolId === 'open_application') {
     const name = `${String(result.application)}${result.path ? ` (${shortPath(result.path)})` : ''}`;
@@ -142,6 +147,18 @@ function verifiedAction(
       ? { ok: true, text: `Opened ${url}${result.browser ? ` in ${String(result.browser)}` : ''}` }
       : { ok: false, text: `You rejected opening ${url}` };
   }
+  if (toolId === 'fetch_url') {
+    const url = clip(String(result.url ?? args.url), 90);
+    return result.status === 'fetched'
+      ? { ok: true, text: `Read ${url}` }
+      : { ok: false, text: `You rejected reading ${url}` };
+  }
+  if (toolId === 'web_search') {
+    const query = `“${clip(String(result.query ?? args.query), 60)}”`;
+    return result.status === 'searched'
+      ? { ok: true, text: `Searched the web for ${query}` }
+      : { ok: false, text: `You rejected searching for ${query}` };
+  }
   return undefined;
 }
 
@@ -149,6 +166,7 @@ const INVALID_CALL_CODES = new Set(['invalid-input', 'input-too-large', 'unknown
 
 const MUTATING_TOOLS = new Set([
   'edit_file', 'write_file', 'create_directory', 'delete_path', 'run_command', 'open_application', 'open_url',
+  'fetch_url', 'web_search',
 ]);
 
 const CONTINUE_NUDGE =

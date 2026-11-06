@@ -15,7 +15,8 @@
     "desktop": "node scripts/desktop-app.mjs",
     "build:desktop": "electron-vite build",
     "preview:desktop": "node scripts/desktop-app.mjs",
-    "check": "pnpm typecheck && pnpm test"
+    "check": "pnpm typecheck && pnpm test",
+    "eval": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/eval-agent.ts"
   },
   "engines": {
     "node": ">=22.22.1"

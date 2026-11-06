@@ -18,13 +18,17 @@ will become the primary interface later. See
 | "shop project ka failing test fix karo" | Runs the tests, reads the failing test and code, proposes an edit (you review a diff), re-runs the tests. |
 | "open my shop project in VS Code" | Opens VS Code with that folder, after you approve. |
 | "Chrome mein React Native search karo" | Opens a Google search in Chrome, after you approve. |
+| "react.dev/blog padh ke batao latest post kya hai" | Reads the page itself (after you approve) and answers with a link. |
 | "src/agent ka structure samjhao" | Maps the folder, reads key files, and explains. |
 
 **You approve every action.**
 - **File edits:** shown as a diff.
 - **Deletions:** require typing `DELETE`, and the item goes to Trash.
 - **Shell commands:** shown exactly, with the folder they run in.
-- **App launches and web pages:** shown before they open.
+- **App launches and web pages:** shown before they open. Pages Vyom reads
+  show which website receives the request.
+- **Repeated commands:** for `pnpm test` and similar, "Always allow here"
+  skips the prompt for that exact command in that folder until you quit.
 
 Each reply ends with a **Verified actions** list built only from real tool
 results, so Vyom never claims work it did not do.
@@ -120,6 +124,7 @@ Vyomara reads environment variables at startup and does not load `.env` files.
 | `VYOM_MAX_TOOL_CALLS` | `80` | Tool calls per request |
 | `VYOM_COMMAND_TIMEOUT_MS` | `120000` | Maximum command run time |
 | `VYOM_ALLOWED_ROOTS` | whole Mac | JSON array to restrict file access; `[]` disables it |
+| `VYOM_SEARXNG_URL` | unset | Your SearXNG instance; enables `web_search` |
 | `VYOM_PROVIDER` | `ollama` | `placeholder` runs without a model |
 
 The Ollama URL must be loopback (`localhost`, `127.0.0.1`, or `::1`).

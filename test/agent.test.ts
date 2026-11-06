@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test, { type TestContext } from 'node:test';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,7 @@ import { join } from 'node:path';
 import { runAgent } from '../src/agent/agent.ts';
 import type { ToolActivity } from '../src/agent/agent.ts';
 import { fitMessagesToBudget } from '../src/agent/context.ts';
-import { buildSystemPrompt } from '../src/agent/system-prompt.ts';
+import { buildSystemPrompt, gitSummary } from '../src/agent/system-prompt.ts';
 import type { AgentEnvironment } from '../src/agent/system-prompt.ts';
 import { loadConfig } from '../src/config/config.ts';
 import { createLogger } from '../src/diagnostics/logger.ts';
@@ -18,7 +19,8 @@ import type { ModelProvider } from '../src/providers/provider.ts';
 import { Session } from '../src/session/session.ts';
 import type { SessionMessage } from '../src/session/session.ts';
 import { diffHunks, diffStats, formatUnifiedDiff } from '../src/shared/diff.ts';
-import type { ActionApprovalPort, CommandRunnerPort, LauncherPort } from '../src/tools/action-tools.ts';
+import { ApprovalMemory } from '../src/tools/action-tools.ts';
+import type { ActionApprovalPort, ApprovalDecision, CommandRunnerPort, LauncherPort } from '../src/tools/action-tools.ts';
 import { ShellCommandRunner } from '../src/tools/command-runner.ts';
 import { createDefaultToolRegistry } from '../src/tools/default-tools.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
@@ -593,4 +595,61 @@ test('activity labels shorten long paths', async () => {
     shortPath('/private/tmp/some-very-long-scratch-directory-name-0123456789/project/src/cart.js'),
     '…/project/src/cart.js',
   );
+});
+
+test('"always allow" remembers only the exact command in the exact folder', async t => {
+  const h = await harness(t);
+  const other = join(h.root, 'src');
+  const asked: string[] = [];
+  const answers: ApprovalDecision[] = ['always', true, true];
+  const ran: string[] = [];
+  const memory = new ApprovalMemory();
+  const executor = new ToolExecutor({
+    registry: createDefaultToolRegistry(h.config, {
+      actions: {
+        approval: { async request(action) { asked.push(action.kind === 'command' ? `${action.command}@${action.cwd}` : action.kind); return answers.shift() ?? false; } },
+        approvalMemory: memory,
+        commandRunner: { async run(command, cwd) { ran.push(`${command}@${cwd}`); return { exitCode: 0, signal: null, timedOut: false, output: '', truncated: false, durationMs: 1 }; } },
+      },
+    }),
+    policy: new PolicyGateway({ allowedEffects: ['shell'] }),
+    config: h.config,
+    logger: createLogger(() => {}),
+  });
+  const run = (command: string, cwd: string) => executor.execute('run_command', { command, cwd }, new AbortController().signal) as Promise<{ approval: string }>;
+
+  assert.equal((await run('pnpm test', h.root)).approval, 'user');
+  assert.equal((await run('pnpm test', h.root)).approval, 'remembered');
+  assert.equal((await run(' pnpm test ', h.root)).approval, 'remembered');
+  await run('pnpm test --watch=false', h.root);
+  await run('pnpm test', other);
+  assert.deepEqual(asked, [`pnpm test@${h.root}`, `pnpm test --watch=false@${h.root}`, `pnpm test@${other}`]);
+  assert.equal(ran.length, 5);
+  assert.equal(memory.size, 1);
+});
+
+test('the desktop approval manager reports "always" only when chosen', async () => {
+  const proposals: DesktopActionProposal[] = [];
+  const manager = new ActionApprovalManager({ onProposal: proposal => proposals.push(proposal) });
+  const action = { kind: 'command' as const, command: 'ls', cwd: '/tmp', timeoutSeconds: 5 };
+  const first = manager.request(action, new AbortController().signal);
+  manager.approve(proposals[0]!.id, true);
+  assert.equal(await first, 'always');
+  const second = manager.request(action, new AbortController().signal);
+  manager.approve(proposals[1]!.id);
+  assert.equal(await second, true);
+});
+
+test('git summary reports branch and uncommitted changes for the active project', async t => {
+  const h = await harness(t);
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: h.root, encoding: 'utf8' });
+  assert.equal(gitSummary(h.root), undefined);
+  git('init', '-q', '-b', 'main');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
+  assert.equal(gitSummary(h.root), 'branch main, no uncommitted changes');
+  await writeFile(join(h.root, 'src', 'cart.ts'), 'changed\n');
+  assert.equal(gitSummary(h.root), 'branch main, 1 changed file');
+  const prompt = buildSystemPrompt({ ...environment, activeProject: h.root, activeProjectGit: 'branch main, 1 changed file' }, []);
+  assert.match(prompt, /\(git: branch main, 1 changed file\)/);
 });

@@ -25,6 +25,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0013](./0013-voice-first-app-integrations.md) | Voice-first assistant and existing-app integrations | Superseded |
 | [0014](./0014-human-reviewed-filesystem-operations.md) | Human-reviewed machine-wide filesystem operations | Accepted; amended by 0015 |
 | [0015](./0015-coding-agent-loop-and-approved-actions.md) | Coding-agent loop, approved commands/apps/web, selectable models | Accepted |
+| [0016](./0016-web-reading-and-remembered-approvals.md) | Reading web pages, SearXNG search, remembered approvals | Accepted |
 
 ## Open decisions
 
@@ -37,9 +38,8 @@ selection.
 
 User confirmation is needed for:
 
-1. **Approval UX:** whether frequently used read-only commands (for example
-   `git status`, test runs) may be pre-approved per project, and how spoken
-   approvals are confirmed in the voice phase.
+1. **Approval UX:** whether remembered approvals should ever persist across
+   restarts, and how spoken approvals are confirmed in the voice phase.
 2. **Configuration:** secret injection for any future credential-bearing
    provider.
 3. **Diagnostics:** retention/rotation policy and any future opt-in content

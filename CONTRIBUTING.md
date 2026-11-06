@@ -12,14 +12,19 @@ pnpm check            # typecheck + all unit tests
 pnpm test:desktop-ui  # when the renderer or Electron main/preload changed
 ```
 
-A change is done only when both pass. If you changed agent behaviour, also try
-it against a real model:
+A change is done only when both pass.
+
+If you changed agent behaviour (the loop, prompt, or tools), also run the
+real-model evaluation. It uses temporary fixture projects, and approvals stay
+confined to them. Compare the results with the previous run:
 
 ```sh
-pnpm dev -- "<a task that exercises your change>"
+pnpm eval                       # every scenario once
+pnpm eval -- --runs 3 --only fix-bug --model qwen2.5-coder:14b
 ```
 
-Then record anything notable in [docs/ollama.md](./docs/ollama.md#how-well-it-works).
+Add a scenario to `scripts/eval-agent.ts` for each new capability. Record
+notable results in [docs/ollama.md](./docs/ollama.md#how-well-it-works).
 
 ## Project rules
 

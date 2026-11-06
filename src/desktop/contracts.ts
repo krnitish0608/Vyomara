@@ -133,7 +133,8 @@ export interface VyomaraDesktopApi {
   approveFileOperation(id: string, confirmation?: string): Promise<void>;
   rejectFileOperation(id: string): Promise<void>;
   onActionProposal(listener: (proposal: DesktopActionProposal) => void): () => void;
-  approveAction(id: string): Promise<void>;
+  /** `always` remembers an approved command for this folder until the app quits. */
+  approveAction(id: string, always?: boolean): Promise<void>;
   rejectAction(id: string): Promise<void>;
   onToolActivity(listener: (activity: DesktopToolActivity) => void): () => void;
   listModels(): Promise<DesktopModelList>;

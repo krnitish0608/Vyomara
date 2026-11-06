@@ -49,8 +49,8 @@ const api: VyomaraDesktopApi = {
   onActionProposal(listener: (proposal: DesktopActionProposal) => void) {
     return subscribe('vyomara:action-proposed', listener);
   },
-  approveAction(id: string) {
-    return ipcRenderer.invoke('vyomara:action-approve', id);
+  approveAction(id: string, always = false) {
+    return ipcRenderer.invoke('vyomara:action-approve', { id, always });
   },
   rejectAction(id: string) {
     return ipcRenderer.invoke('vyomara:action-reject', id);

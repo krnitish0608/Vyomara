@@ -36,6 +36,8 @@ import {
 import { ActionApprovalError, ActionApprovalManager } from '../desktop/action-approval.ts';
 import { MacApplicationLauncher } from '../desktop/mac-application-launcher.ts';
 import { ShellCommandRunner } from '../tools/command-runner.ts';
+import { HttpWebClient } from '../tools/web-client.ts';
+import { ApprovalMemory } from '../tools/action-tools.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
@@ -46,6 +48,8 @@ let activeFileOperationApproval: FileOperationApprovalManager | undefined;
 let activeActionApproval: ActionApprovalManager | undefined;
 let activeModelPull: AbortController | undefined;
 const shellCommandRunner = new ShellCommandRunner();
+/** Commands the user chose to always allow; cleared when the app quits. */
+const approvalMemory = new ApprovalMemory();
 const macSpeechRunner = new MacSpeechRunner();
 const macApplicationLauncher = process.platform === 'darwin'
   ? new MacApplicationLauncher()
@@ -309,8 +313,10 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
         fileOperationApproval: approvals,
         actions: {
           approval: actionApprovals,
+          approvalMemory: approvalMemory,
           commandRunner: shellCommandRunner,
           ...(macApplicationLauncher ? { launcher: macApplicationLauncher } : {}),
+          web: new HttpWebClient(desktopConfig.searxngUrl === undefined ? {} : { searxngUrl: desktopConfig.searxngUrl }),
         },
       },
     );
@@ -352,7 +358,13 @@ ipcMain.handle('vyomara:action-approve', (event, input: unknown) => {
   if (event.sender !== mainWindow?.webContents) throw new Error('Approval request is invalid.');
   if (!activeRequest || !activeActionApproval) throw new Error('There is no pending action to approve.');
   try {
-    activeActionApproval.approve(parseDesktopSessionId(input));
+    const request = typeof input === 'object' && input !== null && !Array.isArray(input)
+      ? input as { readonly id?: unknown; readonly always?: unknown }
+      : { id: input };
+    if (request.always !== undefined && typeof request.always !== 'boolean') {
+      throw new ActionApprovalError('The approval request is invalid.');
+    }
+    activeActionApproval.approve(parseDesktopSessionId(request.id), request.always === true);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }

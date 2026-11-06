@@ -9,8 +9,10 @@ import type { FileOperationApprovalPort } from './desktop/contracts.ts';
 import { FileOperationApprovalManager } from './desktop/file-operation-approval.ts';
 import { MacApplicationLauncher } from './desktop/mac-application-launcher.ts';
 import { formatUnifiedDiff } from './shared/diff.ts';
+import { ApprovalMemory } from './tools/action-tools.ts';
 import type { ActionApprovalPort } from './tools/action-tools.ts';
 import { ShellCommandRunner } from './tools/command-runner.ts';
+import { HttpWebClient } from './tools/web-client.ts';
 import { createLogger } from './diagnostics/logger.ts';
 import { ProviderError } from './providers/provider.ts';
 import { PersistenceError, SqliteStore } from './storage/sqlite-store.ts';
@@ -144,11 +146,21 @@ const terminalActionApproval: ActionApprovalPort = {
   async request(action) {
     if (action.kind === 'command') {
       process.stderr.write(`\n${bold('▶ Run command')} ${dim(`in ${action.cwd} (timeout ${action.timeoutSeconds}s)`)}\n  ${cyan(action.command)}\n`);
-      return askYesNo('Run it?');
+      const answer = (await terminal.ask(`Run it? ${dim('[y = once, a = always in this folder, N = no]')} `))?.trim() ?? '';
+      if (/^(?:a|always)$/iu.test(answer)) return 'always';
+      return /^(?:y|yes|haan|ha|han)$/iu.test(answer);
     }
     if (action.kind === 'application') {
       process.stderr.write(`\n${bold('▶ Open application')} ${action.application}${action.target ? ` with ${action.target}` : ''}\n`);
       return askYesNo('Open it?');
+    }
+    if (action.kind === 'web') {
+      process.stderr.write(action.operation === 'search'
+        ? `\n${bold('▶ Search the web')} “${action.target}”\n${dim(`  ${action.host} receives these search words.`)}\n`
+        : `\n${bold('▶ Read web page')} ${action.target}\n${dim(`  ${action.host} receives this request.`)}\n`);
+      const answer = (await terminal.ask(`Allow? ${dim(`[y = once, a = always for ${action.host}, N = no]`)} `))?.trim() ?? '';
+      if (/^(?:a|always)$/iu.test(answer)) return 'always';
+      return /^(?:y|yes|haan|ha|han)$/iu.test(answer);
     }
     process.stderr.write(`\n${bold('▶ Open web page')} ${action.url}${action.application ? ` in ${action.application}` : ''}\n${dim('  The website receives this address (including any search query).')}\n`);
     return askYesNo('Open it?');
@@ -312,7 +324,9 @@ async function main(): Promise<void> {
 
   const actions = {
     approval: terminalActionApproval,
+    approvalMemory: new ApprovalMemory(),
     commandRunner: new ShellCommandRunner(),
+    web: new HttpWebClient(config.searxngUrl === undefined ? {} : { searxngUrl: config.searxngUrl }),
     ...(process.platform === 'darwin' ? { launcher: new MacApplicationLauncher() } : {}),
   };
   const fileOperationApproval = terminalFileApproval(config);

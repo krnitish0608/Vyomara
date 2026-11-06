@@ -105,13 +105,20 @@ export function ActionApprovalCard({
   readonly proposal: DesktopActionProposal;
   readonly busy: boolean;
   readonly cardRef?: RefObject<HTMLElement | null> | undefined;
-  readonly onDecide: (approve: boolean) => void;
+  readonly onDecide: (approve: boolean, always?: boolean) => void;
 }) {
   const title = proposal.kind === 'command'
     ? 'Run this command?'
     : proposal.kind === 'application'
       ? `Open ${proposal.application}?`
-      : 'Open this web page?';
+      : proposal.kind === 'web'
+        ? proposal.operation === 'search' ? 'Search the web?' : 'Let Vyom read this web page?'
+        : 'Open this web page?';
+  const remember = proposal.kind === 'command'
+    ? { label: 'Always allow here', title: 'Run now, and run this exact command in this folder without asking again until Vyomara quits' }
+    : proposal.kind === 'web'
+      ? { label: `Always allow ${proposal.host}`, title: `Allow requests to ${proposal.host} without asking again until Vyomara quits` }
+      : undefined;
   return (
     <section className="file-operation-review action-review" aria-label={title} ref={cardRef}>
       <p className="eyebrow">YOUR APPROVAL REQUIRED</p>
@@ -137,10 +144,23 @@ export function ActionApprovalCard({
           </p>
         </>
       )}
+      {proposal.kind === 'web' && (
+        <>
+          <code className="file-operation-path">{proposal.target}</code>
+          <p className="file-operation-warning">
+            Vyomara will contact {proposal.host} from this Mac, which receives this {proposal.operation === 'search' ? 'search text' : 'address'}. Page text is then sent to your local model.
+          </p>
+        </>
+      )}
       <div className="file-operation-actions">
         <button className="file-operation-approve" type="button" onClick={() => onDecide(true)} disabled={busy}>
-          {proposal.kind === 'command' ? 'Run' : 'Open'}
+          {proposal.kind === 'command' ? 'Run' : proposal.kind === 'web' ? 'Allow' : 'Open'}
         </button>
+        {remember && (
+          <button className="file-operation-reject" type="button" onClick={() => onDecide(true, true)} disabled={busy} title={remember.title}>
+            {remember.label}
+          </button>
+        )}
         <button className="file-operation-reject" type="button" onClick={() => onDecide(false)} disabled={busy}>
           Don’t allow
         </button>

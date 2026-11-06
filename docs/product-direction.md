@@ -29,10 +29,13 @@ user states an outcome and the agent does the work:
    - Approved shell commands for tests, builds, and git.
    - Honest verified-action reporting.
    - Model choice in the UI.
-2. **Apps and the web.** Today: open any app (optionally with a file or
-   folder) and open web pages or Google searches in a chosen browser, each
-   after approval. Next:
-   - Read web pages (fetch and summarize), with disclosure of what is sent.
+2. **Apps and the web.** Today, each after approval:
+   - Open any app, optionally with a file or folder.
+   - Open web pages or Google searches in a chosen browser.
+   - Read web pages itself, telling the user which site receives the request.
+   - Search the web through a configured SearXNG instance.
+
+   Next:
    - Richer app integrations (VS Code workspace/terminal, Finder, Notes,
      Calendar).
    - Reusable task recipes.

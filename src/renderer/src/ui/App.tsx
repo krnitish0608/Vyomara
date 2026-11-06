@@ -502,12 +502,12 @@ export function App() {
     }
   }
 
-  async function decideAction(proposal: DesktopActionProposal, approve: boolean): Promise<void> {
+  async function decideAction(proposal: DesktopActionProposal, approve: boolean, always = false): Promise<void> {
     if (actionPendingId) return;
     setActionPendingId(proposal.id);
     setRequestError(undefined);
     try {
-      if (approve) await window.vyomara.approveAction(proposal.id);
+      if (approve) await window.vyomara.approveAction(proposal.id, always);
       else await window.vyomara.rejectAction(proposal.id);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : 'The approval could not be recorded.');
@@ -855,7 +855,7 @@ export function App() {
                 proposal={proposal}
                 busy={actionPendingId !== undefined}
                 cardRef={index === 0 ? actionReview : undefined}
-                onDecide={approve => void decideAction(proposal, approve)}
+                onDecide={(approve, always) => void decideAction(proposal, approve, always)}
               />
             ))}
             </div>

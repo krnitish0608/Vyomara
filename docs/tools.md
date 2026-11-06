@@ -47,7 +47,8 @@ Results are `{status: "applied" | "rejected", operation, path}`.
 
 ## Actions (approved)
 
-These tools exist only when the host provides an approval port. The desktop
+These tools exist only when the host provides an approval port (`fetch_url`
+also needs a web client; `web_search` also needs a SearXNG backend). The desktop
 and CLI both do. They are also gated by the policy effects `shell`, `launch`,
 and `network`.
 
@@ -57,8 +58,25 @@ and `network`.
 | `open_application` | `application`, `path?` | Any installed app, by name or alias (`vscode`, `chrome`, …). Optionally opens a file or folder in it. |
 | `open_url` | `url`, `browser?` | Only `http`/`https`, without credentials. The approval card says the website receives the URL. Vyom cannot read the page. |
 
+| `fetch_url` | `url`, `offset?` | Vyomara downloads a public page and returns its `title` and text `content`, paged with `nextOffset`. The first page of results also includes up to 25 `links`. See the limits below the table. |
+| `web_search` | `query` | Only when `VYOM_SEARXNG_URL` points to a SearXNG instance with JSON output enabled. Returns up to 10 `{title, url, snippet}`. |
+
+`fetch_url` limits:
+- Only `http`/`https`, text content types, 3 MB, a 20 s timeout, and at most 5
+  redirects.
+- Requests are sent as `Vyomara/0.1` with no cookies or credentials.
+- Loopback, private, link-local, and `.local` hosts are refused, including
+  through redirects.
+
 A rejected action returns `status: "rejected"` with a note telling the model
 not to retry it unchanged.
+
+**Remembered approvals.** For commands, "Always allow here" (CLI: answer `a`)
+remembers that exact command in that exact folder. For `fetch_url` and
+`web_search`, "Always allow \<host\>" remembers the host. Both last only until
+the app or CLI quits, and runs approved this way are still listed in Verified
+actions. Edits, deletions, app launches, and `open_url` always ask. See
+[ADR-0016](./adr/0016-web-reading-and-remembered-approvals.md).
 
 ## Bounds
 

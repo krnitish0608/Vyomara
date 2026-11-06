@@ -9,6 +9,8 @@ export interface AppConfig {
   readonly ollamaNumCtx: number;
   /** Whether thinking-capable models should reason before answering. */
   readonly ollamaThink: boolean;
+  /** Optional SearXNG instance used by web_search (JSON format must be enabled). */
+  readonly searxngUrl: string | undefined;
   readonly filesystemAllowedRoots: readonly string[];
   readonly dataDirectory: string;
   readonly maxAgentIterations: number;
@@ -85,6 +87,20 @@ function modelName(raw: string | undefined): string {
   return validateOllamaModel(raw === undefined ? DEFAULT_OLLAMA_MODEL : raw);
 }
 
+function searxngUrl(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error('VYOM_SEARXNG_URL must be a valid http(s) URL.');
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username !== '' || url.password !== '') {
+    throw new Error('VYOM_SEARXNG_URL must be an http(s) URL without credentials.');
+  }
+  return url.href;
+}
+
 function booleanSetting(env: Environment, name: string, fallback: boolean): boolean {
   const raw = env[name]?.trim().toLowerCase();
   if (raw === undefined || raw === '') return fallback;
@@ -142,6 +158,7 @@ export function loadConfig(env: Environment): AppConfig {
     ollamaModel: usesOllama ? modelName(env.VYOM_OLLAMA_MODEL) : DEFAULT_OLLAMA_MODEL,
     ollamaNumCtx: boundedInteger(env, 'VYOM_OLLAMA_NUM_CTX', 32_768, 2_048, 262_144),
     ollamaThink: booleanSetting(env, 'VYOM_OLLAMA_THINK', false),
+    searxngUrl: searxngUrl(env.VYOM_SEARXNG_URL),
     filesystemAllowedRoots: allowedRoots(env.VYOM_ALLOWED_ROOTS),
     dataDirectory: dataDirectory(env.VYOM_DATA_DIR),
     maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 40, 1, 200),
