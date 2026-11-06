@@ -1279,6 +1279,7 @@ export function App() {
             {actionProposals.map((proposal, index) => (
               <ActionApprovalCard
                 key={proposal.id}
+                assistantName={assistantName}
                 proposal={proposal}
                 busy={actionPendingId !== undefined}
                 cardRef={index === 0 ? actionReview : undefined}
@@ -1362,11 +1363,13 @@ export function App() {
 
         {permissionsOpen ? (
           <PermissionsPanel
+            assistantName={assistantName}
             headingRef={permissionsHeading}
             onClose={() => { setPermissionsOpen(false); permissionsTrigger.current?.focus(); }}
           />
         ) : modelsOpen ? (
           <ModelsPanel
+            assistantName={assistantName}
             headingRef={modelsHeading}
             disabled={requestPending}
             onSelected={setProvider}

@@ -19,7 +19,10 @@ const QUICK_GRANTS: readonly { readonly id: string; readonly label: string }[] =
 export function PermissionsPanel({
   headingRef,
   onClose,
+  assistantName = 'Vyom',
 }: {
+  /** The selected assistant's name (Vyom or Vyomara). */
+  readonly assistantName?: string;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly onClose: () => void;
 }) {
@@ -55,7 +58,7 @@ export function PermissionsPanel({
         <button className="history-close" type="button" onClick={onClose}>Close</button>
       </div>
       <div className="history-content" aria-live="polite">
-        <p className="history-review-title">Vyom does these without asking</p>
+        <p className="history-review-title">{assistantName} does these without asking</p>
         {state === undefined && !error ? (
           <p className="history-message" role="status">Loading…</p>
         ) : state && state.grants.length === 0 ? (

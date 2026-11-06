@@ -101,7 +101,10 @@ export function ActionApprovalCard({
   busy,
   cardRef,
   onDecide,
+  assistantName = 'Vyom',
 }: {
+  /** The selected assistant's name (Vyom or Vyomara). */
+  readonly assistantName?: string;
   readonly proposal: DesktopActionProposal;
   readonly busy: boolean;
   readonly cardRef?: RefObject<HTMLElement | null> | undefined;
@@ -112,7 +115,7 @@ export function ActionApprovalCard({
     : proposal.kind === 'application'
       ? `Open ${proposal.application}?`
       : proposal.kind === 'web'
-        ? proposal.operation === 'search' ? 'Search the web?' : 'Let Vyom read this web page?'
+        ? proposal.operation === 'search' ? 'Search the web?' : `Let ${assistantName} read this web page?`
         : proposal.kind === 'app-control'
           ? `${proposal.action.replace(/^./u, letter => letter.toUpperCase())} ${proposal.application}?`
           : 'Open this web page?';

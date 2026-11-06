@@ -47,7 +47,10 @@ export function ModelsPanel({
   disabled,
   onSelected,
   onClose,
+  assistantName = 'Vyom',
 }: {
+  /** The selected assistant's name (Vyom or Vyomara). */
+  readonly assistantName?: string;
   readonly headingRef: RefObject<HTMLHeadingElement | null>;
   readonly disabled: boolean;
   readonly onSelected: (status: DesktopProviderStatus) => void;
@@ -267,7 +270,7 @@ export function ModelsPanel({
 
         {speech && (
           <section className="model-section" aria-label="Voice recognition">
-            <p className="history-review-title">Voice: how Vyom hears you</p>
+            <p className="history-review-title">Voice: how {assistantName} hears you</p>
             {speech.models.map(model => (
               <label key={model.id} className="model-toggle">
                 <input
@@ -287,7 +290,7 @@ export function ModelsPanel({
             )}
             <p className="history-privacy">
               Speech is recognised on this Mac with whisper.cpp; audio never leaves it. “Best” understands Hindi, English, and Hinglish far better.
-              Press the orb (or ⌥Space) and just talk: Vyom waits until you finish, answers on screen and aloud, then listens again. Answer approvals with “haan” or “nahi”; say “bas” or press the orb to end.
+              Press the orb (or ⌥Space) and just talk: {assistantName} waits until you finish, answers on screen and aloud, then listens again. Answer approvals with “haan” or “nahi”; say “bas” or press the orb to end.
             </p>
           </section>
         )}

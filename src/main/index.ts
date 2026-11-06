@@ -360,7 +360,7 @@ async function createPipWindow(): Promise<BrowserWindow> {
     alwaysOnTop: true,
     // Not a macOS "panel": panels hide whenever Vyomara is not the active app,
     // which is exactly when the mini window is needed. It is shown inactive instead.
-    title: 'Vyom',
+    title: personaFor(persona).name,
     // Native frosted glass behind the card on macOS.
     ...(process.platform === 'darwin' ? { vibrancy: 'hud' as const, visualEffectState: 'active' as const } : {}),
     roundedCorners: true,
@@ -957,6 +957,7 @@ ipcMain.handle('vyomara:persona-set', async (event, input: unknown) => {
   if (!isPersonaId(input)) throw new Error('Choose Vyom or Vyomara.');
   if (activeRequest) throw new Error('Wait for the current task to finish before switching assistants.');
   persona = input;
+  if (pipWindow && !pipWindow.isDestroyed()) pipWindow.setTitle(personaFor(persona).name);
   await savePersona(input);
   return persona;
 });
