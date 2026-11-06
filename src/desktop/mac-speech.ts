@@ -75,9 +75,15 @@ export async function voiceFor(gender: 'male' | 'female', available?: ReadonlySe
   return VOICES[gender].find(voice => voices.has(voice));
 }
 
-/** Text as the assistant's voice should read it (see VOICES). */
+/**
+ * Text as the assistant's voice should read it (see VOICES). The names are
+ * respelled so they sound right: Vyom is "व्योम" (rhymes with Om), which Aman
+ * says from "Vyo Om" (plain "Vyom" comes out as "Vyam"); Lekha needs both
+ * names in Devanagari. Checked with whisper.
+ */
 export function textForVoice(text: string, gender: 'male' | 'female'): string {
-  return gender === 'male' ? romanForSpeech(text) : text.replace(/\bVyomara\b/gu, 'व्योमारा');
+  if (gender === 'male') return romanForSpeech(text).replace(/\bVyom\b/gu, 'Vyo Om');
+  return text.replace(/\bVyomara\b/gu, 'व्योमारा').replace(/\bVyom\b/gu, 'व्योम');
 }
 const maximumSpeechDurationMs = 180_000;
 

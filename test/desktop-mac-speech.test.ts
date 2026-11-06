@@ -22,7 +22,8 @@ test('local speech invokes only the fixed macOS voice binary with bounded text',
   const result = await new MacSpeechRunner(spawnProcess, 'darwin').speak('Hello from Vyom.');
   assert.deepEqual(invocation, {
     executable: '/usr/bin/say',
-    args: ['-r', '180', '--', 'Hello from Vyom.'],
+    // The name is respelled so the voice says "व्योम" (see textForVoice).
+    args: ['-r', '180', '--', 'Hello from Vyo Om.'],
   });
   assert.deepEqual(result, { status: 'completed' });
 });

@@ -30,7 +30,11 @@ and Vyomara (female), chosen in the app.
    - **Vyomara:** Lekha for all text (the owner's choice). "Vyomara" is
      written व्योमारा before speaking, since Lekha mispronounces the Latin
      spelling.
-   - **Vyom:** Aman (the owner's choice), then Rishi. Any Devanagari left in a reply is changed to
+   - **Vyom:** Aman (the owner's choice), then Rishi.
+   - **Names are respelled before speaking** (`textForVoice`), checked with
+     whisper. Vyom is pronounced "व्योम" (rhymes with Om). Aman says plain
+     "Vyom" as "Vyam", so he is given "Vyo Om". Lekha is given both names in
+     Devanagari. Any Devanagari left in a reply is changed to
      Roman letters (`romanForSpeech`) before speaking.
    - The speaking rate is lowered from 190 to 180 words per minute.
    - When the app opens on the welcome screen, and when the assistant is
