@@ -13,15 +13,15 @@ export interface Persona {
   readonly selfVerb: 'raha' | 'rahi';
   /**
    * Spoken when the app opens on the welcome screen and when this assistant
-   * is chosen: the welcome text, in the assistant's own words.
+   * is chosen, followed by the brand chime. Spelled for the voice: Vyom's
+   * voice (Rishi) says "AI" as "air" unless written "A. I."; Vyomara's
+   * (Tara) reads "AI" correctly but not "A. I.".
    */
   readonly greeting: string;
 }
 
-function greetingFor(name: string): string {
-  return `Hi, I'm ${name}, your personal AI assistant. Tell me what you need. `
-    + 'Ask a question, plan your next move, or get help with a task, by voice or text. '
-    + 'I keep you in control and show my work. AI Twins. One Orbit. Your Control.';
+function greetingFor(name: string, ai: string): string {
+  return `Hi, I'm ${name}, your personal ${ai} assistant. Tell me what you need.`;
 }
 
 export const PERSONAS: Readonly<Record<PersonaId, Persona>> = {
@@ -30,14 +30,14 @@ export const PERSONAS: Readonly<Record<PersonaId, Persona>> = {
     name: 'Vyom',
     gender: 'male',
     selfVerb: 'raha',
-    greeting: greetingFor('Vyom'),
+    greeting: greetingFor('Vyom', 'A. I.'),
   },
   vyomara: {
     id: 'vyomara',
     name: 'Vyomara',
     gender: 'female',
     selfVerb: 'rahi',
-    greeting: greetingFor('Vyomara'),
+    greeting: greetingFor('Vyomara', 'AI'),
   },
 };
 

@@ -72,3 +72,18 @@ test('stopping before speech starts cancels it', async () => {
   assert.deepEqual(await pending, { status: 'cancelled' });
   assert.equal(spawned, 0);
 });
+
+test('voice names with an added language are also known by their plain name', async () => {
+  const { parseVoiceList } = await import('../src/desktop/mac-speech.ts');
+  const names = parseVoiceList([
+    'Lekha               hi_IN    # नमस्ते, मेरा नाम लेखा है।',
+    'Tara (English (India)) en_IN    # Hello! My name is Tara.',
+    'Lekha (Enhanced)    hi_IN    # नमस्ते',
+    'Eddy (English (UK)) en_GB    # Hello! My name is Eddy.',
+  ].join('\n'));
+  assert.ok(names.has('Tara'));
+  assert.ok(names.has('Tara (English (India))'));
+  assert.ok(names.has('Lekha (Enhanced)'));
+  assert.ok(names.has('Lekha'));
+  assert.ok(names.has('Eddy'));
+});

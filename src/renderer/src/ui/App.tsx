@@ -96,6 +96,8 @@ export function App() {
   const personaPicker = useRef<HTMLDivElement>(null);
   const personaTrigger = useRef<HTMLButtonElement>(null);
   const greeted = useRef(false);
+  /** Bumped when speech is interrupted, so a greeting in progress stops. */
+  const greetingRun = useRef(0);
   const greetOnLaunch = useRef<((id: PersonaId) => void) | undefined>(undefined);
   const assistantName = PERSONAS[persona].name;
   /** Words of the spoken turn in progress, shown live in the message box. */
@@ -582,6 +584,7 @@ export function App() {
 
   /** Stop Vyom mid-sentence and listen again (the orb was pressed while it spoke). */
   function interruptSpeaking(): void {
+    greetingRun.current += 1;
     speakingRef.current = false;
     setVyomSpeaking(false);
     void window.vyomara.stopSpeaking().catch(() => undefined);
@@ -730,7 +733,7 @@ export function App() {
         await speechDone.current;
       }
       greeted.current = true;
-      void speak(PERSONAS[saved].greeting);
+      void speakGreeting(saved);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : 'The assistant could not be changed.');
     } finally {
@@ -741,8 +744,18 @@ export function App() {
   greetOnLaunch.current = id => {
     if (greeted.current || messages.length > 0 || speakingRef.current) return;
     greeted.current = true;
-    void speak(PERSONAS[id].greeting);
+    void speakGreeting(id);
   };
+
+  /** The introduction, then the brand chime; pressing the orb (an interruption) skips the chime. */
+  async function speakGreeting(id: PersonaId): Promise<void> {
+    const run = ++greetingRun.current;
+    await speak(PERSONAS[id].greeting);
+    if (run !== greetingRun.current) return;
+    voiceCapture.current.setMuted(true);
+    await playEarcon('brand');
+    if (!speakingRef.current) voiceCapture.current.setMuted(false);
+  }
 
   // The assistant menu closes on Escape or a click elsewhere.
   useEffect(() => {

@@ -33,9 +33,15 @@ and Vyomara (female), chosen in the app.
      Roman letters (`romanForSpeech`) before speaking.
    - The speaking rate is lowered from 190 to 180 words per minute.
    - When the app opens on the welcome screen, and when the assistant is
-     switched, the assistant reads the welcome text aloud in its own voice
-     ("Hi, I'm Vyomara, your personal AI assistant…"). Pressing the orb
-     stops it, even in the instant before it starts.
+     switched, the assistant introduces itself in its own voice ("Hi, I'm
+     Vyomara, your personal AI assistant. Tell me what you need."), followed
+     by the three-note brand chime.
+     - "AI" is spelled per voice: Rishi says "AI" as "air" but reads
+       "A. I." correctly, while Tara is the reverse (checked with whisper).
+     - Pressing the orb stops the greeting, even in the instant before it
+       starts.
+   - Voice names are matched by their plain name too, because newer macOS
+     lists some voices as "Tara (English (India))".
 4. **Interface.**
    - The Assistant tab at the top of the sidebar shows the current
      assistant. Tapping it opens a small menu to switch, and the new

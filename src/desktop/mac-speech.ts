@@ -33,10 +33,27 @@ function listInstalledVoices(): Promise<ReadonlySet<string>> {
     let output = '';
     child.stdout.on('data', chunk => { output += String(chunk); });
     child.once('error', () => resolve(new Set()));
-    child.once('close', () => resolve(new Set(output.split('\n').map(line => line.split(/\s{2,}/u)[0]?.trim() ?? '').filter(Boolean))));
+    child.once('close', () => resolve(parseVoiceList(output)));
   });
   installedVoices = { at: Date.now(), voices };
   return voices;
+}
+
+/**
+ * Voice names from `say -v ?`. Newer macOS adds a language to some names
+ * ("Tara (English (India))"); the plain name ("Tara") is kept too, since `say`
+ * accepts it. "(Enhanced)" and "(Premium)" stay distinct voices.
+ */
+export function parseVoiceList(output: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const line of output.split('\n')) {
+    const name = line.match(/^(.+?)\s+[a-z]{2,3}_[A-Z0-9]{2,3}\s+#/u)?.[1]?.trim();
+    if (!name) continue;
+    names.add(name);
+    const plain = name.replace(/\s*\((?!(?:Enhanced|Premium)\)$).*\)$/u, '');
+    if (plain) names.add(plain);
+  }
+  return names;
 }
 
 /**
