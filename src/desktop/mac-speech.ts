@@ -20,6 +20,31 @@ export interface SpeechChild {
 export type SpawnSpeechProcess = (executable: string, arguments_: readonly string[]) => SpeechChild;
 
 const maximumSpeechChars = 2_000;
+
+/** Installed macOS voices, read once ("Lekha hi_IN # …" lines from `say -v ?`). */
+let installedVoices: Promise<ReadonlySet<string>> | undefined;
+
+function listInstalledVoices(): Promise<ReadonlySet<string>> {
+  installedVoices ??= new Promise(resolve => {
+    const child = spawn('/usr/bin/say', ['-v', '?'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let output = '';
+    child.stdout.on('data', chunk => { output += String(chunk); });
+    child.once('error', () => resolve(new Set()));
+    child.once('close', () => resolve(new Set(output.split('\n').map(line => line.split(/\s{2,}/u)[0]?.trim() ?? '').filter(Boolean))));
+  });
+  return installedVoices;
+}
+
+/**
+ * Hindi in Devanagari sounds natural with the Hindi voice; English and
+ * romanized Hinglish with an Indian English voice. Falls back to the
+ * system voice when these are not installed.
+ */
+export async function voiceFor(text: string, available?: ReadonlySet<string>): Promise<string | undefined> {
+  const voices = available ?? await listInstalledVoices();
+  const preferred = /[\u0900-\u097F]/u.test(text) ? ['Lekha'] : ['Rishi', 'Aman', 'Tara'];
+  return preferred.find(voice => voices.has(voice));
+}
 const maximumSpeechDurationMs = 180_000;
 
 function spawnMacSpeechProcess(executable: string, arguments_: readonly string[]): SpeechChild {
@@ -40,7 +65,14 @@ export class MacSpeechRunner {
     this.#platform = platform;
   }
 
-  speak(text: unknown): Promise<MacSpeechResult> {
+  async speak(text: unknown): Promise<MacSpeechResult> {
+    const voice = typeof text === 'string' && this.#platform === 'darwin' && this.#spawnProcess === spawnMacSpeechProcess
+      ? await voiceFor(text)
+      : undefined;
+    return this.#speak(text, voice);
+  }
+
+  #speak(text: unknown, voice: string | undefined): Promise<MacSpeechResult> {
     if (this.#platform !== 'darwin') {
       return Promise.reject(new MacSpeechError('Local speech output is available only on macOS.'));
     }
@@ -53,7 +85,7 @@ export class MacSpeechRunner {
 
     let child: SpeechChild;
     try {
-      child = this.#spawnProcess('/usr/bin/say', ['-r', '190', '--', text]);
+      child = this.#spawnProcess('/usr/bin/say', ['-r', '190', ...(voice === undefined ? [] : ['-v', voice]), '--', text]);
     } catch (error) {
       return Promise.reject(new MacSpeechError(error instanceof Error ? error.message : 'macOS speech could not be started.'));
     }

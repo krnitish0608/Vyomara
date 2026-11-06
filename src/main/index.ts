@@ -43,7 +43,8 @@ import { ShellCommandRunner } from '../tools/command-runner.ts';
 import { HttpWebClient } from '../tools/web-client.ts';
 import { ApprovalMemory, DEFAULT_BROWSER, grantId, parseGrantId } from '../tools/action-tools.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
-import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
+import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary, SPEECH_MODELS } from '../desktop/local-whisper.ts';
+import type { SpeechModelId } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 
 let mainWindow: BrowserWindow | undefined;
@@ -61,6 +62,8 @@ const macApplicationLauncher = process.platform === 'darwin'
   : undefined;
 let localWhisperRunner: LocalWhisperRunner | undefined;
 let voiceListeningEnabled = false;
+/** Speech-recognition model in use; "best" handles Hindi, English, and mixed speech. */
+let speechModel: SpeechModelId = 'fast';
 let config: AppConfig | undefined;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -106,13 +109,38 @@ function createDesktopLogger(): Logger {
   };
 }
 
+function speechModelDirectory(): string {
+  return join(app.getPath('userData'), 'speech-models');
+}
+
 function getLocalWhisperRunner(): LocalWhisperRunner {
   const binaryPath = resolveWhisperBinary();
+  if (localWhisperRunner && localWhisperRunner.model.id !== speechModel && !localWhisperRunner.isListening) {
+    localWhisperRunner = undefined;
+  }
   localWhisperRunner ??= new LocalWhisperRunner({
-    modelDirectory: join(app.getPath('userData'), 'speech-models'),
+    modelDirectory: speechModelDirectory(),
+    model: speechModel,
     ...(binaryPath === undefined ? {} : { binaryPath }),
   });
   return localWhisperRunner;
+}
+
+async function speechStatus() {
+  const runner = getLocalWhisperRunner();
+  const models = await Promise.all(Object.values(SPEECH_MODELS).map(async model => ({
+    id: model.id,
+    label: model.label,
+    approxMegabytes: model.approxMegabytes,
+    ready: await new LocalWhisperRunner({ modelDirectory: speechModelDirectory(), model: model.id }).modelAvailable(),
+  })));
+  return {
+    modelReady: await runner.modelAvailable(),
+    runtimeAvailable: resolveWhisperBinary() !== undefined,
+    listeningEnabled: voiceListeningEnabled,
+    model: speechModel,
+    models,
+  };
 }
 
 function emitSpeechEvent(event: LocalWhisperEvent): void {
@@ -167,22 +195,29 @@ async function saveVoiceListeningPreference(enabled: boolean): Promise<void> {
   const path = voicePreferencePath();
   await mkdir(join(app.getPath('userData')), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify({ enabled }), { encoding: 'utf8', mode: 0o600 });
+  await writeFile(temporaryPath, JSON.stringify({ enabled, model: speechModel }), { encoding: 'utf8', mode: 0o600 });
   await rename(temporaryPath, path);
 }
 
 async function readVoiceListeningPreference(): Promise<boolean> {
+  let saved: { enabled?: unknown; model?: unknown } = {};
   try {
-    const text = await readFile(voicePreferencePath(), 'utf8');
-    const value: unknown = JSON.parse(text);
+    const value: unknown = JSON.parse(await readFile(voicePreferencePath(), 'utf8'));
     if (typeof value !== 'object' || value === null || !('enabled' in value) || typeof value.enabled !== 'boolean') {
       throw new Error('Saved voice-listening preference is invalid.');
     }
-    return value.enabled;
+    saved = value as { enabled?: unknown; model?: unknown };
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
-    throw error;
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
+  if (saved.model === 'fast' || saved.model === 'best') {
+    speechModel = saved.model;
+  } else {
+    // No choice saved yet: prefer the multilingual model when it is installed.
+    const best = new LocalWhisperRunner({ modelDirectory: speechModelDirectory(), model: 'best' });
+    if (await best.modelAvailable().catch(() => false)) speechModel = 'best';
+  }
+  return saved.enabled === true;
 }
 
 function createWindow(): BrowserWindow {
@@ -574,13 +609,24 @@ ipcMain.handle('vyomara:session-delete', (_event, input: unknown) => {
   }
 });
 
-ipcMain.handle('vyomara:speech-setup-status', async () => {
+ipcMain.handle('vyomara:speech-setup-status', () => speechStatus());
+
+ipcMain.handle('vyomara:speech-model-select', async (_event, input: unknown) => {
+  if (input !== 'fast' && input !== 'best') throw new Error('Choose a known speech model.');
+  if (input === speechModel) return speechStatus();
+  const wasListening = voiceListeningEnabled;
+  if (localWhisperRunner?.isListening) await localWhisperRunner.stop({ silent: true });
+  speechModel = input;
+  localWhisperRunner = undefined;
   const runner = getLocalWhisperRunner();
-  return {
-    modelReady: await runner.modelAvailable(),
-    runtimeAvailable: resolveWhisperBinary() !== undefined,
-    listeningEnabled: voiceListeningEnabled,
-  };
+  if (wasListening && await runner.modelAvailable() && resolveWhisperBinary()) {
+    runner.start(emitSpeechEvent);
+  } else if (wasListening) {
+    voiceListeningEnabled = false;
+    emitSpeechEvent({ type: 'stopped' });
+  }
+  await saveVoiceListeningPreference(voiceListeningEnabled);
+  return speechStatus();
 });
 
 ipcMain.handle('vyomara:speech-model-download', async () => {
@@ -600,7 +646,7 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
   if (typeof input !== 'boolean') throw new Error('Voice listening must be explicitly enabled or disabled.');
   const runner = getLocalWhisperRunner();
   if (input) {
-    if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the local base speech model before enabling voice listening.');
+    if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the selected speech model (Models panel → Voice) before turning listening on.');
     if (!resolveWhisperBinary()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
     try {
       const microphoneStatus = systemPreferences.getMediaAccessStatus('microphone');
@@ -628,11 +674,7 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
     await saveVoiceListeningPreference(false);
     emitSpeechEvent({ type: 'stopped' });
   }
-  return {
-    modelReady: await runner.modelAvailable(),
-    runtimeAvailable: resolveWhisperBinary() !== undefined,
-    listeningEnabled: voiceListeningEnabled,
-  };
+  return speechStatus();
 });
 
 ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {

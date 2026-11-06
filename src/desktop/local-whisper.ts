@@ -17,6 +17,8 @@ export type LocalWhisperEvent =
 
 export interface LocalWhisperOptions {
   readonly modelDirectory: string;
+  /** Which speech model to use (default "fast"). */
+  readonly model?: SpeechModelId;
   readonly binaryPath?: string;
   readonly spawnProcess?: typeof spawn;
 }
@@ -28,10 +30,51 @@ export class LocalSpeechError extends Error {
   }
 }
 
-const modelName = 'ggml-base.bin';
-const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
-const modelSha1 = '465707469ff3a37a2b9b8d8f89f2f99de7299dac';
-const maximumModelBytes = 180 * 1024 * 1024;
+export type SpeechModelId = 'fast' | 'best';
+
+export interface SpeechModelInfo {
+  readonly id: SpeechModelId;
+  readonly label: string;
+  readonly file: string;
+  readonly sha1: string;
+  readonly maxBytes: number;
+  readonly approxMegabytes: number;
+  /**
+   * Language passed to whisper. The base model guesses Hindi as Urdu or
+   * Hebrew on short phrases, so it transcribes everything as English
+   * (Hinglish comes out romanized). The large turbo model writes Hindi in
+   * Devanagari and keeps English words in English.
+   */
+  readonly language: 'en' | 'hi';
+}
+
+export const SPEECH_MODELS: Readonly<Record<SpeechModelId, SpeechModelInfo>> = {
+  fast: {
+    id: 'fast',
+    label: 'Fast (English and romanized Hinglish)',
+    file: 'ggml-base.bin',
+    sha1: '465707469ff3a37a2b9b8d8f89f2f99de7299dac',
+    maxBytes: 180 * 1024 * 1024,
+    approxMegabytes: 148,
+    language: 'en',
+  },
+  best: {
+    id: 'best',
+    label: 'Best for Hindi, English, and mixed speech',
+    file: 'ggml-large-v3-turbo-q5_0.bin',
+    sha1: 'e050f7970618a659205450ad97eb95a18d69c9ee',
+    maxBytes: 600 * 1024 * 1024,
+    approxMegabytes: 574,
+    language: 'hi',
+  },
+};
+
+function modelUrl(model: SpeechModelInfo): string {
+  return `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${model.file}`;
+}
+
+/** Verified model files (path → size:mtime), so large models are hashed once per change. */
+const verifiedModels = new Map<string, string>();
 const defaultWhisperBinaries = ['/opt/homebrew/bin/whisper-stream', '/usr/local/bin/whisper-stream'];
 
 export function extractWhisperTranscriptions(output: string): string[] {
@@ -62,6 +105,7 @@ async function fileSha1(path: string): Promise<string> {
 
 export class LocalWhisperRunner {
   readonly modelPath: string;
+  readonly model: SpeechModelInfo;
   readonly #modelDirectory: string;
   readonly #binaryPath: string | undefined;
   readonly #spawnProcess: typeof spawn;
@@ -75,7 +119,8 @@ export class LocalWhisperRunner {
 
   constructor(options: LocalWhisperOptions) {
     this.#modelDirectory = options.modelDirectory;
-    this.modelPath = join(options.modelDirectory, modelName);
+    this.model = SPEECH_MODELS[options.model ?? 'fast'];
+    this.modelPath = join(options.modelDirectory, this.model.file);
     this.#binaryPath = options.binaryPath;
     this.#spawnProcess = options.spawnProcess ?? spawn;
   }
@@ -87,8 +132,12 @@ export class LocalWhisperRunner {
   async modelAvailable(): Promise<boolean> {
     try {
       const metadata = await stat(this.modelPath);
-      return metadata.isFile() && metadata.size > 0 && metadata.size <= maximumModelBytes &&
-        await fileSha1(this.modelPath) === modelSha1;
+      if (!metadata.isFile() || metadata.size === 0 || metadata.size > this.model.maxBytes) return false;
+      const stamp = `${metadata.size}:${metadata.mtimeMs}`;
+      if (verifiedModels.get(this.modelPath) === stamp) return true;
+      const valid = await fileSha1(this.modelPath) === this.model.sha1;
+      if (valid) verifiedModels.set(this.modelPath, stamp);
+      return valid;
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
       throw error;
@@ -97,14 +146,16 @@ export class LocalWhisperRunner {
 
   async downloadModel(onEvent: (event: LocalWhisperEvent) => void): Promise<void> {
     await mkdir(this.#modelDirectory, { recursive: true, mode: 0o700 });
-    const temporaryPath = join(this.#modelDirectory, `${modelName}.download`);
-    const response = await fetch(modelUrl, { redirect: 'follow' });
+    const temporaryPath = join(this.#modelDirectory, `${this.model.file}.download`);
+    const maximumModelBytes = this.model.maxBytes;
+    const sizeLimit = `${Math.round(maximumModelBytes / 1024 / 1024)} MiB`;
+    const response = await fetch(modelUrl(this.model), { redirect: 'follow' });
     if (!response.ok || !response.body) {
       throw new LocalSpeechError(`Local speech model download failed (HTTP ${response.status}).`);
     }
     const declaredLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(declaredLength) && declaredLength > maximumModelBytes) {
-      throw new LocalSpeechError('The speech model download exceeded the 180 MiB size limit.');
+      throw new LocalSpeechError(`The speech model download exceeded the ${sizeLimit} size limit.`);
     }
     const total = Number.isFinite(declaredLength) ? declaredLength : 0;
     let received = 0;
@@ -113,7 +164,7 @@ export class LocalWhisperRunner {
       transform(chunk: Buffer, _encoding, callback) {
         received += chunk.length;
         if (received > maximumModelBytes) {
-          callback(new LocalSpeechError('The speech model download exceeded the 180 MiB size limit.'));
+          callback(new LocalSpeechError(`The speech model download exceeded the ${sizeLimit} size limit.`));
           return;
         }
         hash.update(chunk);
@@ -123,7 +174,7 @@ export class LocalWhisperRunner {
     });
     try {
       await pipeline(response.body, meter, createWriteStream(temporaryPath, { flags: 'w', mode: 0o600 }));
-      if (hash.digest('hex') !== modelSha1) throw new LocalSpeechError('The downloaded speech model failed its integrity check.');
+      if (hash.digest('hex') !== this.model.sha1) throw new LocalSpeechError('The downloaded speech model failed its integrity check.');
       await rename(temporaryPath, this.modelPath);
       onEvent({ type: 'model-ready' });
     } catch (error) {
@@ -146,7 +197,7 @@ export class LocalWhisperRunner {
         '--step', '0',
         '--length', '8000',
         '--vad-thold', '0.6',
-        '--language', 'auto',
+        '--language', this.model.language,
         '--threads', '4',
         '--model', this.modelPath,
       ], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });

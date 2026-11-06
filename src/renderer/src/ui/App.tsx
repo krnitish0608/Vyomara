@@ -17,6 +17,7 @@ import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
+import { approvalQuestion, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
 interface ChatMessage {
@@ -63,6 +64,14 @@ export function App() {
   const [speechError, setSpeechError] = useState<string>();
   const [orbRailGeometry, setOrbRailGeometry] = useState<{ readonly width: number; readonly center: number; readonly span: number }>();
   const queuedVoiceCommands = useRef<string[]>([]);
+  /** Wake phrase, follow-up window, and spoken approvals. */
+  const voiceSession = useRef(new VoiceSession());
+  const lastVoiceQuestion = useRef('');
+  const voiceListeningRef = useRef(false);
+  const pendingFileProposals = useRef<DesktopFileOperationProposal[]>([]);
+  const pendingActionProposals = useRef<DesktopActionProposal[]>([]);
+  const handleVoiceCommand = useRef<((transcript: string) => void) | undefined>(undefined);
+  const askByVoice = useRef<((question: string, kind: 'delete' | 'other') => void) | undefined>(undefined);
   const composerDictationRef = useRef(false);
   const composerDictationBase = useRef('');
   const currentRequestPending = useRef(requestPending);
@@ -100,11 +109,16 @@ export function App() {
       setFileOperationProposals(current =>
         current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
       requestAnimationFrame(() => fileOperationReview.current?.scrollIntoView({ block: 'nearest' }));
+      askByVoice.current?.(
+        approvalQuestion({ kind: 'file', operation: proposal.operation, path: proposal.path }),
+        proposal.operation === 'delete' ? 'delete' : 'other',
+      );
     });
     const unsubscribeActions = window.vyomara.onActionProposal(proposal => {
       setActionProposals(current =>
         current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
       requestAnimationFrame(() => actionReview.current?.scrollIntoView({ block: 'nearest' }));
+      askByVoice.current?.(approvalQuestion(proposal), 'other');
     });
     const unsubscribePlan = window.vyomara.onPlan(update => {
       if (activeChatRequestId.current === update.requestId) setPlan(update.steps);
@@ -158,9 +172,9 @@ export function App() {
         if (action.type === 'draft') {
           composerDictationBase.current = appendVoiceDraft(composerDictationBase.current, action.transcript);
           setPrompt(composerDictationBase.current);
-        } else if (currentRequestPending.current) {
-          queuedVoiceCommands.current.push(event.transcript);
-        } else if (action.type === 'submit') void submitVoicePrompt.current?.(action.transcript, true);
+        } else {
+          handleVoiceCommand.current?.(event.transcript);
+        }
       }
     });
     void window.vyomara.getSpeechSetupStatus().then(status => {
@@ -348,11 +362,7 @@ export function App() {
           role: 'assistant',
           content: result.response,
         }]);
-      if (speakResponse) {
-        void window.vyomara.speakText(result.response).catch(error => {
-          setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
-        });
-      }
+      if (speakResponse) speak(speechText(result.response));
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -380,6 +390,69 @@ export function App() {
   }
 
   submitVoicePrompt.current = submitPrompt;
+
+  // Keep refs in sync for listeners registered once at mount.
+  voiceListeningRef.current = voiceListening;
+  pendingFileProposals.current = fileOperationProposals;
+  pendingActionProposals.current = actionProposals;
+
+  function speak(text: string): void {
+    if (!text) return;
+    void window.vyomara.speakText(text)
+      .then(() => voiceSession.current.extend())
+      .catch(error => setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.'));
+  }
+
+  askByVoice.current = (question, kind) => {
+    if (!voiceListeningRef.current) return;
+    lastVoiceQuestion.current = question;
+    voiceSession.current.awaitApproval(kind);
+    speak(question);
+  };
+
+  async function answerByVoice(approve: boolean): Promise<void> {
+    voiceSession.current.clearApproval();
+    const file = pendingFileProposals.current[0];
+    if (file) {
+      setFileOperationProposals(current => current.filter(item => item.id !== file.id));
+      try {
+        if (approve) await window.vyomara.approveFileOperation(file.id, file.operation === 'delete' ? 'DELETE' : undefined);
+        else await window.vyomara.rejectFileOperation(file.id);
+      } catch (error) {
+        setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+      }
+      return;
+    }
+    const action = pendingActionProposals.current[0];
+    if (action) await decideAction(action, approve);
+  }
+
+  handleVoiceCommand.current = transcript => {
+    const decision = voiceSession.current.decide(transcript, currentRequestPending.current);
+    switch (decision.type) {
+      case 'greet':
+        speak('Haan, boliye.');
+        break;
+      case 'submit':
+        void submitPrompt(decision.text, true);
+        break;
+      case 'queue':
+        queuedVoiceCommands.current.push(decision.text);
+        break;
+      case 'cancel':
+        void cancel();
+        speak('Theek hai, rok diya.');
+        break;
+      case 'answer':
+        void answerByVoice(decision.approve);
+        break;
+      case 'reask':
+        speak(`${lastVoiceQuestion.current} Haan ya na boliye.`);
+        break;
+      default:
+        break;
+    }
+  };
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -849,7 +922,7 @@ export function App() {
                       : voiceStarting
                         ? 'Starting local microphone…'
                         : voiceListening
-                          ? voiceTranscript || 'Listening… speak naturally'
+                          ? voiceTranscript || 'Listening · say “Hello Vyomara …”'
                           : speechSetup?.runtimeAvailable === false
                             ? 'Offline voice unavailable—type below.'
                             : ''}
@@ -1000,7 +1073,7 @@ export function App() {
                     : voiceStarting
                       ? 'Starting local microphone…'
                       : voiceListening
-                        ? composerDictation ? 'Listening for a draft…' : voiceTranscript || 'Listening—speak your message.'
+                        ? composerDictation ? 'Listening for a draft…' : voiceTranscript || 'Listening · say “Hello Vyomara …”'
                         : ''}
               </p>
             )}
@@ -1192,7 +1265,7 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening for your message' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening for “Hello Vyomara”' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
               <small>{voiceListening ? 'Microphone active · Listening Off disables it' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
               {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>

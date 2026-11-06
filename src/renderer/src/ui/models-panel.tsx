@@ -5,6 +5,7 @@ import type {
   DesktopModelList,
   DesktopModelPullProgress,
   DesktopProviderStatus,
+  DesktopSpeechSetupStatus,
 } from '../../../desktop/contracts.ts';
 
 const CONTEXT_OPTIONS = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072, 262_144];
@@ -62,6 +63,8 @@ export function ModelsPanel({
   const [removing, setRemoving] = useState<string>();
   const [removeConfirmation, setRemoveConfirmation] = useState('');
   const pulling = pull !== undefined && pull.done !== true;
+  const [speech, setSpeech] = useState<DesktopSpeechSetupStatus>();
+  const [speechProgress, setSpeechProgress] = useState<number>();
   const locked = disabled || busy || pulling;
 
   async function refresh(): Promise<void> {
@@ -79,8 +82,29 @@ export function ModelsPanel({
   useEffect(() => {
     headingRef.current?.focus();
     void refresh();
-    return window.vyomara.onModelPullProgress(progress => setPull(progress));
+    void window.vyomara.getSpeechSetupStatus().then(setSpeech).catch(() => undefined);
+    const stopPull = window.vyomara.onModelPullProgress(progress => setPull(progress));
+    const stopSpeech = window.vyomara.onSpeechRecognition(event => {
+      if (event.type === 'model-progress' && event.total > 0) setSpeechProgress(Math.round(event.received / event.total * 100));
+      if (event.type === 'model-ready') setSpeechProgress(undefined);
+    });
+    return () => {
+      stopPull();
+      stopSpeech();
+    };
   }, []);
+
+  const chooseSpeech = (model: 'fast' | 'best') => act(async () => {
+    setSpeech(await window.vyomara.selectSpeechModel(model));
+  }, 'The speech model could not be selected.');
+
+  const downloadSpeech = () => act(async () => {
+    setSpeechProgress(0);
+    await window.vyomara.downloadSpeechModel();
+    setSpeechProgress(undefined);
+    setSpeech(await window.vyomara.getSpeechSetupStatus());
+    setNotice('Speech model downloaded. Turn listening on with the orb.');
+  }, 'The speech model could not be downloaded.');
 
   async function act(work: () => Promise<void>, failure: string): Promise<void> {
     setBusy(true);
@@ -238,6 +262,33 @@ export function ModelsPanel({
               />
               Let the model think before answering {supportsThinking ? '(slower)' : '(not supported by this model)'}
             </label>
+          </section>
+        )}
+
+        {speech && (
+          <section className="model-section" aria-label="Voice recognition">
+            <p className="history-review-title">Voice: how Vyom hears you</p>
+            {speech.models.map(model => (
+              <label key={model.id} className="model-toggle">
+                <input
+                  type="radio"
+                  name="speech-model"
+                  checked={speech.model === model.id}
+                  onChange={() => void chooseSpeech(model.id)}
+                  disabled={locked || speechProgress !== undefined}
+                />
+                {model.label} · {model.approxMegabytes} MB{model.ready ? ' · ready' : ' · not downloaded'}
+              </label>
+            ))}
+            {!speech.models.find(model => model.id === speech.model)?.ready && (
+              <button className="history-action" type="button" onClick={() => void downloadSpeech()} disabled={locked || speech.listeningEnabled}>
+                {speechProgress !== undefined ? `Downloading… ${speechProgress}%` : 'Download selected voice model'}
+              </button>
+            )}
+            <p className="history-privacy">
+              Speech is recognised on this Mac with whisper.cpp; audio never leaves it. “Best” understands Hindi, English, and Hinglish far better.
+              Say “Hello Vyomara …” to start; for 30 seconds after Vyom speaks you can just keep talking. Answer approvals with “haan” or “nahi”.
+            </p>
           </section>
         )}
 

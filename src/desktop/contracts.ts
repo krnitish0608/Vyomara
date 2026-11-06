@@ -148,10 +148,20 @@ export type DesktopSpeechRecognitionEvent =
   | { readonly type: 'model-ready' }
   | { readonly type: 'error'; readonly message: string };
 
+export interface DesktopSpeechModel {
+  readonly id: 'fast' | 'best';
+  readonly label: string;
+  readonly approxMegabytes: number;
+  readonly ready: boolean;
+}
+
 export interface DesktopSpeechSetupStatus {
   readonly modelReady: boolean;
   readonly runtimeAvailable: boolean;
   readonly listeningEnabled: boolean;
+  /** The speech model in use. */
+  readonly model: 'fast' | 'best';
+  readonly models: readonly DesktopSpeechModel[];
 }
 
 export interface VyomaraDesktopApi {
@@ -186,7 +196,9 @@ export interface VyomaraDesktopApi {
   exportSession(sessionId: string): Promise<DesktopSessionExportResult>;
   deleteSession(sessionId: string, confirmation: string): Promise<boolean>;
   getSpeechSetupStatus(): Promise<DesktopSpeechSetupStatus>;
+  /** Downloads the selected speech model. */
   downloadSpeechModel(): Promise<void>;
+  selectSpeechModel(model: 'fast' | 'best'): Promise<DesktopSpeechSetupStatus>;
   setSpeechListening(enabled: boolean): Promise<DesktopSpeechSetupStatus>;
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;

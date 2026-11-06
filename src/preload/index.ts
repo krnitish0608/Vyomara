@@ -110,6 +110,9 @@ const api: VyomaraDesktopApi = {
   getSpeechSetupStatus() {
     return ipcRenderer.invoke('vyomara:speech-setup-status');
   },
+  selectSpeechModel(model: 'fast' | 'best') {
+    return ipcRenderer.invoke('vyomara:speech-model-select', model);
+  },
   downloadSpeechModel() {
     return ipcRenderer.invoke('vyomara:speech-model-download');
   },

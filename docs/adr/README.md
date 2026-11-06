@@ -27,6 +27,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0015](./0015-coding-agent-loop-and-approved-actions.md) | Coding-agent loop, approved commands/apps/web, selectable models | Accepted |
 | [0016](./0016-web-reading-and-remembered-approvals.md) | Reading web pages, SearXNG search, remembered approvals | Accepted |
 | [0017](./0017-standing-permissions.md) | Standing permissions for apps, browsers, and websites (Permissions panel) | Accepted |
+| [0018](./0018-voice-wake-phrase-spoken-approvals.md) | Wake phrase, spoken approvals, Hindi/English/Hinglish speech models | Accepted |
 
 ## Open decisions
 

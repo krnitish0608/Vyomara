@@ -96,13 +96,29 @@ pnpm test:desktop-ui   # Electron keyboard/focus/reduced-motion smoke test
 
 ### Voice
 
-Voice input uses the local multilingual `whisper.cpp` base model. It does not
-use Siri or Dictation, and microphone audio never leaves the Mac.
+Speak in Hindi, English, or a mix of the two:
 
-To set it up, run `brew install whisper.cpp`, then turn listening on in the app.
-Vyomara downloads the speech model only when you ask it to. Say “Hello
-Vyomara” to wake Vyom; it stays awake until you select Listening Off. Replies
-can be spoken with the local macOS voice.
+1. Install the speech runtime once with `brew install whisper.cpp`.
+2. Choose a speech model in **Models → Voice**:
+   - **Best** (574 MB) understands Hindi, English, and Hinglish.
+   - **Fast** (148 MB) suits English and romanized Hinglish.
+3. Turn listening on with the orb.
+
+Using it:
+
+- Start each request with **“Hello Vyomara …”** (or “Vyom …”, “नमस्ते
+  व्योमारा …”). Other talk is ignored. After Vyom answers, you can keep
+  talking for 30 seconds without the wake phrase.
+- When Vyom needs approval, it asks aloud, for example “cart.js mein badlaav
+  ready hai… Apply karun?”. Answer **“haan / kar do / yes”** or **“nahi /
+  rehne do”**.
+- Deleting needs “haan, delete karo”.
+- “Ruko” or “stop” cancels a running task.
+- Replies are spoken briefly, with a Hindi voice for Hindi and an Indian
+  English voice otherwise.
+
+Recognition runs entirely on this Mac, and audio never leaves it. See
+[ADR-0018](./docs/adr/0018-voice-wake-phrase-spoken-approvals.md).
 
 ## Command line
 
