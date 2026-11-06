@@ -22,6 +22,7 @@ Symlinks are never followed. `VYOM_ALLOWED_ROOTS` (JSON array) narrows access;
 | `directory_tree` | `path`, `maxDepth?`, `maxEntries?` | Recursive structure. `node_modules`, `.git`, `dist`, `build`, `.venv`, … are listed with `collapsed: true` and not expanded. |
 | `find_files` | `query`, `path?`, `maxEntries?` | Name fragment (`vyomara`) or glob (`*.test.ts`). Without `path` it searches the whole Mac, home and project folders first. Dependency folders are skipped. |
 | `search_text` | `pattern`, `path`, `glob?`, `ignore_case?`, `max_results?` | Content search like grep. Regex, or literal text when the regex is invalid. Skips binary files, files over 1 MiB, and dependency folders. Returns `path`, `line`, `text`. |
+| `update_plan` | `plan` | The agent's checklist for multi-step tasks, one step per line: `- [x]` done, `- [>]` in progress, `- [ ]` to do. It has no side effects. The desktop shows it as a live checklist and the CLI prints it. |
 | `read_file` | `path`, `offset?`, `limit?` | UTF-8 text, up to ~800 lines per call (max 2,000), within the output budget. Returns `startLine`, `endLine`, `totalLines`, `truncated`; continue with `offset = endLine + 1`. Files above `VYOM_MAX_FILE_BYTES` (2 MiB) are refused. |
 
 ## File changes (reviewed)
@@ -55,7 +56,7 @@ and `network`.
 | Tool | Arguments | Notes |
 |---|---|---|
 | `run_command` | `command`, `cwd`, `timeout_seconds?` | Runs `zsh -l -c` in `cwd`, with `CI=1`, no color, no pager, no stdin, and an augmented `PATH`. The whole process group is stopped on timeout or Stop. Output keeps the first ~6 KB and last ~14 KB. Returns `exitCode`, `timedOut`, and `output`. |
-| `open_application` | `application`, `path?` | Any installed app, by name or alias (`vscode`, `chrome`, …). Optionally opens a file or folder in it. |
+| `open_application` | `application`, `path?`, `line?` | Any installed app, by name or alias (`vscode`, `chrome`, …). Optionally opens a file or folder in it. With `line`, VS Code jumps to that line (`code -g`). |
 | `open_url` | `url`, `browser?` | Only `http`/`https`, without credentials. The approval card says the website receives the URL. Vyom cannot read the page. |
 
 | `fetch_url` | `url`, `offset?` | Vyomara downloads a public page and returns its `title` and text `content`, paged with `nextOffset`. The first page of results also includes up to 25 `links`. See the limits below the table. |

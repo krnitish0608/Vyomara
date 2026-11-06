@@ -14,6 +14,7 @@ import type {
 } from '../desktop/contracts.ts';
 import { createDefaultToolRegistry } from '../tools/default-tools.ts';
 import type { ActionToolPorts } from '../tools/action-tools.ts';
+import type { PlanStep } from '../tools/plan-tool.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
 import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
@@ -78,6 +79,7 @@ export interface RequestOptions {
   readonly sessionId?: string;
   readonly onText?: (text: string) => void;
   readonly onToolActivity?: (activity: ToolActivity) => void;
+  readonly onPlan?: (steps: readonly PlanStep[]) => void;
   readonly includeFilesystemTools?: boolean;
   readonly fileOperationApproval?: FileOperationApprovalPort;
   readonly actions?: ActionToolPorts;
@@ -133,6 +135,7 @@ export async function runRequest(
         logger: taskLogger,
         ...(options.onText ? { onText: options.onText } : {}),
         ...(options.onToolActivity ? { onToolActivity: options.onToolActivity } : {}),
+        ...(options.onPlan ? { onPlan: options.onPlan } : {}),
       });
     } catch (error) {
       requestError = error;

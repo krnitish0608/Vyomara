@@ -11,7 +11,7 @@ export type ActionProposal =
     readonly cwd: string;
     readonly timeoutSeconds: number;
   }
-  | { readonly kind: 'application'; readonly application: string; readonly target?: string }
+  | { readonly kind: 'application'; readonly application: string; readonly target?: string; readonly line?: number }
   | { readonly kind: 'url'; readonly url: string; readonly application?: string }
   | {
     /** Vyomara itself requests a page or a search; the host receives the URL or query. */
@@ -85,7 +85,8 @@ export interface CommandRunnerPort {
 }
 
 export interface LauncherPort {
-  openApplication(application: string, target: string | undefined, signal: AbortSignal): Promise<void>;
+  /** `line` jumps to that line when the editor supports it (VS Code). */
+  openApplication(application: string, target: string | undefined, signal: AbortSignal, line?: number): Promise<void>;
   openUrl(url: string, application: string | undefined, signal: AbortSignal): Promise<void>;
 }
 
@@ -202,6 +203,7 @@ interface CommandOutput {
 interface ApplicationInput {
   readonly application: string;
   readonly path?: string;
+  readonly line?: number;
 }
 
 interface ApplicationOutput {
@@ -239,7 +241,7 @@ function commandError(value: unknown, maxTimeoutSeconds: number): string | undef
 
 function applicationError(value: unknown): string | undefined {
   if (!isRecord(value)) return 'Arguments must be a JSON object.';
-  const keys = onlyKeys(value, ['application', 'path']);
+  const keys = onlyKeys(value, ['application', 'path', 'line']);
   if (keys) return keys;
   if (typeof value.application !== 'string' || !APPLICATION_NAME.test(normalizeApplicationName(value.application))) {
     return 'application must be a macOS application name such as "Visual Studio Code" or "Google Chrome".';
@@ -247,6 +249,10 @@ function applicationError(value: unknown): string | undefined {
   if (value.path !== undefined && (typeof value.path !== 'string' || !isAbsolute(value.path) || value.path.split('/').includes('..'))) {
     return 'path must be an absolute file or folder path to open in the application.';
   }
+  if (value.line !== undefined && (typeof value.line !== 'number' || !Number.isSafeInteger(value.line) || value.line < 1)) {
+    return 'line must be a positive line number.';
+  }
+  if (value.line !== undefined && value.path === undefined) return 'line needs a file path.';
   return undefined;
 }
 
@@ -322,12 +328,13 @@ export function registerActionTools(
     const openApplication: Tool<ApplicationInput, ApplicationOutput> = {
       id: 'open_application',
       effect: 'launch',
-      description: 'Open a macOS application after the user approves, optionally with a file or folder. Examples: {"application":"Visual Studio Code","path":"/Users/me/Projects/app"} opens a project in VS Code; {"application":"Google Chrome"}.',
+      description: 'Open a macOS application after the user approves, optionally with a file or folder (and, for VS Code, a line). Examples: {"application":"Visual Studio Code","path":"/Users/me/Projects/app"} opens a project; {"application":"Visual Studio Code","path":"/Users/me/Projects/app/src/cart.js","line":9} opens a file at line 9; {"application":"Google Chrome"}.',
       parameters: {
         type: 'object',
         properties: {
           application: { type: 'string', description: 'Application name, e.g. "Visual Studio Code", "Google Chrome", "Finder", "Notes".', maxLength: 80 },
           path: { type: 'string', description: 'Optional absolute file or folder to open in it.', maxLength: 4_096 },
+          line: { type: 'integer', description: 'Optional line number to jump to in a file (VS Code).', minimum: 1 },
         },
         required: ['application'],
         additionalProperties: false,
@@ -347,12 +354,18 @@ export function registerActionTools(
             target = (await resolveSafeFilesystemPath(input.path, config, 'file', signal)).target;
           }
         }
+        const line = target === undefined ? undefined : input.line;
         const approved = await approval.request(
-          { kind: 'application', application, ...(target === undefined ? {} : { target }) },
+          {
+            kind: 'application',
+            application,
+            ...(target === undefined ? {} : { target }),
+            ...(line === undefined ? {} : { line }),
+          },
           signal,
         );
         if (!approved) return { status: 'rejected', application, ...(target === undefined ? {} : { path: target }) };
-        await launcher.openApplication(application, target, signal);
+        await launcher.openApplication(application, target, signal, line);
         return { status: 'opened', application, ...(target === undefined ? {} : { path: target }) };
       },
     };

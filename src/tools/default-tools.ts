@@ -4,6 +4,7 @@ import { registerFilesystemTools } from './filesystem-tools.ts';
 import type { FileOperationApprovalPort } from '../desktop/contracts.ts';
 import { registerActionTools, registerWebTools } from './action-tools.ts';
 import type { ActionToolPorts } from './action-tools.ts';
+import { registerPlanTool } from './plan-tool.ts';
 
 export interface ToolRegistryOptions {
   readonly includeFilesystemTools?: boolean;
@@ -18,6 +19,7 @@ export function createDefaultToolRegistry(
   options: ToolRegistryOptions = {},
 ): ToolRegistry {
   const registry = new ToolRegistry();
+  registerPlanTool(registry);
   const includeFilesystemTools = options.includeFilesystemTools ?? config.filesystemAllowedRoots.length > 0;
   if (includeFilesystemTools) {
     registerFilesystemTools(registry, config, {}, options.fileOperationApproval);

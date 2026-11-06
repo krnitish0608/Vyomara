@@ -7,6 +7,7 @@ import type {
   DesktopSpeechSetupStatus,
   DesktopSessionHistory,
   DesktopSessionSummary,
+  DesktopPlan,
   DesktopToolActivity,
 } from '../../../desktop/contracts.ts';
 import { activityIcon, activityLabel } from './activity.ts';
@@ -31,6 +32,7 @@ export function App() {
   const [fileOperationProposals, setFileOperationProposals] = useState<DesktopFileOperationProposal[]>([]);
   const [actionProposals, setActionProposals] = useState<DesktopActionProposal[]>([]);
   const [toolActivities, setToolActivities] = useState<DesktopToolActivity[]>([]);
+  const [plan, setPlan] = useState<DesktopPlan['steps']>([]);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
   const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
@@ -100,7 +102,11 @@ export function App() {
         current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
       requestAnimationFrame(() => actionReview.current?.scrollIntoView({ block: 'nearest' }));
     });
+    const unsubscribePlan = window.vyomara.onPlan(update => {
+      if (activeChatRequestId.current === update.requestId) setPlan(update.steps);
+    });
     const unsubscribeToolActivity = window.vyomara.onToolActivity(activity => {
+      if (activity.toolId === 'update_plan') return;
       if (activeChatRequestId.current !== activity.requestId) return;
       setToolActivities(current => {
         const index = current.findIndex(item => item.id === activity.id);
@@ -172,6 +178,7 @@ export function App() {
       unsubscribeFileOperations();
       unsubscribeActions();
       unsubscribeToolActivity();
+      unsubscribePlan();
       unsubscribeSpeech();
     };
   }, []);
@@ -310,6 +317,7 @@ export function App() {
 
     setRequestPending(true);
     setToolActivities([]);
+    setPlan([]);
     const requestId = crypto.randomUUID();
     activeChatRequestId.current = requestId;
     try {
@@ -451,6 +459,7 @@ export function App() {
     setFileOperationProposals([]);
     setActionProposals([]);
     setToolActivities([]);
+    setPlan([]);
     setFileOperationConfirmations({});
     setActionPendingId(undefined);
     setHistoryOpen(false);
@@ -1084,6 +1093,19 @@ export function App() {
               {taskIsRunning ? 'Working' : 'Ready'}
             </span>
           </div>
+          {plan.length > 0 && (
+            <section className="plan-card" aria-label="Vyom's plan">
+              <h3>Plan · {plan.filter(step => step.status === 'done').length}/{plan.length}</h3>
+              <ol className="plan-list">
+                {plan.map((step, index) => (
+                  <li key={`${index}-${step.text}`} className={`plan-step plan-step-${step.status}`}>
+                    <span aria-hidden="true">{step.status === 'done' ? '✓' : step.status === 'in_progress' ? '▸' : '○'}</span>
+                    <span>{step.text}<span className="visually-hidden"> ({step.status.replace('_', ' ')})</span></span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           <div className="activity-content" aria-live="polite">
             {activity.length === 0 && toolActivities.length === 0 ? (
               <div className="activity-empty">

@@ -309,6 +309,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
         ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         onText: text => send('vyomara:chat-text', { requestId: request.requestId, text }),
         onToolActivity: activity => send('vyomara:tool-activity', { requestId: request.requestId, ...activity }),
+        onPlan: steps => send('vyomara:plan', { requestId: request.requestId, steps }),
         includeFilesystemTools: true,
         fileOperationApproval: approvals,
         actions: {

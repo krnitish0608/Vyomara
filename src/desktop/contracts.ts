@@ -53,6 +53,12 @@ export interface DesktopToolActivity {
   readonly detail?: string;
 }
 
+/** The agent's live checklist for the current request. */
+export interface DesktopPlan {
+  readonly requestId: string;
+  readonly steps: readonly { readonly text: string; readonly status: 'pending' | 'in_progress' | 'done' }[];
+}
+
 export interface DesktopModelInfo {
   readonly name: string;
   readonly sizeBytes?: number;
@@ -137,6 +143,7 @@ export interface VyomaraDesktopApi {
   approveAction(id: string, always?: boolean): Promise<void>;
   rejectAction(id: string): Promise<void>;
   onToolActivity(listener: (activity: DesktopToolActivity) => void): () => void;
+  onPlan(listener: (plan: DesktopPlan) => void): () => void;
   listModels(): Promise<DesktopModelList>;
   selectModel(model: string): Promise<DesktopProviderStatus>;
   pullModel(model: string): Promise<void>;

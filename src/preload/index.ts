@@ -4,6 +4,7 @@ import type {
   DesktopChatRequest,
   DesktopFileOperationProposal,
   DesktopModelPullProgress,
+  DesktopPlan,
   DesktopSpeechRecognitionEvent,
   DesktopToolActivity,
   VyomaraDesktopApi,
@@ -57,6 +58,9 @@ const api: VyomaraDesktopApi = {
   },
   onToolActivity(listener: (activity: DesktopToolActivity) => void) {
     return subscribe('vyomara:tool-activity', listener);
+  },
+  onPlan(listener: (plan: DesktopPlan) => void) {
+    return subscribe('vyomara:plan', listener);
   },
   listModels() {
     return ipcRenderer.invoke('vyomara:models-list');

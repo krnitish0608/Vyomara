@@ -8,6 +8,8 @@ import { runAgent } from '../src/agent/agent.ts';
 import type { ToolActivity } from '../src/agent/agent.ts';
 import { fitMessagesToBudget } from '../src/agent/context.ts';
 import { buildSystemPrompt, gitSummary } from '../src/agent/system-prompt.ts';
+import { parsePlan } from '../src/tools/plan-tool.ts';
+import type { PlanStep } from '../src/tools/plan-tool.ts';
 import type { AgentEnvironment } from '../src/agent/system-prompt.ts';
 import { loadConfig } from '../src/config/config.ts';
 import { createLogger } from '../src/diagnostics/logger.ts';
@@ -100,8 +102,8 @@ async function harness(
     },
   };
   const launcher: LauncherPort = {
-    async openApplication(application, target) {
-      opened.push(`${application}${target ? ` ${target}` : ''}`);
+    async openApplication(application, target, _signal, line) {
+      opened.push(`${application}${target ? ` ${target}` : ''}${line ? `:${line}` : ''}`);
     },
     async openUrl(url, application) {
       opened.push(`${url}${application ? ` (${application})` : ''}`);
@@ -652,4 +654,40 @@ test('git summary reports branch and uncommitted changes for the active project'
   assert.equal(gitSummary(h.root), 'branch main, 1 changed file');
   const prompt = buildSystemPrompt({ ...environment, activeProject: h.root, activeProjectGit: 'branch main, 1 changed file' }, []);
   assert.match(prompt, /\(git: branch main, 1 changed file\)/);
+});
+
+test('parsePlan understands checklist marks, numbering, and bare lines', () => {
+  assert.deepEqual(parsePlan('- [x] Run tests\n- [>] Fix cartTotal\n1. [ ] Re-run tests\nCommit\n\n'), [
+    { text: 'Run tests', status: 'done' },
+    { text: 'Fix cartTotal', status: 'in_progress' },
+    { text: 'Re-run tests', status: 'pending' },
+    { text: 'Commit', status: 'pending' },
+  ]);
+});
+
+test('the agent forwards update_plan checklists to the host', async t => {
+  const h = await harness(t);
+  const plans: (readonly PlanStep[])[] = [];
+  const provider = scriptedProvider([
+    () => ({ kind: 'tool-calls', calls: [{ toolId: 'update_plan', arguments: { plan: '- [>] Reproduce\n- [ ] Fix' } }] }),
+    () => ({ kind: 'tool-calls', calls: [{ toolId: 'update_plan', arguments: { plan: '- [x] Reproduce\n- [x] Fix' } }] }),
+    () => ({ kind: 'final', text: 'Done.' }),
+  ]);
+  const response = await runAgent('fix it', new AbortController().signal, {
+    provider, tools: h.executor, config: h.config, session: new Session(), logger: createLogger(() => {}), environment,
+    onPlan: steps => plans.push(steps),
+  });
+  assert.equal(response, 'Done.');
+  assert.deepEqual(plans.map(steps => steps.map(step => step.status)), [['in_progress', 'pending'], ['done', 'done']]);
+});
+
+test('open_application can jump to a line in a file and requires a path for it', async t => {
+  const h = await harness(t);
+  const cart = join(h.root, 'src', 'cart.ts');
+  await h.executor.execute('open_application', { application: 'vscode', path: cart, line: 3 }, new AbortController().signal);
+  assert.deepEqual(h.opened, [`Visual Studio Code ${cart}:3`]);
+  await assert.rejects(
+    h.executor.execute('open_application', { application: 'vscode', line: 3 }, new AbortController().signal),
+    /line needs a file path/,
+  );
 });

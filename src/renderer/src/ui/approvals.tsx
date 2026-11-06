@@ -133,7 +133,9 @@ export function ActionApprovalCard({
       )}
       {proposal.kind === 'application' && (
         <p className="file-operation-warning">
-          {proposal.target ? <>Opens <code>{proposal.target}</code> in {proposal.application}.</> : `Launches ${proposal.application}.`}
+          {proposal.target
+            ? <>Opens <code>{proposal.target}</code>{proposal.line ? <> at line {proposal.line}</> : null} in {proposal.application}.</>
+            : `Launches ${proposal.application}.`}
         </p>
       )}
       {proposal.kind === 'url' && (

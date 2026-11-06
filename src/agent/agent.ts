@@ -12,6 +12,7 @@ import { TOOL_ID_PATTERN } from '../tools/contracts.ts';
 import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
 import { buildSystemPrompt, detectEnvironment } from './system-prompt.ts';
 import type { AgentEnvironment } from './system-prompt.ts';
+import type { PlanStep } from '../tools/plan-tool.ts';
 
 export class AgentError extends Error {
   readonly code: 'invalid-request' | 'timeout' | 'cancelled' | 'iteration-limit' | 'tool-limit' | 'policy-denied' | 'tool-failed' | 'invalid-provider-response';
@@ -43,6 +44,8 @@ export interface AgentOptions {
   readonly logger: Logger;
   readonly onText?: (text: string) => void;
   readonly onToolActivity?: (activity: ToolActivity) => void;
+  /** Receives the agent's checklist whenever it calls update_plan. */
+  readonly onPlan?: (steps: readonly PlanStep[]) => void;
   /** Overrides environment discovery (used by tests). */
   readonly environment?: AgentEnvironment;
 }
@@ -94,6 +97,11 @@ export function describeToolCall(toolId: string, args: Readonly<Record<string, u
       return `Opening ${String(args.application ?? 'app')}${args.path ? ` with ${shortPath(args.path)}` : ''}`;
     case 'open_url':
       return `Opening ${clip(String(args.url ?? ''), 60)}`;
+    case 'update_plan': {
+      const steps = String(args.plan ?? '').split('\n').filter(line => line.trim() !== '');
+      const done = steps.filter(line => /\[[xX]\]/u.test(line)).length;
+      return `Updating plan (${done}/${steps.length} done)`;
+    }
     case 'fetch_url':
       return `Reading ${clip(String(args.url ?? ''), 60)}`;
     case 'web_search':
@@ -412,6 +420,9 @@ async function runAgentTask(
       logger.emit({ event: 'tool.invoked', ...context, toolId: call.toolId });
       try {
         const result = await tools.execute(call.toolId, call.arguments, signal, context);
+        if (call.toolId === 'update_plan' && isRecord(result) && Array.isArray(result.steps)) {
+          options.onPlan?.(result.steps as PlanStep[]);
+        }
         const action = verifiedAction(call.toolId, call.arguments, result);
         if (action) actions.push(action);
         const rejected = isRecord(result) && result.status === 'rejected';

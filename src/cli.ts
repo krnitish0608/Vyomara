@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import { readSelectedModel, runRequest } from './app/application.ts';
 import { AgentError } from './agent/agent.ts';
 import type { ToolActivity } from './agent/agent.ts';
+import type { PlanStep } from './tools/plan-tool.ts';
 import { loadConfig, validateOllamaModel } from './config/config.ts';
 import type { AppConfig } from './config/config.ts';
 import type { FileOperationApprovalPort } from './desktop/contracts.ts';
@@ -151,7 +152,7 @@ const terminalActionApproval: ActionApprovalPort = {
       return /^(?:y|yes|haan|ha|han)$/iu.test(answer);
     }
     if (action.kind === 'application') {
-      process.stderr.write(`\n${bold('▶ Open application')} ${action.application}${action.target ? ` with ${action.target}` : ''}\n`);
+      process.stderr.write(`\n${bold('▶ Open application')} ${action.application}${action.target ? ` with ${action.target}${action.line ? `:${action.line}` : ''}` : ''}\n`);
       return askYesNo('Open it?');
     }
     if (action.kind === 'web') {
@@ -167,7 +168,16 @@ const terminalActionApproval: ActionApprovalPort = {
   },
 };
 
+function printPlan(steps: readonly PlanStep[]): void {
+  process.stderr.write(`${bold('Plan')}\n`);
+  for (const step of steps) {
+    const mark = step.status === 'done' ? green('✓') : step.status === 'in_progress' ? cyan('▸') : dim('○');
+    process.stderr.write(`  ${mark} ${step.status === 'done' ? dim(step.text) : step.text}\n`);
+  }
+}
+
 function printActivity(activity: ToolActivity): void {
+  if (activity.toolId === 'update_plan') return;
   if (activity.status === 'running') {
     process.stderr.write(`${dim('•')} ${activity.label}\n`);
   } else if (activity.status === 'failed' && activity.detail) {
@@ -342,6 +352,7 @@ async function main(): Promise<void> {
       const result = await runRequest(prompt, controller.signal, config, logger, {
         ...(sessionId === undefined ? {} : { sessionId }),
         onToolActivity: printActivity,
+        onPlan: printPlan,
         fileOperationApproval,
         actions,
       });

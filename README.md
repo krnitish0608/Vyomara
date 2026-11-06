@@ -20,6 +20,7 @@ will become the primary interface later. See
 | "Chrome mein React Native search karo" | Opens a Google search in Chrome, after you approve. |
 | "react.dev/blog padh ke batao latest post kya hai" | Reads the page itself (after you approve) and answers with a link. |
 | "src/agent ka structure samjhao" | Maps the folder, reads key files, and explains. |
+| "cart.js mein applyDiscount VS Code mein kholo" | Finds the definition and opens VS Code at that line, after you approve. |
 
 **You approve every action.**
 - **File edits:** shown as a diff.
@@ -62,6 +63,7 @@ implemented.
 
 The desktop has these parts:
 - **Chat** with Markdown replies.
+- **Live checklist** of the agent's plan for multi-step tasks.
 - **Live step list** showing each tool call ("Reading …", "Running `pnpm test`").
 - **Approval cards** for every edit, command, app launch, and web page.
 - **History** to review, export, or delete conversations.

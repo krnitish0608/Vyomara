@@ -517,3 +517,13 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .activity-content { flex: 1 1 auto; min-height: 120px; overflow-y: auto; overscroll-behavior: contain; }
 .activity-panel > :not(.activity-content) { flex-shrink: 0; }
 .tool-activity span { overflow-wrap: anywhere; }
+
+.plan-card { display: grid; gap: 8px; padding: 11px; border: 1px solid rgba(156, 114, 243, .3); border-radius: 10px; background: rgba(24, 16, 52, .55); }
+.plan-card h3 { margin: 0; color: #d9ccff; font-size: 10px; letter-spacing: .04em; }
+.plan-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; max-height: 30vh; overflow-y: auto; }
+.plan-step { display: flex; gap: 7px; color: #b5bfd6; font-size: 10px; line-height: 1.45; }
+.plan-step > span:first-child { width: 10px; flex: 0 0 auto; color: #7b86a3; }
+.plan-step-done { color: #7f8aa3; text-decoration: line-through; text-decoration-color: rgba(127, 138, 163, .5); }
+.plan-step-done > span:first-child { color: var(--green); }
+.plan-step-in_progress { color: #ece6ff; font-weight: 600; }
+.plan-step-in_progress > span:first-child { color: var(--accent); }
