@@ -250,7 +250,7 @@ function publicFilesystemError(error: unknown): FilesystemToolError {
     ? error.code
     : undefined;
   if (code === 'ENOENT' || code === 'ENOTDIR') {
-    return new FilesystemToolError('The requested file or directory was not found.', 'not-found');
+    return new FilesystemToolError('The requested file or directory was not found. Do not guess paths: use find_files with its name to locate it.', 'not-found');
   }
   if (code === 'EACCES' || code === 'EPERM') {
     return new FilesystemToolError('The filesystem path is not accessible.', 'permission-denied');
@@ -1070,7 +1070,7 @@ function normalizeArguments(value: unknown, schema: ToolArgumentSchema): unknown
   const normalized: Record<string, unknown> = {};
   for (const [key, candidate] of Object.entries(value)) {
     const property = schema.properties[key];
-    if (candidate === null && !(schema.required ?? []).includes(key)) continue;
+    if ((candidate === null || candidate === '') && !(schema.required ?? []).includes(key)) continue;
     if (property?.type === 'integer' && typeof candidate === 'string' && /^-?\d+$/.test(candidate)) {
       normalized[key] = Number(candidate);
     } else if (property?.type === 'boolean' && (candidate === 'true' || candidate === 'false')) {

@@ -1,9 +1,47 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { ToolFailure } from '../tools/contracts.ts';
-import type { LauncherPort } from '../tools/action-tools.ts';
+import type { AppControlAction, LauncherPort } from '../tools/action-tools.ts';
 
 const VSCODE_CLI = '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code';
+
+const APPLICATION_FOLDERS = [
+  '/Applications',
+  '/Applications/Utilities',
+  '/System/Applications',
+  '/System/Applications/Utilities',
+  join(homedir(), 'Applications'),
+];
+
+/** Bundle identifier of an installed app, found by name (case-insensitive), or undefined. */
+export async function findBundleIdentifier(application: string): Promise<string | undefined> {
+  const wanted = `${application}.app`.toLowerCase();
+  for (const folder of APPLICATION_FOLDERS) {
+    let entries: string[];
+    try {
+      entries = await readdir(folder);
+    } catch {
+      continue;
+    }
+    const match = entries.find(entry => entry.toLowerCase() === wanted);
+    if (!match) continue;
+    try {
+      const plist = await readFile(join(folder, match, 'Contents', 'Info.plist'));
+      const text = plist.toString('utf8');
+      const xml = /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/u.exec(text)?.[1];
+      if (xml) return xml.trim();
+      // Binary plist: ask plutil to convert it.
+      const converted = spawnSync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', join(folder, match, 'Contents', 'Info.plist')], { encoding: 'utf8', timeout: 3_000 });
+      if (converted.status === 0 && converted.stdout.trim() !== '') return converted.stdout.trim();
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
 
 /** Opens applications, files, and web pages through macOS LaunchServices (`/usr/bin/open`). */
 export class MacApplicationLauncher implements LauncherPort {
@@ -15,6 +53,95 @@ export class MacApplicationLauncher implements LauncherPort {
     }
     await this.#open(['-a', application, ...(target === undefined ? [] : [target])], signal,
       `macOS could not open “${application}”. Check that the application is installed.`);
+  }
+
+  async controlApplication(application: string, action: AppControlAction, signal: AbortSignal): Promise<void> {
+    if (action === 'focus') {
+      await this.#open(['-a', application], signal, `macOS could not bring “${application}” forward.`);
+      return;
+    }
+    // Look the bundle up on disk: AppleScript's `id of application` shows a
+    // blocking "Where is …?" dialog for unknown apps.
+    const bundleId = await findBundleIdentifier(application);
+    if (!bundleId) throw new ToolFailure(`“${application}” is not installed.`, 'not-found');
+    const scripts: Record<Exclude<AppControlAction, 'focus'>, readonly string[]> = {
+      hide: [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'set visible of (first application process whose bundle identifier is (item 1 of argv)) to false',
+        'end tell',
+        'end run',
+      ],
+      minimize: [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'tell (first application process whose bundle identifier is (item 1 of argv))',
+        'repeat with w in windows',
+        'set value of attribute "AXMinimized" of w to true',
+        'end repeat',
+        'end tell',
+        'end tell',
+        'end run',
+      ],
+      quit: ['on run argv', 'tell application id (item 1 of argv) to quit', 'end run'],
+    };
+    // An app opened a moment ago may still be starting; give it a few seconds.
+    let attempts = action === 'quit' ? 1 : 6;
+    while (true) {
+      try {
+        await this.#osascript(scripts[action], [bundleId.trim()], signal);
+        return;
+      } catch (error) {
+        attempts -= 1;
+        const notRunning = error instanceof Error && /not running|\(1\)/u.test(error.message);
+        if (!notRunning || attempts <= 0 || signal.aborted) throw this.#controlError(error, application, action);
+        await new Promise(resolveDelay => setTimeout(resolveDelay, 500));
+      }
+    }
+  }
+
+  #controlError(error: unknown, application: string, action: AppControlAction): ToolFailure {
+    const message = error instanceof Error ? error.message : '';
+    if (/not running|\(1\)/u.test(message)) return new ToolFailure(`“${application}” is not running.`, 'not-found');
+    if (/-1743|not authori[sz]ed|Not authorised/iu.test(message)) {
+      return new ToolFailure('macOS blocked Vyomara from controlling other apps. Allow it in System Settings → Privacy & Security → Automation, then try again.', 'permission-denied');
+    }
+    if (/-1719|-25211|assistive access/iu.test(message)) {
+      return new ToolFailure('Minimizing windows needs Accessibility access. Enable Vyomara in System Settings → Privacy & Security → Accessibility, then try again (or ask to hide the app instead).', 'permission-denied');
+    }
+    return new ToolFailure(`macOS could not ${action} “${application}”.`, 'tool-failed');
+  }
+
+  #osascript(lines: readonly string[], args: readonly string[], signal: AbortSignal): Promise<string> {
+    return new Promise((resolve, reject) => {
+      // Arguments are passed via `on run argv`, never spliced into the script.
+      const child = spawn('/usr/bin/osascript', [...lines.flatMap(line => ['-e', line]), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error('osascript timed out'));
+      }, 10_000);
+      child.once('close', () => clearTimeout(timer));
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += String(chunk); });
+      child.stderr.on('data', chunk => { stderr += String(chunk); });
+      const onAbort = (): void => {
+        child.kill('SIGTERM');
+        reject(new ToolFailure('Cancelled.', 'tool-failed'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      child.once('error', error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      });
+      child.once('close', code => {
+        signal.removeEventListener('abort', onAbort);
+        if (code === 0) resolve(stdout);
+        else reject(new Error(stderr.trim() || `osascript exited with ${String(code)}`));
+      });
+    });
   }
 
   openUrl(url: string, application: string | undefined, signal: AbortSignal): Promise<void> {

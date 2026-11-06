@@ -36,6 +36,13 @@ place to see or change them.
 6. **Transparency.** Actions taken under a grant still appear in the live step
    list and in Verified actions, marked "(always-allowed)".
 
+## Later extension: app window control
+
+`control_application` focuses, hides, minimizes, or quits a running app,
+using AppleScript with arguments passed separately (never spliced into the
+script). It reuses the `app:` grant for `focus`, `hide`, and `minimize`. Quit
+is never covered by a grant.
+
 ## Consequences
 
 - With `browser:` granted, the model can open any http(s) URL in that browser

@@ -53,7 +53,16 @@ export function discoverProjectFolders(home = homedir()): AgentEnvironment['proj
     }
     if (seen.has(real.toLowerCase())) continue;
     seen.add(real.toLowerCase());
-    const projects = safeDirectories(folder, 40);
+    const projects = safeDirectories(folder, 40).flatMap(name => {
+      // A folder that is not a project itself (e.g. ~/Projects/openSpace) often
+      // groups projects; list those nested projects as "group/Project".
+      const path = join(folder, name);
+      if (PROJECT_MARKERS.some(marker => existsSync(join(path, marker)))) return [name];
+      const nested = safeDirectories(path, 15)
+        .filter(child => PROJECT_MARKERS.some(marker => existsSync(join(path, child, marker))))
+        .map(child => `${name}/${child}`);
+      return nested.length > 0 ? nested : [name];
+    }).slice(0, 60);
     if (projects.length > 0) folders.push({ folder, projects });
     if (folders.length >= 6) break;
   }
@@ -154,7 +163,8 @@ ${projects}${environment.activeProject ? `\n- Project this conversation is worki
     `# How to work
 - Simple questions (greetings, general knowledge, explanations): answer directly without tools.
 - Anything about the user's files, projects, or code: use tools to look first. Never guess or invent file contents, paths, search results, or command output.
-- If the user gives a path, use exactly that path. Otherwise they will not tell you where things are: when they mention a project by name, match it against the project folders above, or use find_files. Use absolute paths everywhere.
+- If the user gives a path, use exactly that path. Otherwise they will not tell you where things are: when they mention a project by name, match it against the project folders above (names may differ in case, e.g. "keylessrn" = "KeylessRN", and may be nested like "group/Project"), or use find_files. Use absolute paths everywhere.
+- Never guess a path and give up. If a path is not found, search for the name with find_files (omit path to search the whole Mac) and continue with the real location.
 - Explore efficiently: directory_tree on the project root for structure, search_text to find code (definitions, usages, error messages), find_files for names, read_file for contents. Read the README and package manifest when you need an overview. You may call several read-only tools at once.
 - For a task with three or more steps, first call update_plan with a short checklist, then update it as steps finish (mark the current step "[>]"). Skip the plan for quick questions.
 - Work step by step until the task is fully done. Do not stop to ask for permission for read-only steps. Never end your turn by announcing what you will do next ("Let me search…"): either call the tool now or give your final answer.`,
@@ -180,6 +190,7 @@ ${projects}${environment.activeProject ? `\n- Project this conversation is worki
 
   if (canOpen) {
     sections.push(`# Apps and the web
+- control_application focuses, hides, minimizes, or quits a running app. Never use AppleScript or osascript through run_command for this.
 - open_application opens Mac apps. To open a project or file in VS Code: {"application": "Visual Studio Code", "path": "<absolute path>"}.
 - open_url opens a page in a browser. For a web search, open https://www.google.com/search?q=<url-encoded query> (use "Google Chrome" when the user asks for Chrome or Google). You cannot see the page afterwards, so tell the user it has been opened.`);
   }

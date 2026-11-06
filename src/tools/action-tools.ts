@@ -13,6 +13,7 @@ export type ActionProposal =
   }
   | { readonly kind: 'application'; readonly application: string; readonly target?: string; readonly line?: number }
   | { readonly kind: 'url'; readonly url: string; readonly application?: string }
+  | { readonly kind: 'app-control'; readonly application: string; readonly action: AppControlAction }
   | {
     /** Vyomara itself requests a page or a search; the host receives the URL or query. */
     readonly kind: 'web';
@@ -151,7 +152,13 @@ export interface CommandRunnerPort {
   run(command: string, cwd: string, timeoutMs: number, signal: AbortSignal): Promise<CommandResult>;
 }
 
+/** Window-level control of a running app. */
+export type AppControlAction = 'focus' | 'hide' | 'minimize' | 'quit';
+export const APP_CONTROL_ACTIONS: readonly AppControlAction[] = ['focus', 'hide', 'minimize', 'quit'];
+
 export interface LauncherPort {
+  /** Bring forward, hide, minimize all windows of, or quit a running app. */
+  controlApplication?(application: string, action: AppControlAction, signal: AbortSignal): Promise<void>;
   /** `line` jumps to that line when the editor supports it (VS Code). */
   openApplication(application: string, target: string | undefined, signal: AbortSignal, line?: number): Promise<void>;
   openUrl(url: string, application: string | undefined, signal: AbortSignal): Promise<void>;
@@ -196,9 +203,10 @@ function onlyKeys(value: Record<string, unknown>, keys: readonly string[]): stri
   return unknown.length > 0 ? `Unknown argument(s): ${unknown.join(', ')}. Use only: ${keys.join(', ')}.` : undefined;
 }
 
+/** Small models send `null` or `""` for options they mean to omit; treat both as omitted. */
 function dropNulls(value: unknown): unknown {
   if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.entries(value).filter(([, candidate]) => candidate !== null));
+  return Object.fromEntries(Object.entries(value).filter(([, candidate]) => candidate !== null && candidate !== ''));
 }
 
 /** Application names as shown in /Applications, e.g. "Visual Studio Code", "Google Chrome". */
@@ -325,6 +333,19 @@ function applicationError(value: unknown): string | undefined {
   return undefined;
 }
 
+function controlError(value: unknown): string | undefined {
+  if (!isRecord(value)) return 'Arguments must be a JSON object.';
+  const keys = onlyKeys(value, ['application', 'action']);
+  if (keys) return keys;
+  if (typeof value.application !== 'string' || !APPLICATION_NAME.test(normalizeApplicationName(value.application))) {
+    return 'application must be a macOS application name such as "Visual Studio Code".';
+  }
+  if (typeof value.action !== 'string' || !APP_CONTROL_ACTIONS.includes(value.action as AppControlAction)) {
+    return `action must be one of: ${APP_CONTROL_ACTIONS.join(', ')}.`;
+  }
+  return undefined;
+}
+
 function urlError(value: unknown): string | undefined {
   if (!isRecord(value)) return 'Arguments must be a JSON object.';
   const keys = onlyKeys(value, ['url', 'browser']);
@@ -446,6 +467,40 @@ export function registerActionTools(
       },
     };
     registry.register(openApplication);
+
+    const controlApplication = launcher.controlApplication?.bind(launcher);
+    if (controlApplication) {
+      const controlTool: Tool<{ readonly application: string; readonly action: AppControlAction }, Record<string, unknown>> = {
+        id: 'control_application',
+        effect: 'launch',
+        description: 'Control a running macOS app: "focus" brings it to the front, "hide" hides it, "minimize" minimizes all its windows to the Dock, "quit" closes it (the app may ask to save). Use this instead of AppleScript in run_command.',
+        parameters: {
+          type: 'object',
+          properties: {
+            application: { type: 'string', description: 'Application name, e.g. "Visual Studio Code".', maxLength: 80 },
+            action: { type: 'string', description: 'One of: focus, hide, minimize, quit.', maxLength: 16 },
+          },
+          required: ['application', 'action'],
+          additionalProperties: false,
+        },
+        normalizeInput: dropNulls,
+        validateInput: (value): value is { readonly application: string; readonly action: AppControlAction } => controlError(value) === undefined,
+        inputError: controlError,
+        validateOutput: (value): value is Record<string, unknown> => isRecord(value) && typeof value.status === 'string',
+        async run(input, signal) {
+          const application = normalizeApplicationName(input.application);
+          const action = input.action;
+          // A standing app grant covers harmless window actions; quitting always asks.
+          const remembered = action !== 'quit' && approvalMemory?.hasGrant({ kind: 'app', application }) === true;
+          const approved = remembered || await approval.request({ kind: 'app-control', application, action }, signal);
+          if (!approved) return { status: 'rejected', application, action };
+          if (approved === 'always' && action !== 'quit') approvalMemory?.grant({ kind: 'app', application });
+          await controlApplication(application, action, signal);
+          return { status: 'done', application, action, approval: remembered ? 'remembered' : 'user' };
+        },
+      };
+      registry.register(controlTool);
+    }
 
     const openUrl: Tool<UrlInput, UrlOutput> = {
       id: 'open_url',

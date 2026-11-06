@@ -155,6 +155,10 @@ const terminalActionApproval: ActionApprovalPort = {
       process.stderr.write(`\n${bold('▶ Open application')} ${action.application}${action.target ? ` with ${action.target}${action.line ? `:${action.line}` : ''}` : ''}\n`);
       return askYesNo('Open it?');
     }
+    if (action.kind === 'app-control') {
+      process.stderr.write(`\n${bold(`▶ ${action.action} ${action.application}`)}\n`);
+      return askYesNo('Allow?');
+    }
     if (action.kind === 'web') {
       process.stderr.write(action.operation === 'search'
         ? `\n${bold('▶ Search the web')} “${action.target}”\n${dim(`  ${action.host} receives these search words.`)}\n`

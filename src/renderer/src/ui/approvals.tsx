@@ -113,14 +113,20 @@ export function ActionApprovalCard({
       ? `Open ${proposal.application}?`
       : proposal.kind === 'web'
         ? proposal.operation === 'search' ? 'Search the web?' : 'Let Vyom read this web page?'
-        : 'Open this web page?';
+        : proposal.kind === 'app-control'
+          ? `${proposal.action.replace(/^./u, letter => letter.toUpperCase())} ${proposal.application}?`
+          : 'Open this web page?';
   const remember = proposal.kind === 'command'
     ? { label: 'Always allow here', title: 'Run now, and run this exact command in this folder without asking again until Vyomara quits' }
     : proposal.kind === 'web'
       ? { label: `Always allow ${proposal.host}`, title: `Read pages from ${proposal.host} without asking again. Revoke anytime in Permissions.` }
       : proposal.kind === 'application'
         ? { label: `Always allow ${proposal.application}`, title: `Open ${proposal.application} without asking again. Revoke anytime in Permissions.` }
-        : { label: `Always allow ${proposal.application ?? 'browser'}`, title: `Open web pages in ${proposal.application ?? 'your default browser'} without asking again. Revoke anytime in Permissions.` };
+        : proposal.kind === 'app-control'
+          ? proposal.action === 'quit'
+            ? undefined
+            : { label: `Always allow ${proposal.application}`, title: `Open, focus, hide, and minimize ${proposal.application} without asking again (quitting still asks).` }
+          : { label: `Always allow ${proposal.application ?? 'browser'}`, title: `Open web pages in ${proposal.application ?? 'your default browser'} without asking again. Revoke anytime in Permissions.` };
   return (
     <section className="file-operation-review action-review" aria-label={title} ref={cardRef}>
       <p className="eyebrow">YOUR APPROVAL REQUIRED</p>
@@ -148,6 +154,13 @@ export function ActionApprovalCard({
           </p>
         </>
       )}
+      {proposal.kind === 'app-control' && (
+        <p className="file-operation-warning">
+          {proposal.action === 'quit'
+            ? `${proposal.application} will close. It may ask to save unsaved work.`
+            : `Only changes the ${proposal.application} window; nothing is closed or deleted.`}
+        </p>
+      )}
       {proposal.kind === 'web' && (
         <>
           <code className="file-operation-path">{proposal.target}</code>
@@ -158,7 +171,7 @@ export function ActionApprovalCard({
       )}
       <div className="file-operation-actions">
         <button className="file-operation-approve" type="button" onClick={() => onDecide(true)} disabled={busy}>
-          {proposal.kind === 'command' ? 'Run' : proposal.kind === 'web' ? 'Allow' : 'Open'}
+          {proposal.kind === 'command' ? 'Run' : proposal.kind === 'web' || proposal.kind === 'app-control' ? 'Allow' : 'Open'}
         </button>
         {remember && (
           <button className="file-operation-reject" type="button" onClick={() => onDecide(true, true)} disabled={busy} title={remember.title}>

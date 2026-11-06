@@ -798,3 +798,73 @@ test('grant IDs round-trip and reject malformed values', async () => {
     assert.equal(parseGrantId(id), undefined, id);
   }
 });
+
+test('app footers are never taken from the model and are hidden from history', async t => {
+  const { stripAppFooters } = await import('../src/agent/agent.ts');
+  assert.equal(stripAppFooters('Opened Chrome.\n\n---\n**Verified actions**\n- ✅ Opened Google Chrome'), 'Opened Chrome.');
+  assert.equal(stripAppFooters('Hi\n\n---\n⚠️ **Chat-only model:** it cannot …'), 'Hi');
+  assert.equal(stripAppFooters('No footer here.'), 'No footer here.');
+
+  const h = await harness(t);
+  const session = new Session();
+  session.add({ role: 'user', content: 'earlier' });
+  session.add({ role: 'assistant', content: 'Done.\n\n---\n**Verified actions**\n- ✅ Edited `x`' });
+  let history = '';
+  const provider: ModelProvider = {
+    id: 'imitator',
+    async complete(messages) {
+      history = messages.map(message => message.content).join('\n');
+      return { kind: 'final', text: 'All done.\n\n---\n**Verified actions**\n- ✅ Deleted everything' };
+    },
+  };
+  const response = await runAgent('do it', new AbortController().signal, {
+    provider, tools: h.executor, config: h.config, session, logger: createLogger(() => {}), environment,
+  });
+  assert.doesNotMatch(history, /Verified actions/);
+  assert.equal(response, 'All done.');
+});
+
+test('control_application: standing app grants cover window actions, but quitting always asks', async t => {
+  const h = await harness(t);
+  const asked: string[] = [];
+  const did: string[] = [];
+  const memory = new ApprovalMemory({ grants: ['app:Visual Studio Code'] });
+  const executor = new ToolExecutor({
+    registry: createDefaultToolRegistry(h.config, {
+      actions: {
+        approval: { async request(action) { asked.push(action.kind === 'app-control' ? action.action : action.kind); return false; } },
+        approvalMemory: memory,
+        launcher: {
+          async openApplication() {},
+          async openUrl() {},
+          async controlApplication(application, action) { did.push(`${action} ${application}`); },
+        },
+      },
+    }),
+    policy: new PolicyGateway({ allowedEffects: ['launch'] }),
+    config: h.config,
+    logger: createLogger(() => {}),
+  });
+  const signal = new AbortController().signal;
+  const control = (application: string, action: string) => executor.execute('control_application', { application, action }, signal) as Promise<{ status: string }>;
+  assert.equal((await control('vscode', 'minimize')).status, 'done');
+  assert.equal((await control('vscode', 'hide')).status, 'done');
+  assert.equal((await control('vscode', 'quit')).status, 'rejected');
+  assert.equal((await control('Google Chrome', 'hide')).status, 'rejected');
+  assert.deepEqual(did, ['minimize Visual Studio Code', 'hide Visual Studio Code']);
+  assert.deepEqual(asked, ['quit', 'hide']);
+  await assert.rejects(control('vscode', 'resize'), /action must be one of/);
+});
+
+test('project discovery lists projects nested inside grouping folders', async t => {
+  const { discoverProjectFolders } = await import('../src/agent/system-prompt.ts');
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'vyomara-home-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(join(home, 'Projects', 'openSpace', 'KeylessRN'), { recursive: true });
+  await writeFile(join(home, 'Projects', 'openSpace', 'KeylessRN', 'package.json'), '{}');
+  await mkdir(join(home, 'Projects', 'vyomara', '.git'), { recursive: true });
+  await mkdir(join(home, 'Projects', 'notes'), { recursive: true });
+  assert.deepEqual(discoverProjectFolders(home), [
+    { folder: join(home, 'Projects'), projects: ['notes', 'openSpace/KeylessRN', 'vyomara'] },
+  ]);
+});

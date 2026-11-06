@@ -102,6 +102,8 @@ export function describeToolCall(toolId: string, args: Readonly<Record<string, u
       const done = steps.filter(line => /\[[xX]\]/u.test(line)).length;
       return `Updating plan (${done}/${steps.length} done)`;
     }
+    case 'control_application':
+      return `${String(args.action ?? 'Control').replace(/^./u, letter => letter.toUpperCase())} ${String(args.application ?? 'app')}`;
     case 'fetch_url':
       return `Reading ${clip(String(args.url ?? ''), 60)}`;
     case 'web_search':
@@ -155,6 +157,12 @@ function verifiedAction(
       ? { ok: true, text: `Opened ${url}${result.browser ? ` in ${String(result.browser)}` : ''}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
       : { ok: false, text: `You rejected opening ${url}` };
   }
+  if (toolId === 'control_application') {
+    const what = `${String(result.action ?? args.action)} ${String(result.application ?? args.application)}`;
+    return result.status === 'done'
+      ? { ok: true, text: `Did ${what}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
+      : { ok: false, text: `You rejected: ${what}` };
+  }
   if (toolId === 'fetch_url') {
     const url = clip(String(result.url ?? args.url), 90);
     return result.status === 'fetched'
@@ -174,7 +182,7 @@ const INVALID_CALL_CODES = new Set(['invalid-input', 'input-too-large', 'unknown
 
 const MUTATING_TOOLS = new Set([
   'edit_file', 'write_file', 'create_directory', 'delete_path', 'run_command', 'open_application', 'open_url',
-  'fetch_url', 'web_search',
+  'fetch_url', 'web_search', 'control_application',
 ]);
 
 const CONTINUE_NUDGE =
@@ -196,6 +204,18 @@ export function announcesNextStep(text: string): boolean {
   const intent = /\b(?:let me|let's|i'll|i will|i am going to|i'm going to|next,? i|now i(?:'ll| will)?)\b.{0,160}\b(?:search|check|look|read|open|run|try|find|inspect|examine|edit|fix|update|list|explore|verify|test)\b/iu;
   const hinglishIntent = /\b(?:main|mai|ab main|ab mai)\b.{0,80}\b(?:dekhta|check karta|search karta|dhundhta|dhoondhta|padhta|chalata|karta|fix karta) (?:hoon|hu|hun|hu)\b/iu;
   return intent.test(tail) || hinglishIntent.test(tail);
+}
+
+/**
+ * Remove footers that only the app may write ("Verified actions", the
+ * chat-only notice). Models imitate them from history, which could fake
+ * evidence of work, so they are stripped from model output and from history.
+ */
+export function stripAppFooters(text: string): string {
+  const markers = [/\n*\s*(?:-{3,}\s*\n+\s*)?\**Verified actions\**[\s\S]*$/iu, /\n*\s*(?:-{3,}\s*\n+\s*)?⚠️\s*\**Chat-only model:[\s\S]*$/u];
+  let result = text;
+  for (const marker of markers) result = result.replace(marker, '');
+  return result.trimEnd();
 }
 
 function actionsFooter(actions: readonly VerifiedAction[]): string {
@@ -311,7 +331,7 @@ async function runAgentTask(
     const chatOnlyNote = toolCapable
       ? ''
       : '\n\n---\n⚠️ **Chat-only model:** it cannot read your files, run commands, open apps, or read web pages in Vyomara. Anything it says about your files or projects is not based on them. Choose a model marked “Tools” in the Models panel for that.';
-    const response = `${text.trim() || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
+    const response = `${stripAppFooters(text).trim() || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
     session.add({ role: 'assistant', content: response });
     if (needsAttention) task.needsAttention();
     logger.emit({
@@ -326,7 +346,10 @@ async function runAgentTask(
 
   for (let iteration = 1; iteration <= config.maxAgentIterations; iteration += 1) {
     if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
-    const fitted = fitMessagesToBudget(session.messages(), budgetChars);
+    const fitted = fitMessagesToBudget(session.messages(), budgetChars).map(message =>
+      message.role === 'assistant' && message.kind !== 'tool-call'
+        ? { ...message, content: stripAppFooters(message.content) }
+        : message);
     const messages = pendingNudge
       ? [...fitted, { role: 'user' as const, content: pendingNudge }]
       : fitted;
