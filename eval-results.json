@@ -1,56 +1,55 @@
 {
   "model": "qwen3:14b",
-  "date": "2026-11-06T08:54:40.558Z",
+  "date": "2026-11-06T09:15:05.123Z",
   "results": [
     {
       "scenario": "locate-code",
       "run": 1,
       "pass": true,
-      "seconds": 24,
-      "steps": 2
+      "seconds": 20,
+      "steps": 1
     },
     {
       "scenario": "locate-code",
       "run": 2,
       "pass": true,
-      "seconds": 9,
+      "seconds": 10,
       "steps": 1
     },
     {
       "scenario": "fix-bug",
       "run": 1,
       "pass": true,
-      "seconds": 60,
-      "steps": 10
+      "seconds": 118,
+      "steps": 11
     },
     {
       "scenario": "fix-bug",
       "run": 2,
-      "pass": false,
-      "reason": "tests still fail",
-      "seconds": 47,
-      "steps": 8
+      "pass": true,
+      "seconds": 77,
+      "steps": 10
     },
     {
       "scenario": "add-feature",
       "run": 1,
       "pass": true,
-      "seconds": 379,
-      "steps": 25
+      "seconds": 153,
+      "steps": 15
     },
     {
       "scenario": "add-feature",
       "run": 2,
       "pass": true,
-      "seconds": 111,
-      "steps": 9
+      "seconds": 266,
+      "steps": 21
     },
     {
       "scenario": "explain-hinglish",
       "run": 1,
       "pass": false,
-      "reason": "answer does not mention the cart code",
-      "seconds": 10,
+      "reason": "replied in Devanagari instead of Roman Hinglish",
+      "seconds": 37,
       "steps": 1
     },
     {
@@ -58,7 +57,7 @@
       "run": 2,
       "pass": false,
       "reason": "replied in Devanagari instead of Roman Hinglish",
-      "seconds": 19,
+      "seconds": 35,
       "steps": 1
     }
   ]

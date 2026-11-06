@@ -89,6 +89,21 @@ the CLI with approvals answered "yes":
   - **Thinking on:** 0 of 2 succeeded and took 3–4 minutes each, so it stays
     off by default.
 
+### `pnpm eval` results (qwen3:14b, 32K context, 2 runs per scenario)
+
+| Scenario | Before `update_plan` | With `update_plan` and later fixes |
+|---|---|---|
+| locate-code (file + line of a function) | 2/2, 9–24 s | 2/2, 10–20 s |
+| fix-bug (failing test, fix code not test) | 1/2, 47–60 s | 2/2, 77–118 s |
+| add-feature (new function + test + fix) | 2/2, 111–379 s | 2/2, 153–266 s |
+| explain-hinglish (Roman Hinglish summary) | 0/2 | 0/2 — still replies in Devanagari |
+| **Total** | **5/8** | **6/8** |
+
+These samples are small, and timings are noisy because other work shared
+Ollama during the runs. The plan checklist made fixes more reliable at the
+cost of a few extra steps. Roman-script Hinglish replies remain a weakness of
+this model.
+
 Local models are not deterministic. If a task stalls, ask Vyom to continue or
 rephrase with more detail (a file name, the error message). A larger model
 gives the biggest improvement.
