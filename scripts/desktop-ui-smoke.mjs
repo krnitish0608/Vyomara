@@ -371,8 +371,8 @@ try {
         microphone.getAttribute('aria-pressed') === 'false' &&
         microphone.getAttribute('aria-label') === 'Record a message' &&
         microphone.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)} &&
-        microphone.getBoundingClientRect().width === 40 &&
-        microphone.getBoundingClientRect().height === 40 &&
+        microphone.getBoundingClientRect().width === 34 &&
+        microphone.getBoundingClientRect().height === 34 &&
         document.querySelector('.composer').getBoundingClientRect().height <= 112 &&
         document.querySelector('#prompt').getBoundingClientRect().height <= 92;
     })()`),

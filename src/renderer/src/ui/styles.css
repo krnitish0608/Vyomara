@@ -644,3 +644,17 @@ body.pip-body #root { height: 100vh; }
 .pip-rail .pip-mic-recording { border-color: rgba(248, 112, 132, .85); background: rgba(130, 28, 50, .8); color: #ffd0d8; animation: mic-recording-pulse 1.4s ease-in-out infinite; }
 .pip-rail .pip-mic-recording svg { fill: currentColor; stroke: none; }
 @media (prefers-reduced-motion: reduce) { .pip-rail .pip-mic-recording, .pip-recording-badge span { animation: none; } }
+
+/* Message box: a slim vertical rail of two quiet, equal buttons. */
+.composer { grid-template-columns: minmax(0, 1fr) 34px; column-gap: 12px; padding: 10px 10px 10px 14px; }
+.composer textarea { min-height: 74px; padding-top: 6px; }
+.composer-rail { gap: 6px; }
+.composer-rail .voice-input-button,
+.composer-rail .send-button { width: 34px; height: 34px; border-radius: 11px; }
+.composer-rail .voice-input-button { border: 1px solid rgba(120, 150, 230, .2); background: rgba(255, 255, 255, .035); color: #9fb0d8; }
+.composer-rail .voice-input-button:hover:not(:disabled) { border-color: rgba(126, 158, 238, .55); background: rgba(70, 100, 190, .22); color: #eef3ff; }
+.composer-rail .send-button { border: 1px solid transparent; box-shadow: 0 4px 14px rgba(60, 110, 255, .28); }
+.composer-rail .send-button:disabled { border-color: rgba(255, 255, 255, .06); background: rgba(255, 255, 255, .03); color: #4c5668; box-shadow: none; }
+.composer-rail .voice-input-button svg { width: 16px; height: 16px; stroke-width: 1.9; }
+.composer-rail .send-button svg { width: 16px; height: 16px; stroke-width: 2.3; }
+.composer-rail .voice-input-button.voice-input-dictating { border-color: rgba(248, 112, 132, .75); background: rgba(130, 32, 56, .45); color: #ffc2cc; box-shadow: 0 0 0 3px rgba(248, 112, 132, .12); }
