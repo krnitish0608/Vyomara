@@ -979,7 +979,7 @@ export function App() {
           : voiceHearing
             ? 'Listening…'
             : voiceListening
-            ? 'Boliye, main sun raha hoon'
+            ? 'Listening… speak when ready'
             : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
     dictation: { recording: dictation === 'pip', text: pipDraft.text, seq: pipDraft.seq },
     ...(voiceTranscript && dictation !== 'pip' ? { heard: voiceTranscript } : {}),
@@ -1017,10 +1017,10 @@ export function App() {
         ? liveTurn || (vyomSpeaking
           ? 'Vyom is speaking… tap the orb to interrupt'
           : requestPending
-            ? 'Vyom is working on it… say “ruko” to stop'
+            ? 'Working on it… say “stop” to cancel'
             : voiceHearing
               ? 'Listening…'
-              : 'Boliye, main sun raha hoon…  (say “bas” to end)')
+              : 'Listening… speak whenever you’re ready')
         : 'Message Vyom…';
   const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
   const voiceOrbTitle = speechSetup?.runtimeAvailable === false
@@ -1188,7 +1188,7 @@ export function App() {
                         : voiceListening
                           ? vyomSpeaking
                             ? 'Vyom is speaking · tap the orb to interrupt'
-                            : voiceTranscript || 'Boliye, main sun raha hoon · say “bas” to end'
+                            : voiceTranscript || 'Listening… speak whenever you’re ready'
                           : speechSetup?.runtimeAvailable === false
                             ? 'Offline voice unavailable—type below.'
                             : ''}
@@ -1311,7 +1311,7 @@ export function App() {
           <p className={`privacy-note${messages.length === 0 && !requestError && !speechError ? ' visually-hidden' : ''}`} role={requestError || speechError ? 'alert' : 'status'}>
             {requestError
               ? requestError
-              : speechError ?? 'Your conversation is stored locally on this Mac. Speech output uses the on-device macOS voice.'}
+              : speechError ?? 'Conversations and voice stay on this Mac.'}
           </p>
         </section>
 
@@ -1496,7 +1496,7 @@ export function App() {
             <span aria-hidden="true">♩</span>
             <div>
               <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'In conversation with Vyom' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
-              <small>{voiceListening ? 'Microphone active · press the orb or say “bas” to end' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
+              <small>{voiceListening ? 'Microphone on · tap the orb or say “bas” to end' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
               {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>
           </div>
