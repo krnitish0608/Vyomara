@@ -547,8 +547,8 @@ body.pip-body #root { height: 100vh; }
 .pip {
   -webkit-app-region: drag;
   position: relative; box-sizing: border-box; height: 100vh;
-  display: grid; grid-template-columns: 92px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-items: center; column-gap: 6px;
-  padding: 0 34px 10px 4px; border-radius: 22px;
+  display: grid; grid-template-columns: 92px minmax(0, 1fr) 30px; align-items: center; column-gap: 6px;
+  padding: 8px 8px 8px 4px; border-radius: 22px;
   border: 1px solid rgba(118, 132, 255, .32);
   background: linear-gradient(135deg, rgba(14, 18, 48, .78), rgba(8, 11, 28, .72));
   color: #e9ecf6; font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
@@ -588,11 +588,6 @@ body.pip-body #root { height: 100vh; }
 .pip-no { border: 1px solid rgba(240, 140, 160, .45); background: rgba(60, 22, 34, .7); color: #ffc2cc; }
 .pip-link { justify-self: start; padding: 0; border: 0; background: none; color: #8fb3ff; font-size: 11px; }
 
-.pip-corner { position: absolute; top: 8px; right: 8px; display: grid; gap: 4px; }
-.pip-corner button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: rgba(255, 255, 255, .05); color: #9aa6c4; }
-.pip-corner button:hover { background: rgba(255, 255, 255, .14); color: #fff; }
-.pip-corner svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-
 .pip-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
 .pip-wave i { width: 2.5px; height: 100%; border-radius: 2px; background: linear-gradient(180deg, #39d8ff, #7b5cff); animation: voice-wave 650ms ease-in-out infinite alternate; }
 .pip-wave i:nth-child(2) { animation-delay: 120ms; }
@@ -607,16 +602,36 @@ body.pip-body #root { height: 100vh; }
   .pip-wave i, .pip-dots i { animation: none; }
 }
 
-/* Mini window message box: type, or tap the mic to dictate, then send. */
-.pip-composer { -webkit-app-region: no-drag; grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; margin: 0 -26px 0 8px; padding: 4px 4px 4px 12px; border: 1px solid rgba(118, 132, 255, .3); border-radius: 14px; background: rgba(5, 9, 24, .7); }
-.pip-composer:focus-within { border-color: rgba(140, 160, 255, .65); }
-.pip-input { -webkit-app-region: no-drag; flex: 1; min-width: 0; padding: 4px 0; border: 0; outline: 0; background: transparent; color: #eef0fa; font: 12px -apple-system, BlinkMacSystemFont, sans-serif; }
-.pip-input::placeholder { color: #7f8aa6; }
-.pip-mic, .pip-send { -webkit-app-region: no-drag; width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border-radius: 50%; }
-.pip-mic svg, .pip-send svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.pip-mic { border: 1px solid rgba(118, 132, 255, .4); background: rgba(40, 46, 120, .5); color: #c9d2ff; }
-.pip-mic-recording { border-color: rgba(248, 112, 132, .8); background: rgba(120, 28, 48, .7); color: #ffd0d8; animation: mic-recording-pulse 1.4s ease-in-out infinite; }
-.pip-mic-recording svg { fill: currentColor; stroke: none; }
-.pip-send { border: 1px solid #6f78ff; background: linear-gradient(180deg, #4048d8, #2c31a8); color: #fff; }
-.pip-send:disabled, .pip-mic:disabled { opacity: .4; cursor: default; }
-@media (prefers-reduced-motion: reduce) { .pip-mic-recording { animation: none; } }
+/* Mini window: one middle area that is either status or a message box, and a vertical control rail. */
+.pip-recording { border-color: rgba(248, 112, 132, .6); box-shadow: inset 0 0 22px rgba(248, 112, 132, .08); }
+.pip-composing:not(.pip-recording) { border-color: rgba(140, 160, 255, .6); }
+
+.pip-text { align-self: stretch; align-content: center; }
+.pip-type-hint { -webkit-app-region: no-drag; justify-self: start; margin-top: 2px; padding: 0; border: 0; background: none; color: #7f8aa6; font-size: 11px; cursor: text; }
+.pip-type-hint:hover { color: #b9c3e0; }
+
+.pip-compose { -webkit-app-region: no-drag; align-self: stretch; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+.pip-recording-badge { display: flex; align-items: center; gap: 6px; margin: 0; color: #ffb3c0; font-size: 10.5px; font-weight: 600; }
+.pip-recording-badge span { width: 7px; height: 7px; border-radius: 50%; background: #ff5f7a; box-shadow: 0 0 8px rgba(255, 95, 122, .8); animation: pulse .8s ease-in-out infinite alternate; }
+.pip-textarea {
+  -webkit-app-region: no-drag; flex: 1; min-height: 0; width: 100%; resize: none;
+  padding: 8px 10px; border: 1px solid rgba(118, 132, 255, .3); border-radius: 12px; outline: 0;
+  background: rgba(5, 9, 24, .55); color: #eef0fa; font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.pip-textarea:focus { border-color: rgba(140, 160, 255, .7); background: rgba(5, 9, 24, .75); }
+.pip-recording .pip-textarea { border-color: rgba(248, 112, 132, .55); }
+.pip-textarea::placeholder { color: #7f8aa6; }
+
+.pip-rail { -webkit-app-region: no-drag; align-self: stretch; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.pip-rail-gap { flex: 1; }
+.pip-rail button { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: rgba(255, 255, 255, .05); color: #9aa6c4; }
+.pip-rail button:hover:not(:disabled) { background: rgba(255, 255, 255, .14); color: #fff; }
+.pip-rail button:disabled { opacity: .35; cursor: default; }
+.pip-rail svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.pip-rail .pip-rail-mic, .pip-rail .pip-rail-send { width: 27px; height: 27px; border-radius: 50%; }
+.pip-rail .pip-rail-mic { border: 1px solid rgba(118, 132, 255, .45); background: rgba(40, 46, 120, .55); color: #c9d2ff; }
+.pip-rail .pip-rail-send { border: 1px solid #6f78ff; background: linear-gradient(180deg, #4048d8, #2c31a8); color: #fff; }
+.pip-rail .pip-rail-mic svg, .pip-rail .pip-rail-send svg { width: 14px; height: 14px; stroke-width: 2.1; }
+.pip-rail .pip-mic-recording { border-color: rgba(248, 112, 132, .85); background: rgba(130, 28, 50, .8); color: #ffd0d8; animation: mic-recording-pulse 1.4s ease-in-out infinite; }
+.pip-rail .pip-mic-recording svg { fill: currentColor; stroke: none; }
+@media (prefers-reduced-motion: reduce) { .pip-rail .pip-mic-recording, .pip-recording-badge span { animation: none; } }

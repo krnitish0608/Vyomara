@@ -53,7 +53,7 @@ let mainWindow: BrowserWindow | undefined;
 /** The mini controller window shown over other apps while the main window is away. */
 let pipWindow: BrowserWindow | undefined;
 let quitting = false;
-const PIP_SIZE = { width: 380, height: 172 };
+const PIP_SIZE = { width: 384, height: 136 };
 /** Last state published by the main window, replayed when the mini window (re)loads. */
 let lastPipState: unknown;
 let activeRequest: AbortController | undefined;

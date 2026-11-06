@@ -39,12 +39,23 @@ export function PipView() {
   }, [state?.dictation]);
 
   const recording = state?.dictation.recording === true;
+  const [focused, setFocused] = useState(false);
+  const input = useRef<HTMLTextAreaElement>(null);
+  /** The middle area is a message box while typing, dictating, or holding a draft. */
+  const composing = focused || recording || draft.trim() !== '';
+
+  function startComposing(): void {
+    setFocused(true);
+    requestAnimationFrame(() => input.current?.focus());
+  }
 
   function toggleRecording(): void {
     if (recording) {
       send({ type: 'dictation', recording: false });
+      requestAnimationFrame(() => input.current?.focus());
     } else {
       draftBase.current = draft.trimEnd();
+      setFocused(true);
       send({ type: 'dictation', recording: true });
     }
   }
@@ -55,67 +66,103 @@ export function PipView() {
     send({ type: 'submit', text });
     setDraft('');
     draftBase.current = '';
+    setFocused(false);
+    input.current?.blur();
   }
 
   const approval = state?.approval;
   const listening = state?.listening === true;
   const detail = approval?.question ?? (state?.heard ? `“${state.heard}”` : state?.reply);
-  const mood = approval ? 'approval' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
+  const mood = approval ? 'approval' : recording ? 'recording' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
+  // Approvals take the middle area; a draft in progress is kept and comes back after.
+  const showComposer = composing && !approval;
 
   return (
-    <main className={`pip pip-${mood}`}>
+    <main className={`pip pip-${mood}${showComposer ? ' pip-composing' : ''}`}>
       <div className="pip-orb-slot">
         <VoiceOrb
           mini
-          listening={listening || state?.busy === true}
+          listening={listening || recording || state?.busy === true}
           pressed={listening}
           disabled={!state?.voiceReady}
           label={listening ? 'Turn listening off' : 'Turn listening on'}
-          title={state?.voiceReady ? 'Listening on/off (⌥Space)' : 'Set up voice in the Vyomara window'}
+          title={state?.voiceReady ? 'Hands-free listening on/off (⌥Space)' : 'Set up voice in the Vyomara window'}
           onActivate={() => send({ type: 'toggle-listening' })}
         />
       </div>
-      <section className="pip-text" aria-live="polite">
-        <p className="pip-status">
-          {listening && !approval && !state?.busy && <MiniWave />}
-          {state?.busy && !approval && <span className="pip-dots" aria-hidden="true"><i /><i /><i /></span>}
-          <span className="pip-status-text">{state ? state.status : 'Connecting…'}</span>
-          {state?.plan ? <span className="pip-plan">{state.plan.done}/{state.plan.total}</span> : null}
-        </p>
-        {detail && <p className="pip-detail">{detail}</p>}
-        {state && !state.voiceReady && !approval && (
-          <button type="button" className="pip-link" onClick={() => send({ type: 'open-main' })}>Set up voice →</button>
-        )}
-        {approval && (
-          <div className="pip-actions">
-            {approval.needsMainWindow ? (
-              <button type="button" className="pip-yes" onClick={() => send({ type: 'open-main' })}>Review in Vyomara</button>
-            ) : (
-              <>
-                <button type="button" className="pip-yes" onClick={() => send({ type: 'approve', id: approval.id })}>Haan</button>
-                <button type="button" className="pip-no" onClick={() => send({ type: 'reject', id: approval.id })}>Nahi</button>
-              </>
-            )}
-          </div>
-        )}
-        {!approval && state?.busy && (
-          <div className="pip-actions">
-            <button type="button" className="pip-no" onClick={() => send({ type: 'stop' })}>Stop</button>
-          </div>
-        )}
-      </section>
-      <form className="pip-composer" onSubmit={event => { event.preventDefault(); submit(); }}>
-        <input
-          className="pip-input"
-          value={draft}
-          onChange={event => setDraft(event.target.value)}
-          placeholder={recording ? 'Listening… tap ■ to stop' : 'Type or tap the mic…'}
-          maxLength={32000}
-          aria-label="Message Vyom"
-        />
+
+      {showComposer ? (
+        <form className="pip-compose" onSubmit={event => { event.preventDefault(); submit(); }}>
+          {recording && <p className="pip-recording-badge"><span aria-hidden="true" /> Recording · tap ■ to stop</p>}
+          <textarea
+            ref={input}
+            className="pip-textarea"
+            value={draft}
+            onChange={event => setDraft(event.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                if (recording) toggleRecording();
+                else submit();
+              }
+              if (event.key === 'Escape') {
+                if (recording) toggleRecording();
+                if (!draft.trim()) input.current?.blur();
+              }
+            }}
+            placeholder={recording ? 'Speak… your words appear here' : 'Type to Vyom…  (Enter to send)'}
+            maxLength={32000}
+            aria-label="Message Vyom"
+          />
+        </form>
+      ) : (
+        <section className="pip-text" aria-live="polite">
+          <p className="pip-status">
+            {listening && !approval && !state?.busy && <MiniWave />}
+            {state?.busy && !approval && <span className="pip-dots" aria-hidden="true"><i /><i /><i /></span>}
+            <span className="pip-status-text">{state ? state.status : 'Connecting…'}</span>
+            {state?.plan ? <span className="pip-plan">{state.plan.done}/{state.plan.total}</span> : null}
+          </p>
+          {detail && <p className="pip-detail">{detail}</p>}
+          {state && !state.voiceReady && !approval && (
+            <button type="button" className="pip-link" onClick={() => send({ type: 'open-main' })}>Set up voice →</button>
+          )}
+          {approval && (
+            <div className="pip-actions">
+              {approval.needsMainWindow ? (
+                <button type="button" className="pip-yes" onClick={() => send({ type: 'open-main' })}>Review in Vyomara</button>
+              ) : (
+                <>
+                  <button type="button" className="pip-yes" onClick={() => send({ type: 'approve', id: approval.id })}>Haan</button>
+                  <button type="button" className="pip-no" onClick={() => send({ type: 'reject', id: approval.id })}>Nahi</button>
+                </>
+              )}
+            </div>
+          )}
+          {!approval && state?.busy && (
+            <div className="pip-actions">
+              <button type="button" className="pip-no" onClick={() => send({ type: 'stop' })}>Stop</button>
+            </div>
+          )}
+          {!approval && !state?.busy && (
+            <button type="button" className="pip-type-hint" onClick={startComposing}>Type or tap 🎙 to talk…</button>
+          )}
+        </section>
+      )}
+
+      <nav className="pip-rail" aria-label="Mini window controls">
+        <button type="button" onClick={() => send({ type: 'open-main' })} aria-label="Open Vyomara" title="Open Vyomara">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7M13 3 4 12" /></svg>
+        </button>
+        <button type="button" onClick={() => send({ type: 'hide-pip' })} aria-label="Hide mini window" title="Hide">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+        <span className="pip-rail-gap" />
         <button
           type="button"
-          className={`pip-mic${recording ? ' pip-mic-recording' : ''}`}
+          className={`pip-rail-mic${recording ? ' pip-mic-recording' : ''}`}
           onClick={toggleRecording}
           disabled={!state?.voiceReady}
           aria-pressed={recording}
@@ -123,21 +170,20 @@ export function PipView() {
           title={recording ? 'Stop recording' : 'Record: tap to start, tap again to stop'}
         >
           {recording
-            ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="8" height="8" rx="1.5" /></svg>
+            ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /></svg>
             : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2.5" width="6" height="12" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5" /></svg>}
         </button>
-        <button type="submit" className="pip-send" disabled={!draft.trim() || state?.busy === true} aria-label="Send message">
+        <button
+          type="button"
+          className="pip-rail-send"
+          onClick={submit}
+          disabled={!draft.trim() || state?.busy === true}
+          aria-label="Send message"
+          title="Send (Enter)"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-7 7 7-7 7 7" /></svg>
         </button>
-      </form>
-      <div className="pip-corner">
-        <button type="button" onClick={() => send({ type: 'open-main' })} aria-label="Open Vyomara" title="Open Vyomara">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3h7v7M13 3 4 12" /></svg>
-        </button>
-        <button type="button" onClick={() => send({ type: 'hide-pip' })} aria-label="Hide mini window" title="Hide">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-        </button>
-      </div>
+      </nav>
     </main>
   );
 }

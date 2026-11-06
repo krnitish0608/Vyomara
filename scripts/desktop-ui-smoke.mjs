@@ -131,7 +131,7 @@ try {
       const response = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
       if (!response.ok) return undefined;
       const targets = await response.json();
-      return targets.find(candidate => candidate.type === 'page' && candidate.webSocketDebuggerUrl);
+      return targets.find(candidate => candidate.type === 'page' && candidate.webSocketDebuggerUrl && !String(candidate.url).includes('#pip'));
     } catch {
       return undefined;
     }
