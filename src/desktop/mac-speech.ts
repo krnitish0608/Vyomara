@@ -60,22 +60,24 @@ export function parseVoiceList(output: string): ReadonlySet<string> {
  * One voice per assistant, so it never changes mid-conversation. Better
  * Premium/Enhanced versions (System Settings → Accessibility → Spoken
  * Content → Manage Voices) are used when installed.
- * - Vyomara (female): Lekha for Hindi in Devanagari, Tara (Indian English)
- *   for everything else; both are female, so the voice never changes gender.
- * - Vyom (male): Rishi or Aman (Indian English); macOS has no male Hindi voice,
- *   so Devanagari is read in Roman letters (see romanForSpeech).
+ * - Vyomara (female): Lekha (Hindi), which also reads English. She says the
+ *   name "Vyomara" correctly only when it is written व्योमारा.
+ * - Vyom (male): Aman (Indian English), chosen by the owner; macOS has no
+ *   male Hindi voice, so Devanagari is read in Roman letters (romanForSpeech).
  */
 const VOICES: Readonly<Record<'male' | 'female', readonly string[]>> = {
-  female: ['Tara (Premium)', 'Tara (Enhanced)', 'Tara', 'Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha'],
-  male: ['Rishi (Premium)', 'Rishi (Enhanced)', 'Aman (Premium)', 'Aman (Enhanced)', 'Rishi', 'Aman'],
+  female: ['Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha', 'Tara (Premium)', 'Tara (Enhanced)', 'Tara'],
+  male: ['Aman (Premium)', 'Aman (Enhanced)', 'Aman', 'Rishi (Premium)', 'Rishi (Enhanced)', 'Rishi'],
 };
 
-const FEMALE_HINDI = ['Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha'];
-
-export async function voiceFor(gender: 'male' | 'female', text = '', available?: ReadonlySet<string>): Promise<string | undefined> {
+export async function voiceFor(gender: 'male' | 'female', available?: ReadonlySet<string>): Promise<string | undefined> {
   const voices = available ?? await listInstalledVoices();
-  const preferred = gender === 'female' && /[\u0900-\u097F]/u.test(text) ? FEMALE_HINDI : VOICES[gender];
-  return preferred.find(voice => voices.has(voice));
+  return VOICES[gender].find(voice => voices.has(voice));
+}
+
+/** Text as the assistant's voice should read it (see VOICES). */
+export function textForVoice(text: string, gender: 'male' | 'female'): string {
+  return gender === 'male' ? romanForSpeech(text) : text.replace(/\bVyomara\b/gu, 'व्योमारा');
 }
 const maximumSpeechDurationMs = 180_000;
 
@@ -107,15 +109,14 @@ export class MacSpeechRunner {
     let voice: string | undefined;
     try {
       voice = await (typeof text === 'string' && this.#platform === 'darwin' && this.#spawnProcess === spawnMacSpeechProcess
-        ? voiceFor(gender, text)
+        ? voiceFor(gender)
         : Promise.resolve(undefined));
     } finally {
       this.#starting -= 1;
     }
     // Stopped while the voice was being chosen: do not start speaking.
     if (stops !== this.#stopCount) return { status: 'cancelled' };
-    // An English voice cannot read Devanagari; give it Roman letters instead.
-    const spoken = typeof text === 'string' && gender === 'male' ? romanForSpeech(text) : text;
+    const spoken = typeof text === 'string' ? textForVoice(text, gender) : text;
     return this.#speak(spoken, voice);
   }
 

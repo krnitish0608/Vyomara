@@ -27,17 +27,18 @@ and Vyomara (female), chosen in the app.
      voice is English.
 3. **One voice per assistant** (`voiceFor`). Premium or Enhanced versions are
    preferred when installed; the voice list is re-read every 2 minutes.
-   - **Vyomara:** Tara (Indian English) for Latin text and Lekha for
-     Devanagari; both are female.
-   - **Vyom:** Rishi or Aman. Any Devanagari left in a reply is changed to
+   - **Vyomara:** Lekha for all text (the owner's choice). "Vyomara" is
+     written व्योमारा before speaking, since Lekha mispronounces the Latin
+     spelling.
+   - **Vyom:** Aman (the owner's choice), then Rishi. Any Devanagari left in a reply is changed to
      Roman letters (`romanForSpeech`) before speaking.
    - The speaking rate is lowered from 190 to 180 words per minute.
    - When the app opens on the welcome screen, and when the assistant is
      switched, the assistant introduces itself in its own voice ("Hi, I'm
      Vyomara, your personal AI assistant. Tell me what you need."), followed
      by the three-note brand chime.
-     - "AI" is spelled per voice: Rishi says "AI" as "air" but reads
-       "A. I." correctly, while Tara is the reverse (checked with whisper).
+     - "AI" is spelled per voice: Aman reads "AI" correctly, while Lekha
+       needs "A I" (checked with whisper).
      - Pressing the orb stops the greeting, even in the instant before it
        starts.
    - Voice names are matched by their plain name too, because newer macOS
