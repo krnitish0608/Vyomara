@@ -59,6 +59,17 @@ export interface DesktopPlan {
   readonly steps: readonly { readonly text: string; readonly status: 'pending' | 'in_progress' | 'done' }[];
 }
 
+/** A permission granted once that skips future approvals for that kind of action. */
+export interface DesktopPermission {
+  readonly id: string;
+  readonly kind: string;
+  readonly label: string;
+}
+
+export interface DesktopPermissions {
+  readonly grants: readonly DesktopPermission[];
+}
+
 export interface DesktopModelInfo {
   readonly name: string;
   readonly sizeBytes?: number;
@@ -155,6 +166,10 @@ export interface VyomaraDesktopApi {
   approveAction(id: string, always?: boolean): Promise<void>;
   rejectAction(id: string): Promise<void>;
   onToolActivity(listener: (activity: DesktopToolActivity) => void): () => void;
+  listPermissions(): Promise<DesktopPermissions>;
+  /** Grant IDs look like "app:Visual Studio Code", "browser:Google Chrome", "host:react.dev". */
+  grantPermission(id: string): Promise<DesktopPermissions>;
+  revokePermission(id: string): Promise<DesktopPermissions>;
   onPlan(listener: (plan: DesktopPlan) => void): () => void;
   listModels(): Promise<DesktopModelList>;
   selectModel(model: string): Promise<DesktopProviderStatus>;

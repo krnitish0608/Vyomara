@@ -33,41 +33,108 @@ export interface ActionApprovalPort {
   request(action: ActionProposal, signal: AbortSignal): Promise<ApprovalDecision>;
 }
 
+/** A permission the user granted once, kept across restarts until revoked. */
+export type StandingGrant =
+  | { readonly kind: 'app'; readonly application: string }
+  | { readonly kind: 'browser'; readonly browser: string }
+  | { readonly kind: 'host'; readonly host: string };
+
+/** The default browser in browser grants. */
+export const DEFAULT_BROWSER = 'default browser';
+
+export function grantId(grant: StandingGrant): string {
+  switch (grant.kind) {
+    case 'app': return `app:${grant.application}`;
+    case 'browser': return `browser:${grant.browser}`;
+    default: return `host:${grant.host.toLowerCase()}`;
+  }
+}
+
+export function parseGrantId(id: string): StandingGrant | undefined {
+  const separator = id.indexOf(':');
+  const kind = id.slice(0, separator);
+  const value = id.slice(separator + 1).trim();
+  if (separator < 1 || value === '' || value.length > 253) return undefined;
+  if (kind === 'app' && APPLICATION_NAME.test(value)) return { kind: 'app', application: value };
+  if (kind === 'browser' && (value === DEFAULT_BROWSER || APPLICATION_NAME.test(value))) return { kind: 'browser', browser: value };
+  if (kind === 'host' && /^[a-z0-9.-]+$/u.test(value)) return { kind: 'host', host: value };
+  return undefined;
+}
+
+export interface ApprovalMemoryOptions {
+  /** Grant IDs saved earlier (e.g. "app:Visual Studio Code"). */
+  readonly grants?: readonly string[];
+  /** Called with all grant IDs whenever they change, so the host can save them. */
+  readonly onGrantsChanged?: (grants: readonly string[]) => void;
+}
+
 /**
- * What the user chose to "always allow" — an exact command in an exact folder,
- * or reading from one web host — kept in memory only until the app quits.
+ * What the user chose to "always allow":
+ * - standing grants (open an app, open pages in a browser, read a web host),
+ *   kept across restarts by the host until revoked;
+ * - exact commands in exact folders, kept in memory only until the app quits.
  */
 export class ApprovalMemory {
-  readonly #allowed = new Set<string>();
-  readonly #hosts = new Set<string>();
+  readonly #commands = new Set<string>();
+  readonly #grants = new Set<string>();
+  readonly #onGrantsChanged: ((grants: readonly string[]) => void) | undefined;
+
+  constructor(options: ApprovalMemoryOptions = {}) {
+    for (const id of options.grants ?? []) {
+      const grant = parseGrantId(id);
+      if (grant) this.#grants.add(grantId(grant));
+    }
+    this.#onGrantsChanged = options.onGrantsChanged;
+  }
 
   static key(command: string, cwd: string): string {
     return `${cwd}\n${command.trim()}`;
   }
 
-  hasHost(host: string): boolean {
-    return this.#hosts.has(host.toLowerCase());
-  }
-
-  allowHost(host: string): void {
-    this.#hosts.add(host.toLowerCase());
-  }
-
   has(command: string, cwd: string): boolean {
-    return this.#allowed.has(ApprovalMemory.key(command, cwd));
+    return this.#commands.has(ApprovalMemory.key(command, cwd));
   }
 
   allow(command: string, cwd: string): void {
-    this.#allowed.add(ApprovalMemory.key(command, cwd));
+    this.#commands.add(ApprovalMemory.key(command, cwd));
   }
 
-  clear(): void {
-    this.#allowed.clear();
-    this.#hosts.clear();
+  hasGrant(grant: StandingGrant): boolean {
+    return this.#grants.has(grantId(grant));
+  }
+
+  grant(grant: StandingGrant): void {
+    const id = grantId(grant);
+    if (this.#grants.has(id)) return;
+    this.#grants.add(id);
+    this.#onGrantsChanged?.(this.grants());
+  }
+
+  revoke(id: string): boolean {
+    const removed = this.#grants.delete(id);
+    if (removed) this.#onGrantsChanged?.(this.grants());
+    return removed;
+  }
+
+  grants(): string[] {
+    return [...this.#grants].sort();
+  }
+
+  hasHost(host: string): boolean {
+    return this.hasGrant({ kind: 'host', host });
+  }
+
+  allowHost(host: string): void {
+    this.grant({ kind: 'host', host });
+  }
+
+  /** Forget session-only command approvals (standing grants stay). */
+  clearCommands(): void {
+    this.#commands.clear();
   }
 
   get size(): number {
-    return this.#allowed.size + this.#hosts.size;
+    return this.#commands.size + this.#grants.size;
   }
 }
 
@@ -210,6 +277,7 @@ interface ApplicationOutput {
   readonly status: 'opened' | 'rejected';
   readonly application: string;
   readonly path?: string;
+  readonly approval?: 'user' | 'remembered';
 }
 
 interface UrlInput {
@@ -221,6 +289,7 @@ interface UrlOutput {
   readonly status: 'opened' | 'rejected';
   readonly url: string;
   readonly browser?: string;
+  readonly approval?: 'user' | 'remembered';
 }
 
 function commandError(value: unknown, maxTimeoutSeconds: number): string | undefined {
@@ -355,7 +424,8 @@ export function registerActionTools(
           }
         }
         const line = target === undefined ? undefined : input.line;
-        const approved = await approval.request(
+        const remembered = approvalMemory?.hasGrant({ kind: 'app', application }) === true;
+        const approved = remembered || await approval.request(
           {
             kind: 'application',
             application,
@@ -365,8 +435,14 @@ export function registerActionTools(
           signal,
         );
         if (!approved) return { status: 'rejected', application, ...(target === undefined ? {} : { path: target }) };
+        if (approved === 'always') approvalMemory?.grant({ kind: 'app', application });
         await launcher.openApplication(application, target, signal, line);
-        return { status: 'opened', application, ...(target === undefined ? {} : { path: target }) };
+        return {
+          status: 'opened',
+          application,
+          ...(target === undefined ? {} : { path: target }),
+          approval: remembered ? 'remembered' : 'user',
+        };
       },
     };
     registry.register(openApplication);
@@ -392,13 +468,16 @@ export function registerActionTools(
       async run(input, signal) {
         const browser = input.browser === undefined ? undefined : normalizeApplicationName(input.browser);
         const url = new URL(input.url).toString();
-        const approved = await approval.request(
+        const browserGrant = { kind: 'browser', browser: browser ?? DEFAULT_BROWSER } as const;
+        const remembered = approvalMemory?.hasGrant(browserGrant) === true;
+        const approved = remembered || await approval.request(
           { kind: 'url', url, ...(browser === undefined ? {} : { application: browser }) },
           signal,
         );
         if (!approved) return { status: 'rejected', url, ...(browser === undefined ? {} : { browser }) };
+        if (approved === 'always') approvalMemory?.grant(browserGrant);
         await launcher.openUrl(url, browser, signal);
-        return { status: 'opened', url, ...(browser === undefined ? {} : { browser }) };
+        return { status: 'opened', url, ...(browser === undefined ? {} : { browser }), approval: remembered ? 'remembered' : 'user' };
       },
     };
     registry.register(openUrl);

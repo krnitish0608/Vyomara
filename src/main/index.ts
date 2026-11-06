@@ -41,7 +41,7 @@ import { ActionApprovalError, ActionApprovalManager } from '../desktop/action-ap
 import { MacApplicationLauncher } from '../desktop/mac-application-launcher.ts';
 import { ShellCommandRunner } from '../tools/command-runner.ts';
 import { HttpWebClient } from '../tools/web-client.ts';
-import { ApprovalMemory } from '../tools/action-tools.ts';
+import { ApprovalMemory, DEFAULT_BROWSER, grantId, parseGrantId } from '../tools/action-tools.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
@@ -53,7 +53,8 @@ let activeActionApproval: ActionApprovalManager | undefined;
 let activeModelPull: AbortController | undefined;
 const shellCommandRunner = new ShellCommandRunner();
 /** Commands the user chose to always allow; cleared when the app quits. */
-const approvalMemory = new ApprovalMemory();
+/** Standing permissions (apps, browsers, web hosts) are loaded from disk at startup. */
+let approvalMemory = new ApprovalMemory();
 const macSpeechRunner = new MacSpeechRunner();
 const macApplicationLauncher = process.platform === 'darwin'
   ? new MacApplicationLauncher()
@@ -118,6 +119,44 @@ function emitSpeechEvent(event: LocalWhisperEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('vyomara:speech-recognition-event', event);
   }
+}
+
+function permissionsPath(): string {
+  return join(app.getPath('userData'), 'permissions.json');
+}
+
+async function readStandingGrants(): Promise<readonly string[]> {
+  try {
+    const value: unknown = JSON.parse(await readFile(permissionsPath(), 'utf8'));
+    if (typeof value !== 'object' || value === null || !Array.isArray((value as { grants?: unknown }).grants)) return [];
+    return (value as { grants: unknown[] }).grants.filter((grant): grant is string => typeof grant === 'string');
+  } catch {
+    return [];
+  }
+}
+
+async function saveStandingGrants(grants: readonly string[]): Promise<void> {
+  await mkdir(app.getPath('userData'), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${permissionsPath()}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify({ grants }, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporaryPath, permissionsPath());
+}
+
+function describeGrant(id: string): { readonly id: string; readonly kind: string; readonly label: string } | undefined {
+  const grant = parseGrantId(id);
+  if (!grant) return undefined;
+  const label = grant.kind === 'app'
+    ? `Open ${grant.application}`
+    : grant.kind === 'browser'
+      ? `Open web pages in ${grant.browser === DEFAULT_BROWSER ? 'your default browser' : grant.browser}`
+      : `Read pages from ${grant.host}`;
+  return { id, kind: grant.kind, label };
+}
+
+function permissionsState() {
+  return {
+    grants: approvalMemory.grants().flatMap(id => describeGrant(id) ?? []),
+  };
 }
 
 function voicePreferencePath(): string {
@@ -424,6 +463,22 @@ ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
   }
 });
 
+ipcMain.handle('vyomara:permissions-list', () => permissionsState());
+
+ipcMain.handle('vyomara:permission-grant', (_event, input: unknown) => {
+  const grant = typeof input === 'string' ? parseGrantId(input) : undefined;
+  if (!grant) throw new Error('This permission is not valid.');
+  approvalMemory.grant(grant);
+  return permissionsState();
+});
+
+ipcMain.handle('vyomara:permission-revoke', (_event, input: unknown) => {
+  const grant = typeof input === 'string' ? parseGrantId(input) : undefined;
+  if (!grant) throw new Error('This permission is not valid.');
+  approvalMemory.revoke(grantId(grant));
+  return permissionsState();
+});
+
 ipcMain.handle('vyomara:action-approve', (event, input: unknown) => {
   if (event.sender !== mainWindow?.webContents) throw new Error('Approval request is invalid.');
   if (!activeRequest || !activeActionApproval) throw new Error('There is no pending action to approve.');
@@ -656,6 +711,14 @@ app.whenReady().then(async () => {
     // Choices made in the app's Models panel take precedence over the environment.
     config = { ...withSavedModelSettings(loaded, saved), filesystemAllowedRoots: ['/'] };
     voiceListeningEnabled = await readVoiceListeningPreference();
+    approvalMemory = new ApprovalMemory({
+      grants: await readStandingGrants(),
+      onGrantsChanged: grants => {
+        void saveStandingGrants(grants).catch(() => {
+          console.error(JSON.stringify({ event: 'permissions.save-failed' }));
+        });
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';
     dialog.showErrorBox('Vyomara configuration error', message);

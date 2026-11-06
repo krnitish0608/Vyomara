@@ -27,7 +27,9 @@ will become the primary interface later. See
 - **Deletions:** require typing `DELETE`, and the item goes to Trash.
 - **Shell commands:** shown exactly, with the folder they run in.
 - **App launches and web pages:** shown before they open. Pages Vyom reads
-  show which website receives the request.
+  show which website receives the request. Choose **Always allow**, or use
+  the **Permissions** panel, so VS Code, Chrome, or a docs site stop asking.
+  You can revoke a permission there at any time.
 - **Repeated commands:** for `pnpm test` and similar, "Always allow here"
   skips the prompt for that exact command in that folder until you quit.
 

@@ -536,3 +536,7 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .model-remove { display: grid; gap: 6px; }
 .model-toggle { display: flex; align-items: center; gap: 7px; color: #c6ccd6; font-size: 10px; }
 .models-panel select.history-confirm-input { width: 100%; }
+
+.permission-list { display: grid; gap: 6px; margin: 0 0 14px; padding: 0; list-style: none; }
+.permission-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; border: 1px solid rgba(65, 91, 156, .25); border-radius: 8px; background: rgba(6, 15, 36, .55); color: #c6ccd6; font-size: 10px; }
+.permission-row button { flex: 0 0 auto; }

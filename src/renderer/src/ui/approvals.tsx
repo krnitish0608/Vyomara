@@ -117,8 +117,10 @@ export function ActionApprovalCard({
   const remember = proposal.kind === 'command'
     ? { label: 'Always allow here', title: 'Run now, and run this exact command in this folder without asking again until Vyomara quits' }
     : proposal.kind === 'web'
-      ? { label: `Always allow ${proposal.host}`, title: `Allow requests to ${proposal.host} without asking again until Vyomara quits` }
-      : undefined;
+      ? { label: `Always allow ${proposal.host}`, title: `Read pages from ${proposal.host} without asking again. Revoke anytime in Permissions.` }
+      : proposal.kind === 'application'
+        ? { label: `Always allow ${proposal.application}`, title: `Open ${proposal.application} without asking again. Revoke anytime in Permissions.` }
+        : { label: `Always allow ${proposal.application ?? 'browser'}`, title: `Open web pages in ${proposal.application ?? 'your default browser'} without asking again. Revoke anytime in Permissions.` };
   return (
     <section className="file-operation-review action-review" aria-label={title} ref={cardRef}>
       <p className="eyebrow">YOUR APPROVAL REQUIRED</p>

@@ -59,6 +59,15 @@ const api: VyomaraDesktopApi = {
   onToolActivity(listener: (activity: DesktopToolActivity) => void) {
     return subscribe('vyomara:tool-activity', listener);
   },
+  listPermissions() {
+    return ipcRenderer.invoke('vyomara:permissions-list');
+  },
+  grantPermission(id: string) {
+    return ipcRenderer.invoke('vyomara:permission-grant', id);
+  },
+  revokePermission(id: string) {
+    return ipcRenderer.invoke('vyomara:permission-revoke', id);
+  },
   onPlan(listener: (plan: DesktopPlan) => void) {
     return subscribe('vyomara:plan', listener);
   },

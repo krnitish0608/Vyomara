@@ -744,3 +744,57 @@ test('Ollama drops tools for models without the tools capability and retries whe
   assert.equal(await refusing.supportsTools(), false, 'after a refusal the model is treated as chat-only');
   assert.deepEqual(sent, [0, 1, 0]);
 });
+
+test('standing grants skip approval for apps and browsers, persist through the callback, and can be revoked', async t => {
+  const h = await harness(t);
+  const saved: (readonly string[])[] = [];
+  const memory = new ApprovalMemory({ grants: ['app:Finder', 'bogus', 'host:'], onGrantsChanged: grants => saved.push(grants) });
+  assert.deepEqual(memory.grants(), ['app:Finder'], 'invalid saved grants are ignored');
+  const asked: string[] = [];
+  const answers: ApprovalDecision[] = ['always', 'always'];
+  const opened: string[] = [];
+  const executor = new ToolExecutor({
+    registry: createDefaultToolRegistry(h.config, {
+      actions: {
+        approval: { async request(action) { asked.push(action.kind); return answers.shift() ?? false; } },
+        approvalMemory: memory,
+        launcher: {
+          async openApplication(application) { opened.push(application); },
+          async openUrl(url, browser) { opened.push(`${url} ${browser ?? ''}`.trim()); },
+        },
+      },
+    }),
+    policy: new PolicyGateway({ allowedEffects: ['launch', 'network'] }),
+    config: h.config,
+    logger: createLogger(() => {}),
+  });
+  const signal = new AbortController().signal;
+  const open = (application: string) => executor.execute('open_application', { application }, signal) as Promise<{ approval: string }>;
+  const page = (url: string) => executor.execute('open_url', { url, browser: 'chrome' }, signal) as Promise<{ approval: string }>;
+
+  assert.equal((await open('finder')).approval, 'remembered');
+  assert.equal((await open('vscode')).approval, 'user');
+  assert.equal((await open('vs code')).approval, 'remembered');
+  assert.equal((await page('https://a.dev/')).approval, 'user');
+  assert.equal((await page('https://b.dev/')).approval, 'remembered');
+  assert.deepEqual(asked, ['application', 'url']);
+  assert.deepEqual(saved.at(-1), ['app:Finder', 'app:Visual Studio Code', 'browser:Google Chrome']);
+
+  assert.equal(memory.revoke('app:Visual Studio Code'), true);
+  answers.push(false);
+  await executor.execute('open_application', { application: 'vscode' }, signal);
+  assert.equal(asked.length, 3, 'after revoking, VS Code asks again');
+  assert.equal(opened.filter(item => item === 'Visual Studio Code').length, 2);
+});
+
+test('grant IDs round-trip and reject malformed values', async () => {
+  const { grantId, parseGrantId } = await import('../src/tools/action-tools.ts');
+  for (const id of ['app:Visual Studio Code', 'browser:default browser', 'host:react.dev']) {
+    const grant = parseGrantId(id);
+    assert.ok(grant);
+    assert.equal(grantId(grant), id);
+  }
+  for (const id of ['', 'app:', 'shell:rm -rf /', 'host:evil host', 'app:$(whoami)']) {
+    assert.equal(parseGrantId(id), undefined, id);
+  }
+});

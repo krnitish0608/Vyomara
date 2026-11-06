@@ -624,7 +624,7 @@ try {
   })`);
   assert(initialFocus.outline === 'solid' && initialFocus.width === '2px', 'keyboard focus has a visible outline');
 
-  const removedSections = await evaluate(`['Memory', 'Permissions', 'Project workspace', 'Settings']
+  const removedSections = await evaluate(`['Memory', 'Project workspace', 'Settings']
     .every(label => ![...document.querySelectorAll('.side-nav button')]
       .some(button => button.innerText.trim() === label))`);
   assert(removedSections, 'removed configuration and project sections are absent from navigation');

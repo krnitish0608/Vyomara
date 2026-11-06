@@ -26,6 +26,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0014](./0014-human-reviewed-filesystem-operations.md) | Human-reviewed machine-wide filesystem operations | Accepted; amended by 0015 |
 | [0015](./0015-coding-agent-loop-and-approved-actions.md) | Coding-agent loop, approved commands/apps/web, selectable models | Accepted |
 | [0016](./0016-web-reading-and-remembered-approvals.md) | Reading web pages, SearXNG search, remembered approvals | Accepted |
+| [0017](./0017-standing-permissions.md) | Standing permissions for apps, browsers, and websites (Permissions panel) | Accepted |
 
 ## Open decisions
 
@@ -38,8 +39,9 @@ selection.
 
 User confirmation is needed for:
 
-1. **Approval UX:** whether remembered approvals should ever persist across
-   restarts, and how spoken approvals are confirmed in the voice phase.
+1. **Approval UX:** whether specific safe commands (for example a project's
+   test script) should get standing grants, and how spoken approvals are
+   confirmed in the voice phase.
 2. **Configuration:** secret injection for any future credential-bearing
    provider.
 3. **Diagnostics:** retention/rotation policy and any future opt-in content

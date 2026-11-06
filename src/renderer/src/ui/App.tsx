@@ -15,6 +15,7 @@ import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
 import { VoiceOrb, VyomaraMark } from './brand.tsx';
 import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
+import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
@@ -34,6 +35,7 @@ export function App() {
   const [toolActivities, setToolActivities] = useState<DesktopToolActivity[]>([]);
   const [plan, setPlan] = useState<DesktopPlan['steps']>([]);
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
   const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
   const [actionPendingId, setActionPendingId] = useState<string>();
@@ -80,6 +82,8 @@ export function App() {
   const actionReview = useRef<HTMLElement>(null);
   const modelsTrigger = useRef<HTMLButtonElement>(null);
   const modelsHeading = useRef<HTMLHeadingElement>(null);
+  const permissionsTrigger = useRef<HTMLButtonElement>(null);
+  const permissionsHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -288,6 +292,10 @@ export function App() {
   }, [modelsOpen]);
 
   useEffect(() => {
+    if (permissionsOpen) permissionsHeading.current?.focus();
+  }, [permissionsOpen]);
+
+  useEffect(() => {
     function handleEscape(event: KeyboardEvent): void {
       if (event.key !== 'Escape') return;
       if (historyOpen) {
@@ -298,11 +306,15 @@ export function App() {
         setModelsOpen(false);
         modelsTrigger.current?.focus();
       }
+      if (permissionsOpen) {
+        setPermissionsOpen(false);
+        permissionsTrigger.current?.focus();
+      }
     }
 
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [historyOpen, modelsOpen]);
+  }, [historyOpen, modelsOpen, permissionsOpen]);
 
   async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
@@ -532,7 +544,18 @@ export function App() {
       return;
     }
     setHistoryOpen(false);
+    setPermissionsOpen(false);
     setModelsOpen(true);
+  }
+
+  function togglePermissions(): void {
+    if (permissionsOpen) {
+      setPermissionsOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setModelsOpen(false);
+    setPermissionsOpen(true);
   }
 
   async function toggleHistory(): Promise<void> {
@@ -542,6 +565,7 @@ export function App() {
     }
 
     setModelsOpen(false);
+    setPermissionsOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -766,6 +790,16 @@ export function App() {
               <span aria-hidden="true">◎</span> Models
             </button>
             <button
+              ref={permissionsTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={togglePermissions}
+              aria-expanded={permissionsOpen}
+              aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
+            >
+              <span aria-hidden="true">✓</span> Permissions
+            </button>
+            <button
               ref={historyTrigger}
               className="side-nav-item"
               type="button"
@@ -978,7 +1012,12 @@ export function App() {
           </p>
         </section>
 
-        {modelsOpen ? (
+        {permissionsOpen ? (
+          <PermissionsPanel
+            headingRef={permissionsHeading}
+            onClose={() => { setPermissionsOpen(false); permissionsTrigger.current?.focus(); }}
+          />
+        ) : modelsOpen ? (
           <ModelsPanel
             headingRef={modelsHeading}
             disabled={requestPending}

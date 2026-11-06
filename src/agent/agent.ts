@@ -146,13 +146,13 @@ function verifiedAction(
   if (toolId === 'open_application') {
     const name = `${String(result.application)}${result.path ? ` (${shortPath(result.path)})` : ''}`;
     return result.status === 'opened'
-      ? { ok: true, text: `Opened ${name}` }
+      ? { ok: true, text: `Opened ${name}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
       : { ok: false, text: `You rejected opening ${name}` };
   }
   if (toolId === 'open_url') {
     const url = clip(String(result.url), 90);
     return result.status === 'opened'
-      ? { ok: true, text: `Opened ${url}${result.browser ? ` in ${String(result.browser)}` : ''}` }
+      ? { ok: true, text: `Opened ${url}${result.browser ? ` in ${String(result.browser)}` : ''}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
       : { ok: false, text: `You rejected opening ${url}` };
   }
   if (toolId === 'fetch_url') {

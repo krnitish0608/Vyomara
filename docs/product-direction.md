@@ -58,6 +58,8 @@ Keep the interface focused:
   - The exact command and folder for each shell command.
   - The app and target, or the URL and receiving website, for each launch.
   - `DELETE` confirmation for each deletion.
+- **Permissions:** allow apps, browsers, and websites once so Vyom stops
+  asking. Every grant can be revoked.
 - **History:** review, export, and delete conversations.
 - **Models:** list installed Ollama models, switch models, and download new
   ones.
@@ -73,7 +75,10 @@ deferred until there is a clear need.
   read-only steps.
 - **The user approves every change to the world.** This covers edits,
   deletions, commands, app launches, and web pages. Each approval covers
-  exactly one action, and rejection is respected.
+  exactly one action, and rejection is respected. For low-risk actions the
+  user repeats (opening VS Code or Chrome, reading a docs site), a standing
+  permission granted once replaces the prompt. File changes are always
+  reviewed.
 - **Truthful status.** Show real progress and errors. Only claim what a tool
   result confirms; the verified-actions list is the source of truth.
 - **Local-first.** Models run in local Ollama. Clearly disclose anything that

@@ -72,11 +72,20 @@ and `network`.
 A rejected action returns `status: "rejected"` with a note telling the model
 not to retry it unchanged.
 
+**Standing permissions ([ADR-0017](./adr/0017-standing-permissions.md)).**
+"Always allow" on an approval card, or **Allow** in the desktop Permissions
+panel, saves a grant that skips future prompts until it is revoked:
+
+- `open_application` for that app;
+- `open_url` for that browser;
+- `fetch_url` and `web_search` for that host.
+
+Grants are stored in `permissions.json` in the app's data folder.
+
 **Remembered approvals.** For commands, "Always allow here" (CLI: answer `a`)
-remembers that exact command in that exact folder. For `fetch_url` and
-`web_search`, "Always allow \<host\>" remembers the host. Both last only until
-the app or CLI quits, and runs approved this way are still listed in Verified
-actions. Edits, deletions, app launches, and `open_url` always ask. See
+remembers that exact command in that exact folder until the app quits. Edits,
+new files, and deletions always ask. Everything done without a prompt is still
+listed in Verified actions, marked "(always-allowed)". See
 [ADR-0016](./adr/0016-web-reading-and-remembered-approvals.md).
 
 ## Bounds
