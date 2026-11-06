@@ -85,39 +85,95 @@ export class MacApplicationLauncher implements LauncherPort {
         'end tell',
         'end run',
       ],
+      restore: [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'tell (first application process whose bundle identifier is (item 1 of argv))',
+        'set visible to true',
+        'repeat with w in windows',
+        'set value of attribute "AXMinimized" of w to false',
+        'end repeat',
+        'set frontmost to true',
+        'end tell',
+        'end tell',
+        'end run',
+      ],
+      maximize: [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'tell (first application process whose bundle identifier is (item 1 of argv))',
+        'set frontmost to true',
+        'if (count of windows) is 0 then error "no window" number 2',
+        'set value of attribute "AXFullScreen" of window 1 to false',
+        'set position of window 1 to {(item 2 of argv) as integer, (item 3 of argv) as integer}',
+        'set size of window 1 to {(item 4 of argv) as integer, (item 5 of argv) as integer}',
+        'end tell',
+        'end tell',
+        'end run',
+      ],
+      fullscreen: [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'tell (first application process whose bundle identifier is (item 1 of argv))',
+        'set frontmost to true',
+        'if (count of windows) is 0 then error "no window" number 2',
+        'set value of attribute "AXFullScreen" of window 1 to not (value of attribute "AXFullScreen" of window 1)',
+        'end tell',
+        'end tell',
+        'end run',
+      ],
       quit: ['on run argv', 'tell application id (item 1 of argv) to quit', 'end run'],
     };
+    const extraArgs = action === 'maximize' ? await this.#usableScreenFrame(signal) : [];
     // An app opened a moment ago may still be starting; give it a few seconds.
     let attempts = action === 'quit' ? 1 : 6;
     while (true) {
       try {
-        await this.#osascript(scripts[action], [bundleId.trim()], signal);
+        await this.#osascript(scripts[action], [bundleId.trim(), ...extraArgs], signal);
         return;
       } catch (error) {
         attempts -= 1;
-        const notRunning = error instanceof Error && /not running|\(1\)/u.test(error.message);
+        const notRunning = error instanceof Error && /not running|\(1\)|no window|\(2\)/u.test(error.message);
         if (!notRunning || attempts <= 0 || signal.aborted) throw this.#controlError(error, application, action);
         await new Promise(resolveDelay => setTimeout(resolveDelay, 500));
       }
     }
   }
 
+  /** Main screen area without menu bar and Dock, as [x, y, width, height] in top-left coordinates. */
+  async #usableScreenFrame(signal: AbortSignal): Promise<string[]> {
+    const output = await this.#osascript([
+      'ObjC.import("AppKit");',
+      'const screen = $.NSScreen.mainScreen; const full = screen.frame; const v = screen.visibleFrame;',
+      '[v.origin.x, full.size.height - (v.origin.y + v.size.height), v.size.width, v.size.height].map(Math.round).join(",")',
+    ], [], signal, 'JavaScript');
+    const frame = output.trim().split(',');
+    if (frame.length !== 4 || frame.some(part => !/^-?\d+$/u.test(part))) {
+      throw new ToolFailure('The screen size could not be read.', 'tool-failed');
+    }
+    return frame;
+  }
+
   #controlError(error: unknown, application: string, action: AppControlAction): ToolFailure {
     const message = error instanceof Error ? error.message : '';
+    if (/no window|\(2\)/u.test(message)) return new ToolFailure(`“${application}” has no open window to ${action}.`, 'not-found');
     if (/not running|\(1\)/u.test(message)) return new ToolFailure(`“${application}” is not running.`, 'not-found');
     if (/-1743|not authori[sz]ed|Not authorised/iu.test(message)) {
       return new ToolFailure('macOS blocked Vyomara from controlling other apps. Allow it in System Settings → Privacy & Security → Automation, then try again.', 'permission-denied');
     }
     if (/-1719|-25211|assistive access/iu.test(message)) {
-      return new ToolFailure('Minimizing windows needs Accessibility access. Enable Vyomara in System Settings → Privacy & Security → Accessibility, then try again (or ask to hide the app instead).', 'permission-denied');
+      return new ToolFailure('Changing windows (minimize, maximize, full screen) needs Accessibility access. Enable Vyomara in System Settings → Privacy & Security → Accessibility, then try again. Hiding the app works without it.', 'permission-denied');
     }
     return new ToolFailure(`macOS could not ${action} “${application}”.`, 'tool-failed');
   }
 
-  #osascript(lines: readonly string[], args: readonly string[], signal: AbortSignal): Promise<string> {
+  #osascript(lines: readonly string[], args: readonly string[], signal: AbortSignal, language: 'AppleScript' | 'JavaScript' = 'AppleScript'): Promise<string> {
     return new Promise((resolve, reject) => {
       // Arguments are passed via `on run argv`, never spliced into the script.
-      const child = spawn('/usr/bin/osascript', [...lines.flatMap(line => ['-e', line]), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('/usr/bin/osascript', ['-l', language, ...lines.flatMap(line => ['-e', line]), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
         reject(new Error('osascript timed out'));

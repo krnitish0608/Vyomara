@@ -849,9 +849,13 @@ test('control_application: standing app grants cover window actions, but quittin
   const control = (application: string, action: string) => executor.execute('control_application', { application, action }, signal) as Promise<{ status: string }>;
   assert.equal((await control('vscode', 'minimize')).status, 'done');
   assert.equal((await control('vscode', 'hide')).status, 'done');
+  for (const action of ['maximize', 'fullscreen', 'restore']) assert.equal((await control('vscode', action)).status, 'done');
   assert.equal((await control('vscode', 'quit')).status, 'rejected');
   assert.equal((await control('Google Chrome', 'hide')).status, 'rejected');
-  assert.deepEqual(did, ['minimize Visual Studio Code', 'hide Visual Studio Code']);
+  assert.deepEqual(did, [
+    'minimize Visual Studio Code', 'hide Visual Studio Code',
+    'maximize Visual Studio Code', 'fullscreen Visual Studio Code', 'restore Visual Studio Code',
+  ]);
   assert.deepEqual(asked, ['quit', 'hide']);
   await assert.rejects(control('vscode', 'resize'), /action must be one of/);
 });

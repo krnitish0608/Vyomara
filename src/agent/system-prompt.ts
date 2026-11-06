@@ -190,8 +190,8 @@ ${projects}${environment.activeProject ? `\n- Project this conversation is worki
 
   if (canOpen) {
     sections.push(`# Apps and the web
-- control_application focuses, hides, minimizes, or quits a running app. Never use AppleScript or osascript through run_command for this.
-- open_application opens Mac apps. To open a project or file in VS Code: {"application": "Visual Studio Code", "path": "<absolute path>"}.
+- control_application changes a running app's windows: focus, hide, minimize, restore, maximize (fill the screen), fullscreen, or quit. "it"/"that" usually means the app just opened. Never use AppleScript or osascript through run_command for this, and never tell the user you cannot do these.
+- open_application opens Mac apps. Pass path only when the user names a project, folder, or file; "open VS Code" alone opens just the app. To open a project or file in VS Code: {"application": "Visual Studio Code", "path": "<absolute path>"}.
 - open_url opens a page in a browser. For a web search, open https://www.google.com/search?q=<url-encoded query> (use "Google Chrome" when the user asks for Chrome or Google). You cannot see the page afterwards, so tell the user it has been opened.`);
   }
 

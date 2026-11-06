@@ -153,8 +153,8 @@ export interface CommandRunnerPort {
 }
 
 /** Window-level control of a running app. */
-export type AppControlAction = 'focus' | 'hide' | 'minimize' | 'quit';
-export const APP_CONTROL_ACTIONS: readonly AppControlAction[] = ['focus', 'hide', 'minimize', 'quit'];
+export type AppControlAction = 'focus' | 'hide' | 'minimize' | 'restore' | 'maximize' | 'fullscreen' | 'quit';
+export const APP_CONTROL_ACTIONS: readonly AppControlAction[] = ['focus', 'hide', 'minimize', 'restore', 'maximize', 'fullscreen', 'quit'];
 
 export interface LauncherPort {
   /** Bring forward, hide, minimize all windows of, or quit a running app. */
@@ -473,12 +473,12 @@ export function registerActionTools(
       const controlTool: Tool<{ readonly application: string; readonly action: AppControlAction }, Record<string, unknown>> = {
         id: 'control_application',
         effect: 'launch',
-        description: 'Control a running macOS app: "focus" brings it to the front, "hide" hides it, "minimize" minimizes all its windows to the Dock, "quit" closes it (the app may ask to save). Use this instead of AppleScript in run_command.',
+        description: 'Control a running macOS app\'s windows: "focus" brings it to the front, "hide" hides it, "minimize" sends its windows to the Dock, "restore" brings minimized windows back, "maximize" fills the screen with its front window, "fullscreen" toggles macOS full screen, "quit" closes the app (it may ask to save). Use this instead of AppleScript in run_command.',
         parameters: {
           type: 'object',
           properties: {
             application: { type: 'string', description: 'Application name, e.g. "Visual Studio Code".', maxLength: 80 },
-            action: { type: 'string', description: 'One of: focus, hide, minimize, quit.', maxLength: 16 },
+            action: { type: 'string', description: 'One of: focus, hide, minimize, restore, maximize, fullscreen, quit.', maxLength: 16 },
           },
           required: ['application', 'action'],
           additionalProperties: false,

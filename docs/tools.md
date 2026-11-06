@@ -57,7 +57,7 @@ and `network`.
 |---|---|---|
 | `run_command` | `command`, `cwd`, `timeout_seconds?` | Runs `zsh -l -c` in `cwd`, with `CI=1`, no color, no pager, no stdin, and an augmented `PATH`. The whole process group is stopped on timeout or Stop. Output keeps the first ~6 KB and last ~14 KB. Returns `exitCode`, `timedOut`, and `output`. |
 | `open_application` | `application`, `path?`, `line?` | Any installed app, by name or alias (`vscode`, `chrome`, …). Optionally opens a file or folder in it. With `line`, VS Code jumps to that line (`code -g`). |
-| `control_application` | `application`, `action` | Window-level control of a running app. `focus` brings it to the front, `hide` hides it, `minimize` sends all its windows to the Dock, and `quit` closes it. `hide` and `minimize` wait a few seconds for an app that is still starting. The app is found by its bundle on disk, so an unknown name never opens a macOS dialog. See the permissions list below the table. |
+| `control_application` | `application`, `action` | Window-level control of a running app. `focus` brings it to the front, `hide` hides it, `minimize` sends all its windows to the Dock, `restore` brings minimized windows back, `maximize` fills the main screen (without the menu bar and Dock) with its front window, `fullscreen` toggles macOS full screen, and `quit` closes it. Window actions wait a few seconds for an app that is still starting. The app is found by its bundle on disk, so an unknown name never opens a macOS dialog. See the permissions list below the table. |
 | `open_url` | `url`, `browser?` | Only `http`/`https`, without credentials. The approval card says the website receives the URL. Vyom cannot read the page. |
 
 | `fetch_url` | `url`, `offset?` | Vyomara downloads a public page and returns its `title` and text `content`, paged with `nextOffset`. The first page of results also includes up to 25 `links`. See the limits below the table. |
@@ -65,11 +65,11 @@ and `network`.
 
 `control_application` needs these macOS permissions for Vyomara:
 - **Automation:** for `hide` and `quit`. macOS asks the first time.
-- **Accessibility:** for `minimize`, set in System Settings → Privacy &
-  Security. The error message explains this.
+- **Accessibility:** for `minimize`, `restore`, `maximize`, and
+  `fullscreen`, set in System Settings → Privacy & Security. The error
+  message explains this.
 
-A standing app grant covers `focus`, `hide`, and `minimize`; `quit` always
-asks.
+A standing app grant covers every action except `quit`, which always asks.
 
 `fetch_url` limits:
 - Only `http`/`https`, text content types, 3 MB, a 20 s timeout, and at most 5

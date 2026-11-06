@@ -21,7 +21,7 @@ will become the primary interface later. See
 | "react.dev/blog padh ke batao latest post kya hai" | Reads the page itself (after you approve) and answers with a link. |
 | "src/agent ka structure samjhao" | Maps the folder, reads key files, and explains. |
 | "keylessrn project VS Code mein kholo" | Finds the project even when it is nested (`~/Projects/openSpace/KeylessRN`) and opens it. |
-| "VS Code ko hide karo" / "Calculator band karo" | Focuses, hides, minimizes, or quits a running app. Quitting always asks. |
+| "VS Code full screen karo" / "maximize karo" / "hide karo" | Focuses, hides, minimizes, restores, maximizes, full-screens, or quits a running app. Quitting always asks. |
 | "cart.js mein applyDiscount VS Code mein kholo" | Finds the definition and opens VS Code at that line, after you approve. |
 
 **You approve every action.**
