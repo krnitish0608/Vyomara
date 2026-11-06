@@ -107,6 +107,7 @@ top in the screen corner. It shows:
 You can use it like this:
 
 - Press **⌥Space** anywhere to turn listening on or off.
+- Type in its message box, or tap its mic to dictate, then send.
 - Drag it wherever you like.
 - Click ↗ to open the full window.
 
@@ -122,7 +123,18 @@ Speak in Hindi, English, or a mix of the two:
    - **Fast** (148 MB) suits English and romanized Hinglish.
 3. Turn listening on with the orb.
 
-Using it:
+There are two ways to talk:
+
+- **Tap to record (main window or mini window):**
+  1. Tap the mic and speak.
+  2. Tap ■ to stop. The words appear in the message box.
+  3. Edit them if you like, then send.
+
+  Typed or dictated messages are answered on screen only, without speech.
+- **Hands-free:** use the orb or ⌥Space to turn listening on, then say
+  “Hello Vyomara …”. Hands-free requests are answered aloud.
+
+Using hands-free:
 
 - Start each request with **“Hello Vyomara …”** (or “Vyom …”, “नमस्ते
   व्योमारा …”). Other talk is ignored. After Vyom answers, you can keep

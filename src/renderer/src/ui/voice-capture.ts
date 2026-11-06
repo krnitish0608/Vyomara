@@ -27,8 +27,16 @@ export class VoiceCapture {
     return this.#stream !== undefined;
   }
 
-  async start(handlers: VoiceCaptureHandlers): Promise<void> {
-    if (this.#stream) return;
+  #starting: Promise<void> | undefined;
+
+  /** Start recording; calling it again while active (or starting) is a no-op. */
+  start(handlers: VoiceCaptureHandlers): Promise<void> {
+    if (this.#stream) return Promise.resolve();
+    this.#starting ??= this.#start(handlers).finally(() => { this.#starting = undefined; });
+    return this.#starting;
+  }
+
+  async #start(handlers: VoiceCaptureHandlers): Promise<void> {
     try {
       this.#stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -55,6 +63,12 @@ export class VoiceCapture {
     source.connect(this.#processor);
     // A ScriptProcessor only runs while connected to the destination; it outputs silence.
     this.#processor.connect(this.#context.destination);
+  }
+
+  /** End the phrase in progress now; returns its WAV if it contained speech. */
+  flush(): Uint8Array | undefined {
+    const samples = this.#detector.flush();
+    return samples ? encodeWav(samples, SAMPLE_RATE) : undefined;
   }
 
   /** Ignore the microphone (while Vyom is speaking). */

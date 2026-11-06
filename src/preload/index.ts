@@ -130,6 +130,9 @@ const api: VyomaraDesktopApi = {
   downloadSpeechModel() {
     return ipcRenderer.invoke('vyomara:speech-model-download');
   },
+  setDictation(active: boolean) {
+    return ipcRenderer.invoke('vyomara:speech-dictation', active);
+  },
   transcribeSpeech(wav: Uint8Array) {
     return ipcRenderer.invoke('vyomara:speech-transcribe', wav);
   },

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { encodeWav, PhraseDetector } from '../src/shared/phrase-detector.ts';
-import { cleanTranscript } from '../src/desktop/whisper-server.ts';
+import { cleanTranscript, hasUnexpectedScript } from '../src/desktop/whisper-server.ts';
 import { parseDesktopChatRequest } from '../src/desktop/validation.ts';
 
 const RATE = 16_000;
@@ -63,6 +63,14 @@ test('the detector adapts to a noisier room', () => {
   assert.deepEqual(events.map(event => event.type), ['speech-start', 'phrase']);
 });
 
+test('flush returns the phrase in progress when the user taps stop mid-sentence', () => {
+  const detector = new PhraseDetector();
+  feed(detector, concat(tone(1_000, 0.001), tone(800, 0.2)));
+  const samples = detector.flush();
+  assert.ok(samples && samples.length / RATE > 0.7);
+  assert.equal(detector.flush(), undefined, 'nothing left after flushing');
+});
+
 test('WAV encoding is 16-bit mono PCM with a valid header', () => {
   const wav = encodeWav(new Float32Array([0, 1, -1, 0.5]));
   const view = new DataView(wav.buffer);
@@ -79,4 +87,13 @@ test('transcripts drop whisper markers, and chat requests accept the voice flag'
   const id = '0b6f3c1e-2b1a-4c3d-9e8f-1a2b3c4d5e6f';
   assert.deepEqual(parseDesktopChatRequest({ prompt: 'hi', requestId: id, voice: true }, 100), { prompt: 'hi', requestId: id, voice: true });
   assert.throws(() => parseDesktopChatRequest({ prompt: 'hi', requestId: id, voice: 'yes' }, 100));
+});
+
+test('transcripts in an unexpected script trigger the Hindi fallback', () => {
+  // Real whisper outputs for short Hindi phrases with auto-detect.
+  assert.equal(hasUnexpectedScript('ہاں کر دو'), true);
+  assert.equal(hasUnexpectedScript('נהין רחנדו'), true);
+  assert.equal(hasUnexpectedScript('हाँ, कर दो'), false);
+  assert.equal(hasUnexpectedScript('Open the shop project in VS Code.'), false);
+  assert.equal(hasUnexpectedScript('Commit karo — “done”!'), false);
 });

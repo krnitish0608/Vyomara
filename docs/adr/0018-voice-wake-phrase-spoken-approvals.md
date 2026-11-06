@@ -95,6 +95,22 @@ Measured with turbo on an M4 Pro:
 | Agent reply for "Calculator kholo…" | ~3.4 s | ~2.6 s |
 | End of speech → reply | ~6–8 s | ~3.5 s |
 
+## Later change: tap-to-record and silent typed requests
+
+- **Tap-to-record.** In the main window and the mini window, tapping the mic
+  records until it is tapped again:
+  - each finished phrase is added to the editable message box;
+  - nothing is sent automatically;
+  - no wake phrase is needed;
+  - recording continues for 0.45 s after the tap, so the last words are not
+    cut off.
+- **Silent typed requests.** Requests that were typed or dictated get on-screen
+  answers only: no speech, and approval questions are not spoken.
+- **Per-request language.** With the Best model, each phrase is transcribed
+  with auto-detection first, so English stays English. If the result is in an
+  unexpected script (Urdu, Hebrew, …), it is transcribed again as Hindi. A
+  fixed `hi` setting had turned an English sentence into nonsense Devanagari.
+
 ## Consequences
 
 - **Accuracy.** Spoken approvals use the same approval ports as clicks;

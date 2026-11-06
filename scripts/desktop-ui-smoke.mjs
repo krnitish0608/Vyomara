@@ -365,17 +365,18 @@ try {
   assert(
     await evaluate(`(() => {
       const microphone = document.querySelector('.composer .voice-input-button');
+      const send = document.querySelector('.composer .send-button');
       return microphone?.type === 'button' &&
-        !document.querySelector('.composer .send-button') &&
+        send?.disabled === true &&
         microphone.getAttribute('aria-pressed') === 'false' &&
-        microphone.getAttribute('aria-label')?.includes('dictation') &&
+        microphone.getAttribute('aria-label') === 'Record a message' &&
         microphone.disabled === !${JSON.stringify(voiceCapabilities.speechSetup.runtimeAvailable)} &&
         microphone.getBoundingClientRect().width === 40 &&
         microphone.getBoundingClientRect().height === 40 &&
         document.querySelector('.composer').getBoundingClientRect().height <= 104 &&
         document.querySelector('#prompt').getBoundingClientRect().height <= 40;
     })()`),
-    'composer starts compact with only the microphone action when the message is empty',
+    'composer starts compact with the record button and a disabled send button when the message is empty',
   );
   const microphonePosition = await evaluate(`(() => {
     const { x, y, width, height } = document.querySelector('.composer .voice-input-button').getBoundingClientRect();
@@ -390,13 +391,17 @@ try {
   assert(
     await evaluate(`(() => {
       const send = document.querySelector('.composer .send-button');
-      if (!send || document.querySelector('.composer .voice-input-button') || send.disabled) return false;
-      const { x, y, width, height } = send.getBoundingClientRect();
+      const microphoneButton = document.querySelector('.composer .voice-input-button');
+      if (!send || !microphoneButton || send.disabled) return false;
+      const sendBox = send.getBoundingClientRect();
       const microphone = ${JSON.stringify(microphonePosition)};
-      return width === microphone.width && height === microphone.height &&
-        Math.abs(x - microphone.x) < 1 && Math.abs(y - microphone.y) < 1;
+      const now = microphoneButton.getBoundingClientRect();
+      // Record and Send sit side by side; the record button does not move while typing.
+      return sendBox.width === microphone.width && sendBox.height === microphone.height &&
+        Math.abs(now.x - microphone.x) < 1 && Math.abs(now.y - microphone.y) < 1 &&
+        sendBox.x > now.x && Math.abs(sendBox.y - now.y) < 1;
     })()`),
-    'typing replaces the microphone with a same-size Send button in the same aligned position',
+    'typing enables a same-size Send button beside the record button, which stays in place',
   );
   assert(
     await evaluate(`document.querySelectorAll('.message-user').length === 0 &&
@@ -435,7 +440,7 @@ try {
       getComputedStyle(document.querySelector('.topbar-brand-copy small')).display !== 'none' &&
       document.querySelector('.topbar-brand-copy small')?.textContent === 'AI Twins. One Orbit. Your Control.' &&
       document.querySelector('.composer .voice-input-button') &&
-      !document.querySelector('.composer .send-button')`),
+      document.querySelector('.composer .send-button')?.disabled === true`),
     'first chat keeps only the brand tagline without extra welcome or save-status copy',
   );
   const orbLayout = await evaluate(`(() => {

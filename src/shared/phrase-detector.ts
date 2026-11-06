@@ -63,6 +63,23 @@ export class PhraseDetector {
     return this.#speaking;
   }
 
+  /** End the current phrase now (the user tapped stop), if it has enough speech. */
+  flush(): Float32Array | undefined {
+    if (!this.#speaking || this.#speech < this.#minSpeech) {
+      this.reset();
+      return undefined;
+    }
+    const length = this.#frames.reduce((sum, item) => sum + item.length, 0);
+    const samples = new Float32Array(length);
+    let offset = 0;
+    for (const item of this.#frames) {
+      samples.set(item, offset);
+      offset += item.length;
+    }
+    this.reset();
+    return samples;
+  }
+
   /** Forget any partial phrase (e.g. while Vyom itself is speaking). */
   reset(): void {
     this.#speaking = false;

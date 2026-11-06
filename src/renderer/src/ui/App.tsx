@@ -18,7 +18,7 @@ import { VoiceOrb, VyomaraMark } from './brand.tsx';
 import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
-import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
+import { appendVoiceDraft } from './voice-dictation.ts';
 import { approvalQuestion, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
 import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
@@ -58,7 +58,9 @@ export function App() {
   const [requestError, setRequestError] = useState<string>();
   const [speechSetup, setSpeechSetup] = useState<DesktopSpeechSetupStatus>();
   const [voiceListening, setVoiceListening] = useState(false);
-  const [composerDictation, setComposerDictation] = useState(false);
+  /** Where tap-to-dictate text goes: the main message box or the mini window's box. */
+  const [dictation, setDictation] = useState<'main' | 'pip'>();
+  const [pipDraft, setPipDraft] = useState({ text: '', seq: 0 });
   const [voiceStarting, setVoiceStarting] = useState(false);
   const [voiceDownloading, setVoiceDownloading] = useState(false);
   const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number>();
@@ -79,9 +81,13 @@ export function App() {
   /** Records phrases from the microphone while listening is on. */
   const voiceCapture = useRef(new VoiceCapture());
   const handleHeard = useRef<((transcript: string) => void) | undefined>(undefined);
+  const startCapture = useRef<(() => Promise<void>) | undefined>(undefined);
+  const releaseCapture = useRef<(() => void) | undefined>(undefined);
   const [voiceHearing, setVoiceHearing] = useState(false);
-  const composerDictationRef = useRef(false);
-  const composerDictationBase = useRef('');
+  const dictationRef = useRef<'main' | 'pip' | undefined>(undefined);
+  const pendingTranscriptions = useRef(new Set<Promise<unknown>>());
+  /** Whether the request in progress was spoken (only spoken requests get spoken replies). */
+  const currentVoiceRequest = useRef(false);
   const currentRequestPending = useRef(requestPending);
   currentRequestPending.current = requestPending;
   const activeChatRequestId = useRef<string | undefined>(undefined);
@@ -144,11 +150,7 @@ export function App() {
       });
     });
     const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
-      if (event.type === 'partial') {
-        setVoiceTranscript(event.transcript);
-        const action = resolveVoiceTranscriptAction('partial', composerDictationRef.current, event.transcript);
-        if (action.type === 'draft') setPrompt(appendVoiceDraft(composerDictationBase.current, action.transcript));
-      }
+      if (event.type === 'partial') setVoiceTranscript(event.transcript);
       if (event.type === 'model-progress' && event.total > 0) {
         setVoiceDownloadProgress(Math.min(100, Math.round(event.received / event.total * 100)));
       }
@@ -160,36 +162,21 @@ export function App() {
       if (event.type === 'listening') {
         setVoiceStarting(false);
         setVoiceListening(true);
-        void voiceCapture.current.start({
-          onSpeech: setVoiceHearing,
-          onPhrase: wav => {
-            setVoiceTranscript('…');
-            window.vyomara.transcribeSpeech(wav)
-              .then(text => {
-                if (text && !isLikelyNoise(text)) handleHeard.current?.(text);
-                else setVoiceTranscript('');
-              })
-              .catch(error => setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.'));
-          },
-          onError: message => setVoiceError(message),
-        });
+        voiceListeningRef.current = true;
+        void startCapture.current?.();
       }
       if (event.type === 'stopped' || event.type === 'error') {
-        voiceCapture.current.stop();
-        setVoiceHearing(false);
+        voiceListeningRef.current = false;
+        releaseCapture.current?.();
       }
       if (event.type === 'stopped') {
         setVoiceStarting(false);
         setVoiceListening(false);
-        composerDictationRef.current = false;
-        setComposerDictation(false);
       }
       if (event.type === 'error') {
         setVoiceStarting(false);
         setVoiceListening(false);
         setVoiceDownloading(false);
-        composerDictationRef.current = false;
-        setComposerDictation(false);
         setVoiceError(event.message);
       }
       if (event.type === 'command') handleHeard.current?.(event.transcript);
@@ -360,6 +347,7 @@ export function App() {
     }]);
 
     setRequestPending(true);
+    currentVoiceRequest.current = speakResponse;
     setToolActivities([]);
     setPlan([]);
     const requestId = crypto.randomUUID();
@@ -417,14 +405,79 @@ export function App() {
 
   handleHeard.current = transcript => {
     setVoiceTranscript(transcript);
-    const action = resolveVoiceTranscriptAction('command', composerDictationRef.current, transcript);
-    if (action.type === 'draft') {
-      composerDictationBase.current = appendVoiceDraft(composerDictationBase.current, action.transcript);
-      setPrompt(composerDictationBase.current);
-    } else {
-      handleVoiceCommand.current?.(transcript);
-    }
+    handleVoiceCommand.current?.(transcript);
   };
+
+  /** Send a recorded phrase to the dictation box in use, or treat it as a hands-free command. */
+  function routePhrase(wav: Uint8Array): void {
+    const target = dictationRef.current;
+    if (!target) setVoiceTranscript('…');
+    const job = window.vyomara.transcribeSpeech(wav)
+      .then(text => {
+        if (!text || isLikelyNoise(text)) {
+          if (!target) setVoiceTranscript('');
+          return;
+        }
+        if (target === 'main') setPrompt(current => appendVoiceDraft(current.trimEnd(), text));
+        else if (target === 'pip') setPipDraft(current => ({ text: appendVoiceDraft(current.text, text), seq: current.seq + 1 }));
+        else handleHeard.current?.(text);
+      })
+      .catch(error => setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.'))
+      .finally(() => pendingTranscriptions.current.delete(job));
+    pendingTranscriptions.current.add(job);
+  }
+
+  startCapture.current = () => voiceCapture.current.start({
+    onSpeech: setVoiceHearing,
+    onPhrase: routePhrase,
+    onError: message => setVoiceError(message),
+  });
+
+  releaseCapture.current = () => {
+    if (voiceListeningRef.current || dictationRef.current) return;
+    voiceCapture.current.stop();
+    setVoiceHearing(false);
+  };
+
+  /** Tap-to-dictate: record into a message box until tapped again. Never sends by itself. */
+  async function startDictation(target: 'main' | 'pip'): Promise<void> {
+    if (dictationRef.current) return;
+    if (!speechSetup?.modelReady || !speechSetup.runtimeAvailable) {
+      setVoiceError('Set up voice first: Models panel → Voice.');
+      return;
+    }
+    setVoiceError(undefined);
+    dictationRef.current = target;
+    setDictation(target);
+    if (target === 'pip') setPipDraft(current => ({ text: '', seq: current.seq + 1 }));
+    voiceCapture.current.setMuted(false);
+    try {
+      await window.vyomara.setDictation(true);
+      await startCapture.current?.();
+    } catch (error) {
+      dictationRef.current = undefined;
+      setDictation(undefined);
+      releaseCapture.current?.();
+      setVoiceError(error instanceof Error ? error.message : 'Dictation could not start.');
+    }
+  }
+
+  async function stopDictation(): Promise<void> {
+    const target = dictationRef.current;
+    if (!target) return;
+    setDictation(undefined);
+    // The last ~0.4 s of speech is still in the microphone pipeline when people
+    // tap stop right after speaking; keep recording briefly so it is not cut off.
+    await new Promise(resolve => setTimeout(resolve, 450));
+    const rest = voiceCapture.current.flush();
+    if (rest) routePhrase(rest);
+    dictationRef.current = undefined;
+    setVoiceHearing(false);
+    releaseCapture.current?.();
+    await Promise.allSettled([...pendingTranscriptions.current]);
+    await window.vyomara.setDictation(false).catch(() => undefined);
+    if (!voiceListeningRef.current) promptInput.current?.focus();
+  }
 
   function speak(text: string): void {
     if (!text) return;
@@ -437,7 +490,8 @@ export function App() {
   }
 
   askByVoice.current = (question, kind) => {
-    if (!voiceListeningRef.current) return;
+    // Typed requests get answers on screen only.
+    if (!voiceListeningRef.current || !currentVoiceRequest.current) return;
     lastVoiceQuestion.current = question;
     voiceSession.current.awaitApproval(kind);
     speak(question);
@@ -489,7 +543,7 @@ export function App() {
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (composerDictationRef.current) return;
+    if (dictationRef.current) await stopDictation();
     const trimmed = prompt.trim();
     const restoreFocus = Boolean(trimmed);
     shouldRestoreComposerFocus.current = restoreFocus;
@@ -515,10 +569,6 @@ export function App() {
     } catch (error) {
       setVoiceDownloading(false);
       setVoiceStarting(false);
-      if (composerDictationRef.current) {
-        composerDictationRef.current = false;
-        setComposerDictation(false);
-      }
       setVoiceError(error instanceof Error ? error.message : 'The offline speech model could not be installed.');
     }
   }
@@ -538,24 +588,13 @@ export function App() {
       }
     } catch (error) {
       setVoiceStarting(false);
-      if (composerDictationRef.current) {
-        composerDictationRef.current = false;
-        setComposerDictation(false);
-      }
       setVoiceError(error instanceof Error ? error.message : 'Voice listening could not be changed.');
     }
   }
 
   function toggleComposerDictation(): void {
-    if (composerDictation) {
-      void toggleVoiceListening();
-      return;
-    }
-    composerDictationBase.current = prompt.trimEnd();
-    composerDictationRef.current = true;
-    setComposerDictation(true);
-    if (speechSetup?.modelReady) void toggleVoiceListening();
-    else void downloadVoiceModel();
+    if (dictationRef.current) void stopDictation();
+    else void startDictation('main');
   }
 
   async function cancel(): Promise<void> {
@@ -793,6 +832,14 @@ export function App() {
       case 'stop':
         void cancel();
         break;
+      case 'dictation':
+        if (command.recording) void startDictation('pip');
+        else if (dictationRef.current === 'pip') void stopDictation();
+        break;
+      case 'submit':
+        if (dictationRef.current === 'pip') void stopDictation();
+        void submitPrompt(command.text);
+        break;
       case 'approve':
       case 'reject': {
         const approve = command.type === 'approve';
@@ -823,6 +870,8 @@ export function App() {
       ? 'Waiting for your answer'
       : requestPending
         ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
+        : dictation === 'pip'
+          ? 'Recording… tap ■ to stop'
         : voiceStarting
           ? 'Starting microphone…'
           : voiceHearing
@@ -830,7 +879,8 @@ export function App() {
             : voiceListening
             ? 'Say “Hello Vyomara …”'
             : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
-    ...(voiceTranscript ? { heard: voiceTranscript } : {}),
+    dictation: { recording: dictation === 'pip', text: pipDraft.text, seq: pipDraft.seq },
+    ...(voiceTranscript && dictation !== 'pip' ? { heard: voiceTranscript } : {}),
     ...(lastReply ? { reply: speechText(lastReply, 160) } : {}),
     ...(plan.length > 0 ? { plan: { done: plan.filter(step => step.status === 'done').length, total: plan.length } } : {}),
     ...(pipFile
@@ -1078,15 +1128,15 @@ export function App() {
               onChange={event => {
                 setPrompt(event.target.value);
               }}
-              placeholder="Message Vyom…"
+              placeholder={dictation === 'main' ? 'Listening… your words appear here' : 'Message Vyom…'}
               rows={1}
               maxLength={32000}
               disabled={requestPending}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
-                  if (composerDictationRef.current) {
-                    toggleComposerDictation();
+                  if (dictationRef.current) {
+                    void stopDictation();
                     return;
                   }
                   event.currentTarget.form?.requestSubmit();
@@ -1095,79 +1145,55 @@ export function App() {
             />
             <div className="composer-footer">
               <div className="composer-actions">
-                {prompt.trim() && !composerDictation ? (
-                  <button
-                    className="send-button"
-                    type="submit"
-                    disabled={requestPending}
-                    aria-label="Send message"
-                  >
+                <button
+                  className={`voice-input-button${dictation === 'main' ? ' voice-input-dictating' : ''}`}
+                  type="button"
+                  onClick={toggleComposerDictation}
+                  disabled={!speechSetup?.runtimeAvailable || voiceDownloading || requestPending || dictation === 'pip'}
+                  aria-label={dictation === 'main' ? 'Stop recording' : 'Record a message'}
+                  aria-pressed={dictation === 'main'}
+                  title={speechSetup?.runtimeAvailable === false
+                    ? 'Install whisper.cpp to enable offline voice input'
+                    : dictation === 'main'
+                      ? 'Stop recording; the text stays in the box to edit before sending'
+                      : 'Record: tap to start, tap again to stop'}
+                >
+                  {dictation === 'main' ? (
                     <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 19V5m-7 7 7-7 7 7" />
+                      <rect x="8" y="8" width="8" height="8" rx="1.5" />
                     </svg>
-                  </button>
-                ) : (
-                  <button
-                    className={`voice-input-button${voiceListening ? ' voice-input-active' : ''}${composerDictation ? ' voice-input-dictating' : ''}`}
-                    type="button"
-                    onClick={toggleComposerDictation}
-                    disabled={
-                      !speechSetup?.runtimeAvailable ||
-                      voiceStarting ||
-                      voiceDownloading ||
-                      requestPending
-                    }
-                    aria-label={
-                      composerDictation
-                        ? voiceListening
-                          ? 'Stop voice dictation'
-                          : voiceDownloading
-                            ? 'Preparing voice dictation'
-                            : 'Starting voice dictation'
-                        : voiceListening
-                          ? 'Turn voice listening off'
-                          : speechSetup?.modelReady
-                            ? 'Start voice dictation'
-                            : 'Download offline voice model and start dictation'
-                    }
-                    aria-pressed={voiceListening || voiceStarting}
-                    title={
-                      speechSetup?.runtimeAvailable === false
-                        ? 'Install whisper.cpp to enable offline voice input'
-                        : composerDictation
-                          ? 'Stop dictation and review the transcript before sending'
-                          : voiceListening
-                            ? 'Listening · click to turn off'
-                            : speechSetup?.modelReady
-                              ? 'Start dictation into the message box'
-                              : 'Download the offline voice model and start dictation'
-                    }
-                  >
-                    {composerDictation && voiceListening ? (
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="8" y="8" width="8" height="8" rx="1.5" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="9" y="2.5" width="6" height="12" rx="3" />
-                        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
-                      </svg>
-                    )}
-                  </button>
-                )}
+                  ) : (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  className="send-button"
+                  type="submit"
+                  disabled={requestPending || !prompt.trim()}
+                  aria-label="Send message"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 19V5m-7 7 7-7 7 7" />
+                  </svg>
+                </button>
               </div>
             </div>
-            {(voiceError || voiceDownloading || voiceStarting || voiceListening) && (
-              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${(messages.length === 0 || (composerDictation && voiceListening)) && !voiceError ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
+            {(voiceError || voiceDownloading || voiceStarting || voiceListening || dictation === 'main') && (
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}${messages.length === 0 && !voiceError && dictation !== 'main' ? ' visually-hidden' : ''}`} role={voiceError ? 'alert' : 'status'}>
                 {voiceError
                   ? voiceError
                   : voiceDownloading
                     ? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`
                     : voiceStarting
                       ? 'Starting local microphone…'
-                      : voiceListening
-                        ? composerDictation ? 'Listening for a draft…' : voiceTranscript || 'Listening · say “Hello Vyomara …”'
-                        : ''}
+                      : dictation === 'main'
+                        ? voiceHearing ? 'Recording… tap ■ to stop' : 'Recording… speak, then tap ■ to stop'
+                        : voiceListening
+                          ? voiceTranscript || 'Listening · say “Hello Vyomara …”'
+                          : ''}
               </p>
             )}
           </form>

@@ -80,7 +80,22 @@ export class LocalWhisperServer {
     return this.#starting;
   }
 
-  async transcribe(wav: Uint8Array, signal: AbortSignal = AbortSignal.timeout(15_000)): Promise<string> {
+  /**
+   * Transcribe one phrase. With `languages` like ['auto', 'hi'], the first
+   * result is kept unless it is in an unexpected script (whisper sometimes
+   * writes short Hindi as Urdu or Hebrew), in which case the next language is tried.
+   */
+  async transcribe(wav: Uint8Array, languages: readonly string[] = [], signal: AbortSignal = AbortSignal.timeout(15_000)): Promise<string> {
+    const attempts = languages.length === 0 ? [undefined] : languages;
+    let text = '';
+    for (const language of attempts) {
+      text = await this.#transcribeOnce(wav, language, signal);
+      if (!hasUnexpectedScript(text)) return text;
+    }
+    return text;
+  }
+
+  async #transcribeOnce(wav: Uint8Array, language: string | undefined, signal: AbortSignal): Promise<string> {
     if (this.#starting) await this.#starting;
     if (this.#port === undefined) throw new Error('The local speech server is not running.');
     if (wav.byteLength < 44 || wav.byteLength > MAX_UTTERANCE_BYTES) throw new Error('The recorded phrase has an invalid size.');
@@ -88,6 +103,7 @@ export class LocalWhisperServer {
     form.append('file', new Blob([Uint8Array.from(wav)], { type: 'audio/wav' }), 'phrase.wav');
     form.append('response_format', 'json');
     form.append('temperature', '0');
+    if (language) form.append('language', language);
     const response = await fetch(`http://127.0.0.1:${this.#port}/inference`, { method: 'POST', body: form, signal });
     if (!response.ok) throw new Error(`The local speech server answered HTTP ${response.status}.`);
     const payload: unknown = await response.json();
@@ -105,6 +121,11 @@ export class LocalWhisperServer {
     this.#starting = undefined;
     child?.kill('SIGTERM');
   }
+}
+
+/** Text in scripts other than Latin and Devanagari (Arabic/Urdu, Hebrew, Cyrillic, CJK, …). */
+export function hasUnexpectedScript(text: string): boolean {
+  return /[^\p{Script=Latin}\p{Script=Devanagari}\p{Script=Common}\p{Script=Inherited}\s]/u.test(text);
 }
 
 /** Remove whisper's markers ("[BLANK_AUDIO]", "(music)") and collapse whitespace. */

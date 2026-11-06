@@ -185,6 +185,8 @@ export interface DesktopPipState {
     /** Deletions must be confirmed in the main window (typed DELETE). */
     readonly needsMainWindow: boolean;
   };
+  /** Tap-to-dictate into the mini window's box: the text so far, and a counter that changes with it. */
+  readonly dictation: { readonly recording: boolean; readonly text: string; readonly seq: number };
 }
 
 export type DesktopPipCommand =
@@ -193,7 +195,10 @@ export type DesktopPipCommand =
   | { readonly type: 'reject'; readonly id: string }
   | { readonly type: 'stop' }
   | { readonly type: 'open-main' }
-  | { readonly type: 'hide-pip' };
+  | { readonly type: 'hide-pip' }
+  | { readonly type: 'dictation'; readonly recording: boolean }
+  /** A typed (or dictated and edited) message from the mini window; answered on screen only. */
+  | { readonly type: 'submit'; readonly text: string };
 
 export interface VyomaraDesktopApi {
   /** Main window → mini window. */
@@ -237,6 +242,8 @@ export interface VyomaraDesktopApi {
   downloadSpeechModel(): Promise<void>;
   selectSpeechModel(model: 'fast' | 'best'): Promise<DesktopSpeechSetupStatus>;
   setSpeechListening(enabled: boolean): Promise<DesktopSpeechSetupStatus>;
+  /** Start or stop tap-to-dictate (loads the speech model without hands-free listening). */
+  setDictation(active: boolean): Promise<void>;
   /** Transcribe one recorded phrase (16 kHz mono WAV) with the local model. */
   transcribeSpeech(wav: Uint8Array): Promise<string>;
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;

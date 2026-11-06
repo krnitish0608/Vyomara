@@ -53,7 +53,7 @@ let mainWindow: BrowserWindow | undefined;
 /** The mini controller window shown over other apps while the main window is away. */
 let pipWindow: BrowserWindow | undefined;
 let quitting = false;
-const PIP_SIZE = { width: 372, height: 120 };
+const PIP_SIZE = { width: 380, height: 172 };
 /** Last state published by the main window, replayed when the mini window (re)loads. */
 let lastPipState: unknown;
 let activeRequest: AbortController | undefined;
@@ -72,6 +72,8 @@ const macApplicationLauncher = process.platform === 'darwin'
   : undefined;
 let localWhisperRunner: LocalWhisperRunner | undefined;
 let voiceListeningEnabled = false;
+/** Tap-to-dictate recording into a message box is in progress. */
+let dictationActive = false;
 /** Speech-recognition model in use; "best" handles Hindi, English, and mixed speech. */
 let speechModel: SpeechModelId = 'fast';
 let config: AppConfig | undefined;
@@ -407,6 +409,18 @@ ipcMain.on('vyomara:pip-command', (event, command: unknown) => {
     return;
   }
   const id = (command as { id?: unknown }).id;
+  if (type === 'dictation') {
+    const recording = (command as { recording?: unknown }).recording;
+    if (typeof recording === 'boolean') mainWindow?.webContents.send('vyomara:pip-command', { type, recording });
+    return;
+  }
+  if (type === 'submit') {
+    const text = (command as { text?: unknown }).text;
+    if (typeof text === 'string' && text.trim() !== '' && text.length <= 32_000) {
+      mainWindow?.webContents.send('vyomara:pip-command', { type, text });
+    }
+    return;
+  }
   if (!['toggle-listening', 'approve', 'reject', 'stop'].includes(String(type))) return;
   if ((type === 'approve' || type === 'reject') && typeof id !== 'string') return;
   mainWindow?.webContents.send('vyomara:pip-command', type === 'approve' || type === 'reject' ? { type, id } : { type });
@@ -817,36 +831,46 @@ ipcMain.handle('vyomara:speech-model-download', async () => {
   }
 });
 
+/** Check the model, runtime, and microphone, then make sure the speech server is running. */
+async function ensureSpeechServer(): Promise<void> {
+  const runner = getLocalWhisperRunner();
+  if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the selected speech model (Models panel → Voice) first.');
+  if (!resolveWhisperServer()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
+  const microphoneStatus = systemPreferences.getMediaAccessStatus('microphone');
+  const microphoneGranted = microphoneStatus === 'granted' ||
+    (microphoneStatus === 'not-determined' && await systemPreferences.askForMediaAccess('microphone'));
+  if (!microphoneGranted) {
+    throw new LocalSpeechError(
+      microphoneStatus === 'denied' || microphoneStatus === 'restricted'
+        ? 'Microphone access is blocked. Enable it for Vyomara in System Settings > Privacy & Security > Microphone, then restart Vyomara.'
+        : 'Microphone access was not granted. Allow it in the macOS prompt to use voice.',
+    );
+  }
+  await whisperServer.start(runner.modelPath, runner.model.language);
+}
+
+/** Stop the speech server when neither hands-free listening nor dictation needs it. */
+function releaseSpeechServer(): void {
+  if (!voiceListeningEnabled && !dictationActive) whisperServer.stop();
+}
+
 ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) => {
   if (typeof input !== 'boolean') throw new Error('Voice listening must be explicitly enabled or disabled.');
-  const runner = getLocalWhisperRunner();
   if (input) {
-    if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the selected speech model (Models panel → Voice) before turning listening on.');
-    if (!resolveWhisperServer()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
     try {
-      const microphoneStatus = systemPreferences.getMediaAccessStatus('microphone');
-      const microphoneGranted = microphoneStatus === 'granted' ||
-        (microphoneStatus === 'not-determined' && await systemPreferences.askForMediaAccess('microphone'));
-      if (!microphoneGranted) {
-        throw new LocalSpeechError(
-          microphoneStatus === 'denied' || microphoneStatus === 'restricted'
-            ? 'Microphone access is blocked. Enable it for Vyomara in System Settings > Privacy & Security > Microphone, then restart Vyomara.'
-            : 'Microphone access was not granted. Allow it in the macOS prompt to use voice listening.',
-        );
-      }
       // The renderer records phrases; the server keeps the model loaded to transcribe them.
-      await whisperServer.start(runner.modelPath, runner.model.language);
+      await ensureSpeechServer();
       voiceListeningEnabled = true;
       await saveVoiceListeningPreference(true);
       emitSpeechEvent({ type: 'listening' });
     } catch (error) {
-      whisperServer.stop();
       voiceListeningEnabled = false;
+      releaseSpeechServer();
       throw new Error(publicErrorMessage(error));
     }
   } else {
     voiceListeningEnabled = false;
-    whisperServer.stop();
+    releaseSpeechServer();
     macSpeechRunner.stop();
     await saveVoiceListeningPreference(false);
     emitSpeechEvent({ type: 'stopped' });
@@ -854,12 +878,34 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
   return speechStatus();
 });
 
+/** Tap-to-dictate: record into the message box, independent of hands-free listening. */
+ipcMain.handle('vyomara:speech-dictation', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Speech request is invalid.');
+  if (typeof input !== 'boolean') throw new Error('Dictation must be explicitly started or stopped.');
+  if (input) {
+    try {
+      dictationActive = true;
+      await ensureSpeechServer();
+    } catch (error) {
+      dictationActive = false;
+      releaseSpeechServer();
+      throw new Error(publicErrorMessage(error));
+    }
+  } else {
+    dictationActive = false;
+    releaseSpeechServer();
+  }
+});
+
 ipcMain.handle('vyomara:speech-transcribe', async (event, input: unknown) => {
   if (event.sender !== mainWindow?.webContents) throw new Error('Speech request is invalid.');
-  if (!voiceListeningEnabled) throw new Error('Voice listening is off.');
+  if (!voiceListeningEnabled && !dictationActive) throw new Error('The microphone is off.');
   if (!(input instanceof Uint8Array)) throw new Error('Recorded audio is invalid.');
   try {
-    return await whisperServer.transcribe(input);
+    // "Best" (hi): try auto-detect first so English stays English, falling back to Hindi
+    // when auto-detect picks a wrong script. "Fast" (en) keeps its fixed language.
+    const languages = getLocalWhisperRunner().model.language === 'hi' ? ['auto', 'hi'] : [];
+    return await whisperServer.transcribe(input, languages);
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : 'The phrase could not be transcribed.');
   }
