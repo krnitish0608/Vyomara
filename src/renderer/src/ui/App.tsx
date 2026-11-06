@@ -95,10 +95,14 @@ export function App() {
   const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
   const personaPicker = useRef<HTMLDivElement>(null);
   const personaTrigger = useRef<HTMLButtonElement>(null);
+  const greeted = useRef(false);
+  const greetOnLaunch = useRef<((id: PersonaId) => void) | undefined>(undefined);
   const assistantName = PERSONAS[persona].name;
   /** Words of the spoken turn in progress, shown live in the message box. */
   const [liveTurn, setLiveTurn] = useState('');
   const speakingRef = useRef(false);
+  /** Settles when the current spoken reply has fully stopped. */
+  const speechDone = useRef<Promise<void>>(Promise.resolve());
   const handleTurn = useRef<((text: string) => void) | undefined>(undefined);
   /** Joins the phrases of one spoken request and waits until the speaker has finished. */
   const turn = useRef(new TurnCollector(text => handleTurn.current?.(text)));
@@ -209,7 +213,10 @@ export function App() {
       if (event.type === 'command') handleHeard.current?.(event.transcript);
     });
     void window.vyomara.getPersona().then(id => {
-      if (mounted) setPersonaState(id);
+      if (!mounted) return;
+      setPersonaState(id);
+      // Opening on the welcome screen: the assistant introduces itself once per launch.
+      setTimeout(() => greetOnLaunch.current?.(id), 700);
     }).catch(() => undefined);
     void window.vyomara.getSpeechSetupStatus().then(status => {
       if (!mounted) return;
@@ -555,7 +562,7 @@ export function App() {
     setVoiceHearing(false);
     speakingRef.current = true;
     setVyomSpeaking(true);
-    return window.vyomara.speakText(text)
+    const done = window.vyomara.speakText(text)
       .then(() => voiceSession.current.extend())
       .catch(error => {
         // Interrupted on purpose (orb pressed) is not an error.
@@ -569,6 +576,8 @@ export function App() {
           if (!speakingRef.current) voiceCapture.current.setMuted(false);
         }, 250);
       });
+    speechDone.current = done;
+    return done;
   }
 
   /** Stop Vyom mid-sentence and listen again (the orb was pressed while it spoke). */
@@ -680,9 +689,10 @@ export function App() {
 
   async function toggleVoiceListening(): Promise<void> {
     // While Vyom is talking, the orb means "stop talking, I want to speak".
-    if (speakingRef.current && voiceListeningRef.current) {
+    if (speakingRef.current) {
       interruptSpeaking();
-      return;
+      // In a conversation the orb only interrupts; otherwise it also starts listening.
+      if (voiceListeningRef.current) return;
     }
     if (!speechSetup || voiceStarting) return;
     setVoiceError(undefined);
@@ -714,14 +724,25 @@ export function App() {
     try {
       const saved = await window.vyomara.setPersona(id);
       setPersonaState(saved);
-      if (speakingRef.current) interruptSpeaking();
-      void speak(`Namaste, main ${PERSONAS[saved].name} hoon.`);
+      // Stop the previous assistant's voice fully before the new one speaks.
+      if (speakingRef.current) {
+        interruptSpeaking();
+        await speechDone.current;
+      }
+      greeted.current = true;
+      void speak(PERSONAS[saved].greeting);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : 'The assistant could not be changed.');
     } finally {
       setPersonaSaving(false);
     }
   }
+
+  greetOnLaunch.current = id => {
+    if (greeted.current || messages.length > 0 || speakingRef.current) return;
+    greeted.current = true;
+    void speak(PERSONAS[id].greeting);
+  };
 
   // The assistant menu closes on Escape or a click elsewhere.
   useEffect(() => {

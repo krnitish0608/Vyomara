@@ -62,3 +62,13 @@ test('local speech rejects unsupported platforms and oversized output without sp
   await assert.rejects(macRunner.speak('x'.repeat(2_001)), /1 to 2000 characters/i);
   assert.equal(spawnCount, 0);
 });
+
+test('stopping before speech starts cancels it', async () => {
+  const { MacSpeechRunner } = await import('../src/desktop/mac-speech.ts');
+  let spawned = 0;
+  const runner = new MacSpeechRunner(() => { spawned += 1; throw new Error('should not spawn'); }, 'darwin');
+  const pending = runner.speak('Hello there.');
+  runner.stop();
+  assert.deepEqual(await pending, { status: 'cancelled' });
+  assert.equal(spawned, 0);
+});

@@ -43,18 +43,22 @@ function listInstalledVoices(): Promise<ReadonlySet<string>> {
  * One voice per assistant, so it never changes mid-conversation. Better
  * Premium/Enhanced versions (System Settings → Accessibility → Spoken
  * Content → Manage Voices) are used when installed.
- * - Vyomara (female): Lekha, the Hindi voice, which also reads English.
+ * - Vyomara (female): Lekha for Hindi in Devanagari, Tara (Indian English)
+ *   for everything else; both are female, so the voice never changes gender.
  * - Vyom (male): Rishi or Aman (Indian English); macOS has no male Hindi voice,
  *   so Devanagari is read in Roman letters (see romanForSpeech).
  */
 const VOICES: Readonly<Record<'male' | 'female', readonly string[]>> = {
-  female: ['Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha', 'Tara (Enhanced)', 'Tara'],
+  female: ['Tara (Premium)', 'Tara (Enhanced)', 'Tara', 'Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha'],
   male: ['Rishi (Premium)', 'Rishi (Enhanced)', 'Aman (Premium)', 'Aman (Enhanced)', 'Rishi', 'Aman'],
 };
 
-export async function voiceFor(gender: 'male' | 'female', available?: ReadonlySet<string>): Promise<string | undefined> {
+const FEMALE_HINDI = ['Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha'];
+
+export async function voiceFor(gender: 'male' | 'female', text = '', available?: ReadonlySet<string>): Promise<string | undefined> {
   const voices = available ?? await listInstalledVoices();
-  return VOICES[gender].find(voice => voices.has(voice));
+  const preferred = gender === 'female' && /[\u0900-\u097F]/u.test(text) ? FEMALE_HINDI : VOICES[gender];
+  return preferred.find(voice => voices.has(voice));
 }
 const maximumSpeechDurationMs = 180_000;
 
@@ -70,6 +74,10 @@ export class MacSpeechRunner {
   readonly #platform: NodeJS.Platform;
   #activeChild: SpeechChild | undefined;
   #cancelActive: (() => void) | undefined;
+  /** Bumped by stop(), so a reply still choosing its voice is not started afterwards. */
+  #stopCount = 0;
+  /** Replies still choosing their voice. */
+  #starting = 0;
 
   constructor(spawnProcess: SpawnSpeechProcess = spawnMacSpeechProcess, platform: NodeJS.Platform = process.platform) {
     this.#spawnProcess = spawnProcess;
@@ -77,9 +85,18 @@ export class MacSpeechRunner {
   }
 
   async speak(text: unknown, gender: 'male' | 'female' = 'male'): Promise<MacSpeechResult> {
-    const voice = typeof text === 'string' && this.#platform === 'darwin' && this.#spawnProcess === spawnMacSpeechProcess
-      ? await voiceFor(gender)
-      : undefined;
+    const stops = this.#stopCount;
+    this.#starting += 1;
+    let voice: string | undefined;
+    try {
+      voice = await (typeof text === 'string' && this.#platform === 'darwin' && this.#spawnProcess === spawnMacSpeechProcess
+        ? voiceFor(gender, text)
+        : Promise.resolve(undefined));
+    } finally {
+      this.#starting -= 1;
+    }
+    // Stopped while the voice was being chosen: do not start speaking.
+    if (stops !== this.#stopCount) return { status: 'cancelled' };
     // An English voice cannot read Devanagari; give it Roman letters instead.
     const spoken = typeof text === 'string' && gender === 'male' ? romanForSpeech(text) : text;
     return this.#speak(spoken, voice);
@@ -151,8 +168,9 @@ export class MacSpeechRunner {
   }
 
   stop(): boolean {
+    this.#stopCount += 1;
     const child = this.#activeChild;
-    if (!child) return false;
+    if (!child) return this.#starting > 0;
     const stopped = child.kill('SIGTERM');
     if (stopped) this.#cancelActive?.();
     return stopped;

@@ -243,6 +243,19 @@ try {
     ),
     'three glowing meteors move at spaced intervals between the colored orb and its thin orbital line',
   );
+  // The assistant introduces itself aloud on launch (the waveform moves while it
+  // speaks); stop it, then the waveform must rest.
+  await waitFor(
+    () => evaluate(`[...document.querySelectorAll('.voice-waveform i')].some(bar => getComputedStyle(bar).animationName !== 'none')`),
+    'the launch greeting to start',
+    4_000,
+  ).catch(() => undefined);
+  await evaluate('window.vyomara.stopSpeaking()');
+  await waitFor(
+    () => evaluate(`[...document.querySelectorAll('.voice-waveform i')].every(bar => getComputedStyle(bar).animationName === 'none')`),
+    'the launch greeting to stop',
+    5_000,
+  ).catch(() => undefined);
   assert(
     await evaluate(`(() => [...document.querySelectorAll('.voice-waveform i')].every(bar =>
       getComputedStyle(bar).animationName === 'none'))()`),

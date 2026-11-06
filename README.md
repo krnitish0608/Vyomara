@@ -158,10 +158,10 @@ Choose the assistant from the Assistant tab at the top of the sidebar (tap it to
 | Assistant | Voice | Notes |
 |---|---|---|
 | **Vyom** | male: Rishi or Aman (Indian English) | macOS has no male Hindi voice, so Vyom answers aloud in Roman-letter Hinglish |
-| **Vyomara** | female: Lekha (Hindi) | Lekha reads Hindi and English |
+| **Vyomara** | female: Tara (Indian English) and Lekha (Hindi in Devanagari) | both voices are female |
 
-For more natural speech, download the Enhanced or Premium versions of Lekha,
-Rishi or Aman. Go to System Settings → Accessibility → Spoken Content →
+For more natural speech, download the Enhanced or Premium versions of Tara,
+Lekha, Rishi or Aman. Go to System Settings → Accessibility → Spoken Content →
 System Voice → Manage Voices. Vyomara uses them automatically within two
 minutes.
 

@@ -11,11 +11,34 @@ export interface Persona {
   readonly gender: 'male' | 'female';
   /** Hindi verb ending the assistant uses for itself ("kar raha hoon" / "kar rahi hoon"). */
   readonly selfVerb: 'raha' | 'rahi';
+  /**
+   * Spoken when the app opens on the welcome screen and when this assistant
+   * is chosen: the welcome text, in the assistant's own words.
+   */
+  readonly greeting: string;
+}
+
+function greetingFor(name: string): string {
+  return `Hi, I'm ${name}, your personal AI assistant. Tell me what you need. `
+    + 'Ask a question, plan your next move, or get help with a task, by voice or text. '
+    + 'I keep you in control and show my work. AI Twins. One Orbit. Your Control.';
 }
 
 export const PERSONAS: Readonly<Record<PersonaId, Persona>> = {
-  vyom: { id: 'vyom', name: 'Vyom', gender: 'male', selfVerb: 'raha' },
-  vyomara: { id: 'vyomara', name: 'Vyomara', gender: 'female', selfVerb: 'rahi' },
+  vyom: {
+    id: 'vyom',
+    name: 'Vyom',
+    gender: 'male',
+    selfVerb: 'raha',
+    greeting: greetingFor('Vyom'),
+  },
+  vyomara: {
+    id: 'vyomara',
+    name: 'Vyomara',
+    gender: 'female',
+    selfVerb: 'rahi',
+    greeting: greetingFor('Vyomara'),
+  },
 };
 
 export const DEFAULT_PERSONA: PersonaId = 'vyom';

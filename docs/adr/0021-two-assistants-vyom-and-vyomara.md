@@ -27,10 +27,15 @@ and Vyomara (female), chosen in the app.
      voice is English.
 3. **One voice per assistant** (`voiceFor`). Premium or Enhanced versions are
    preferred when installed; the voice list is re-read every 2 minutes.
-   - **Vyomara:** Lekha for all text.
+   - **Vyomara:** Tara (Indian English) for Latin text and Lekha for
+     Devanagari; both are female.
    - **Vyom:** Rishi or Aman. Any Devanagari left in a reply is changed to
      Roman letters (`romanForSpeech`) before speaking.
    - The speaking rate is lowered from 190 to 180 words per minute.
+   - When the app opens on the welcome screen, and when the assistant is
+     switched, the assistant reads the welcome text aloud in its own voice
+     ("Hi, I'm Vyomara, your personal AI assistant…"). Pressing the orb
+     stops it, even in the instant before it starts.
 4. **Interface.**
    - The Assistant tab at the top of the sidebar shows the current
      assistant. Tapping it opens a small menu to switch, and the new

@@ -106,11 +106,14 @@ test('Devanagari transcripts: wake phrase, yes/no, delete confirmation, and stop
 
 test('each assistant keeps one voice, preferring Enhanced versions', async () => {
   const { voiceFor } = await import('../src/desktop/mac-speech.ts');
-  const installed = new Set(['Lekha', 'Rishi', 'Aman', 'Samantha']);
-  assert.equal(await voiceFor('female', installed), 'Lekha');
-  assert.equal(await voiceFor('male', installed), 'Rishi');
-  assert.equal(await voiceFor('female', new Set(['Lekha', 'Lekha (Enhanced)'])), 'Lekha (Enhanced)');
-  assert.equal(await voiceFor('male', new Set(['Samantha'])), undefined);
+  const installed = new Set(['Lekha', 'Tara', 'Rishi', 'Aman', 'Samantha']);
+  // Vyomara: Tara for English, Lekha for Devanagari; both female.
+  assert.equal(await voiceFor('female', 'Hi, I am Vyomara.', installed), 'Tara');
+  assert.equal(await voiceFor('female', 'हाँ, खोल दिया।', installed), 'Lekha');
+  // Vyom: always the male Indian English voice.
+  assert.equal(await voiceFor('male', 'हाँ, खोल दिया।', installed), 'Rishi');
+  assert.equal(await voiceFor('female', 'हाँ', new Set(['Lekha', 'Lekha (Enhanced)'])), 'Lekha (Enhanced)');
+  assert.equal(await voiceFor('male', 'Hello', new Set(['Samantha'])), undefined);
 });
 
 // Heard through the real microphone in the app: macOS saying "Hello Vyomara", and room noise.
