@@ -11,6 +11,7 @@ import { ToolExecutionError, ToolExecutor } from '../tools/executor.ts';
 import { TOOL_ID_PATTERN } from '../tools/contracts.ts';
 import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
 import { buildSystemPrompt, detectEnvironment } from './system-prompt.ts';
+import type { PersonaId } from '../shared/persona.ts';
 import type { AgentEnvironment } from './system-prompt.ts';
 import type { PlanStep } from '../tools/plan-tool.ts';
 
@@ -48,6 +49,8 @@ export interface AgentOptions {
   readonly onPlan?: (steps: readonly PlanStep[]) => void;
   /** Spoken request: ask for a short reply (fewer tokens, faster, and pleasant to hear). */
   readonly voice?: boolean;
+  /** Which assistant (name, gender) answers. */
+  readonly persona?: PersonaId;
   /** Overrides environment discovery (used by tests). */
   readonly environment?: AgentEnvironment;
 }
@@ -312,6 +315,7 @@ async function runAgentTask(
   const system = buildSystemPrompt(environment, modelTools, {
     chatOnly: !toolCapable,
     ...(options.voice ? { voice: true } : {}),
+    ...(options.persona ? { persona: options.persona } : {}),
   });
   const fixedChars = system.length + JSON.stringify(modelTools).length;
   const budgetChars = Math.max(

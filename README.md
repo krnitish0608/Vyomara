@@ -151,8 +151,19 @@ In a conversation:
   rehne do”**.
 - Deleting needs “haan, delete karo”.
 - “Ruko” or “stop” cancels a running task.
-- Replies are spoken briefly, with a Hindi voice for Hindi and an Indian
-  English voice otherwise.
+- Replies are spoken briefly, always in the chosen assistant's voice.
+
+Choose the assistant at the top of the sidebar:
+
+| Assistant | Voice | Notes |
+|---|---|---|
+| **Vyom** | male: Rishi or Aman (Indian English) | macOS has no male Hindi voice, so Vyom answers aloud in Roman-letter Hinglish |
+| **Vyomara** | female: Lekha (Hindi) | Lekha reads Hindi and English |
+
+For more natural speech, download the Enhanced or Premium versions of Lekha,
+Rishi or Aman. Go to System Settings → Accessibility → Spoken Content →
+System Voice → Manage Voices. Vyomara uses them automatically within two
+minutes.
 
 Recognition runs entirely on this Mac, and audio never leaves it. A finished
 phrase becomes text in about one second, and the reply arrives about three

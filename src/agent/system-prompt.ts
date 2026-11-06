@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir, release } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { SessionMessage } from '../session/session.ts';
+import { personaFor, type PersonaId } from '../shared/persona.ts';
 import type { ModelToolDefinition } from '../tools/contracts.ts';
 
 export interface AgentEnvironment {
@@ -136,8 +137,9 @@ export function detectEnvironment(messages: readonly SessionMessage[]): AgentEnv
 export function buildSystemPrompt(
   environment: AgentEnvironment,
   tools: readonly ModelToolDefinition[],
-  options: { readonly chatOnly?: boolean; readonly voice?: boolean } = {},
+  options: { readonly chatOnly?: boolean; readonly voice?: boolean; readonly persona?: PersonaId } = {},
 ): string {
+  const persona = personaFor(options.persona);
   const has = (id: string): boolean => tools.some(tool => tool.id === id);
   const canEdit = has('edit_file');
   const canRun = has('run_command');
@@ -151,7 +153,7 @@ export function buildSystemPrompt(
       .join('\n');
 
   const sections = [
-    `You are Vyom, the AI agent inside Vyomara, running locally on the user's Mac. You help with software engineering (understanding, writing, fixing, and testing code) and everyday computer tasks by using tools. You are concise, direct, and careful.`,
+    `You are ${persona.name}, the ${persona.gender} AI assistant inside the Vyomara app, running locally on the user's Mac. You help with software engineering (understanding, writing, fixing, and testing code) and everyday computer tasks by using tools. You are concise, direct, and careful. In Hindi or Hinglish, refer to yourself with ${persona.gender} forms ("main kar ${persona.selfVerb} hoon", "main ${persona.gender === 'male' ? 'samajh gaya' : 'samajh gayi'}").`,
 
     `# Environment
 - Today: ${environment.date}
@@ -220,7 +222,9 @@ ${projects}${environment.activeProject ? `\n- Project this conversation is worki
     // Last section, so the stable prompt prefix above stays cached by Ollama.
     sections.push(`# Spoken conversation
 - The user spoke this request and will hear your reply read aloud. Answer in one or two short, natural sentences (no lists, code, or Markdown) unless they ask for details. Work with tools exactly as usual; only the final answer is short.
-- The text comes from speech recognition and words may be misheard or oddly spelled, often in Devanagari (e.g. "क्यालकुलेट अकॉलो" = "Calculator kholo", "वियेस कोड" = "VS Code", "क्रोम" = "Chrome"). Work out what was most likely meant from how it sounds and act on it; ask only if it is really unclear.`);
+${persona.gender === 'male'
+    ? '- Write the reply in English or Roman-letter Hinglish, never Devanagari: your voice can only read Roman letters.\n'
+    : ''}- The text comes from speech recognition and words may be misheard or oddly spelled, often in Devanagari (e.g. "क्यालकुलेट अकॉलो" = "Calculator kholo", "वियेस कोड" = "VS Code", "क्रोम" = "Chrome"). Work out what was most likely meant from how it sounds and act on it; ask only if it is really unclear.`);
   }
 
   return sections.join('\n\n');

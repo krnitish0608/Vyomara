@@ -1,3 +1,4 @@
+import type { PersonaId } from '../shared/persona.ts';
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 import type { ActionProposal } from '../tools/action-tools.ts';
 
@@ -171,6 +172,8 @@ export interface DesktopPipState {
   readonly listening: boolean;
   readonly voiceReady: boolean;
   readonly busy: boolean;
+  /** The assistant's name (Vyom or Vyomara). */
+  readonly assistantName: string;
   /** Vyom is speaking a reply; pressing the orb interrupts it. */
   readonly speaking: boolean;
   /** One line: what Vyom is doing or waiting for. */
@@ -251,5 +254,8 @@ export interface VyomaraDesktopApi {
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;
+  /** Which assistant answers and speaks: Vyom (male) or Vyomara (female). */
+  getPersona(): Promise<PersonaId>;
+  setPersona(id: PersonaId): Promise<PersonaId>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
 }

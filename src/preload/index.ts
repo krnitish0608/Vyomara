@@ -1,3 +1,4 @@
+import type { PersonaId } from '../shared/persona.ts';
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   DesktopActionProposal,
@@ -151,6 +152,12 @@ const api: VyomaraDesktopApi = {
   },
   stopSpeaking() {
     return ipcRenderer.invoke('vyomara:speech-stop');
+  },
+  getPersona() {
+    return ipcRenderer.invoke('vyomara:persona-get');
+  },
+  setPersona(id: PersonaId) {
+    return ipcRenderer.invoke('vyomara:persona-set', id);
   },
   onActivity(listener: (event: DiagnosticEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, activity: DiagnosticEvent): void => {

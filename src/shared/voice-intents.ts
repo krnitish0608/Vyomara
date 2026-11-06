@@ -74,6 +74,24 @@ export function romanize(text: string): string {
   return output;
 }
 
+/**
+ * Devanagari words in Roman letters an English voice can read aloud:
+ * "ठीक है, खोल दिया" → "theek hai, khol diya". Latin text is left alone.
+ */
+export function romanForSpeech(text: string): string {
+  // Words only: the danda (।, ॥) is punctuation and becomes a full stop below.
+  return text.replace(/[\u0900-\u0963\u0966-\u097F]+/gu, word => {
+    let roman = romanize(word)
+      .replace(/ii/gu, 'ee')
+      .replace(/uu/gu, 'oo');
+    // Hindi drops the inherent "a" after a final consonant: खोल is "khol", not "khola".
+    const last = word.at(-1) ?? '';
+    if (/[\u0915-\u0939\u0958-\u095F]/u.test(last) && roman.length > 2 && roman.endsWith('a')) roman = roman.slice(0, -1);
+    // A final long "aa" reads better as "a" to an English voice: "diya", "kya".
+    return roman.replace(/aa$/u, 'a');
+  }).replace(/[।॥]/gu, '.');
+}
+
 /** Map sounds whisper confuses (v/w/b, i/y, e/a/o, doubled letters) before comparing names. */
 function soundKey(word: string): string {
   return romanize(word)

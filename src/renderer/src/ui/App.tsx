@@ -21,6 +21,7 @@ import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft } from './voice-dictation.ts';
 import { approvalQuestion, isGoodbye, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
 import { TurnCollector } from '../../../shared/turn-taking.ts';
+import { DEFAULT_PERSONA, PERSONAS, type PersonaId } from '../../../shared/persona.ts';
 import { playEarcon } from './earcon.ts';
 import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
@@ -88,6 +89,10 @@ export function App() {
   const [voiceHearing, setVoiceHearing] = useState(false);
   /** Vyom is speaking a reply aloud. */
   const [vyomSpeaking, setVyomSpeaking] = useState(false);
+  /** Which assistant answers: Vyom (male voice) or Vyomara (female voice). */
+  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA);
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const assistantName = PERSONAS[persona].name;
   /** Words of the spoken turn in progress, shown live in the message box. */
   const [liveTurn, setLiveTurn] = useState('');
   const speakingRef = useRef(false);
@@ -200,6 +205,9 @@ export function App() {
       }
       if (event.type === 'command') handleHeard.current?.(event.transcript);
     });
+    void window.vyomara.getPersona().then(id => {
+      if (mounted) setPersonaState(id);
+    }).catch(() => undefined);
     void window.vyomara.getSpeechSetupStatus().then(status => {
       if (!mounted) return;
       setSpeechSetup(status);
@@ -696,6 +704,22 @@ export function App() {
     else void startDictation('main');
   }
 
+  /** Switch between Vyom and Vyomara; the new assistant greets in its own voice. */
+  async function choosePersona(id: PersonaId): Promise<void> {
+    if (id === persona || personaSaving || requestPending) return;
+    setPersonaSaving(true);
+    try {
+      const saved = await window.vyomara.setPersona(id);
+      setPersonaState(saved);
+      if (speakingRef.current) interruptSpeaking();
+      void speak(`Namaste, main ${PERSONAS[saved].name} hoon.`);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The assistant could not be changed.');
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
   async function cancel(): Promise<void> {
     await window.vyomara.cancelRequest();
   }
@@ -966,10 +990,11 @@ export function App() {
     voiceReady: speechSetup?.modelReady === true && speechSetup.runtimeAvailable,
     busy: requestPending,
     speaking: vyomSpeaking,
+    assistantName,
     status: pipFile || pipAction
       ? 'Waiting for your answer'
       : vyomSpeaking
-        ? 'Vyom is speaking · tap the orb to interrupt'
+        ? `${assistantName} is speaking · tap the orb to interrupt`
       : requestPending
         ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
         : dictation === 'pip'
@@ -996,11 +1021,11 @@ export function App() {
     window.vyomara.publishPipState(JSON.parse(pipStateJson) as DesktopPipState);
   }, [pipStateJson]);
   const voiceOrbLabel = vyomSpeaking && voiceListening
-    ? 'Interrupt Vyom'
+    ? `Interrupt ${assistantName}`
     : voiceListening
     ? 'End the conversation'
     : speechSetup?.modelReady
-      ? 'Talk to Vyom'
+      ? `Talk to ${assistantName}`
       : 'Download offline voice model and start listening';
   // The message box shows what voice is doing: no separate status lines.
   const inConversation = voiceListening && dictation !== 'main';
@@ -1015,13 +1040,13 @@ export function App() {
       ? 'Starting the microphone…'
       : inConversation
         ? liveTurn || (vyomSpeaking
-          ? 'Vyom is speaking… tap the orb to interrupt'
+          ? `${assistantName} is speaking… tap the orb to interrupt`
           : requestPending
             ? 'Working on it… say “stop” to cancel'
             : voiceHearing
               ? 'Listening…'
               : 'Listening… speak whenever you’re ready')
-        : 'Message Vyom…';
+        : `Message ${assistantName}…`;
   const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
   const voiceOrbTitle = speechSetup?.runtimeAvailable === false
     ? 'Install whisper.cpp to enable offline voice'
@@ -1092,6 +1117,26 @@ export function App() {
         <nav className="side-nav" aria-label="Main navigation">
           <div className="side-nav-group">
             <p className="side-nav-label">ASSISTANT</p>
+            <div className="persona-switch" role="radiogroup" aria-label="Choose your assistant">
+              {(Object.values(PERSONAS)).map(option => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={persona === option.id}
+                  className={`persona-option persona-${option.id}${persona === option.id ? ' persona-option-active' : ''}`}
+                  disabled={requestPending || personaSaving}
+                  onClick={() => void choosePersona(option.id)}
+                  title={`${option.name} · ${option.gender === 'male' ? 'male' : 'female'} voice`}
+                >
+                  <span className="persona-avatar" aria-hidden="true">{option.name.charAt(0)}</span>
+                  <span className="persona-text">
+                    <strong>{option.name}</strong>
+                    <small>{option.gender === 'male' ? 'Male voice' : 'Female voice'}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
             <button className="side-nav-item side-nav-item-active" type="button" aria-current="page">
               <span aria-hidden="true">♩</span> Assistant
             </button>
@@ -1163,9 +1208,9 @@ export function App() {
               <div className="welcome-card" aria-label="Vyomara voice orb">
                 <div className="welcome-intro">
                   <p className="welcome-kicker">YOUR PERSONAL AI ASSISTANT</p>
-                  <h2>Tell Vyom what you need.</h2>
+                  <h2>Tell {assistantName} what you need.</h2>
                   <p className="welcome-copy">
-                    Ask a question, plan your next move, or get help with a task—by voice or text. Vyom keeps you in control and shows its work.
+                    Ask a question, plan your next move, or get help with a task—by voice or text. {assistantName} keeps you in control and shows its work.
                   </p>
                   <p className="welcome-brand-line">AI Twins. One Orbit. Your Control.</p>
                 </div>
@@ -1187,7 +1232,7 @@ export function App() {
                         ? 'Starting local microphone…'
                         : voiceListening
                           ? vyomSpeaking
-                            ? 'Vyom is speaking · tap the orb to interrupt'
+                            ? `${assistantName} is speaking · tap the orb to interrupt`
                             : voiceTranscript || 'Listening… speak whenever you’re ready'
                           : speechSetup?.runtimeAvailable === false
                             ? 'Offline voice unavailable—type below.'
@@ -1214,7 +1259,7 @@ export function App() {
                 <span className="thinking-indicator" aria-hidden="true"><i /><i /><i /></span>
                 <span>{pendingApprovals > 0
                   ? 'Waiting for your approval…'
-                  : runningActivity ? `${runningActivity.label}…` : 'Vyom is thinking…'}</span>
+                  : runningActivity ? `${runningActivity.label}…` : `${assistantName} is thinking…`}</span>
                 <button type="button" onClick={() => void cancel()}>Stop</button>
               </div>
             )}
@@ -1243,7 +1288,7 @@ export function App() {
             </div>
           </div>
           <form className={`composer${composerMood ? ` composer-${composerMood}` : ''}${liveTurn && !prompt ? ' composer-hearing' : ''}`} onSubmit={event => void submit(event)}>
-            <label className="visually-hidden" htmlFor="prompt">Message Vyom</label>
+            <label className="visually-hidden" htmlFor="prompt">Message {assistantName}</label>
             <textarea
               ref={promptInput}
               id="prompt"
@@ -1380,7 +1425,7 @@ export function App() {
                     <li>No user or assistant messages are available to review.</li>
                   ) : selectedHistorySession.messages.map((message, index) => (
                     <li key={`${index}-${message.role}`}>
-                      <strong>{message.role === 'user' ? 'You' : 'Vyom'}</strong>
+                      <strong>{message.role === 'user' ? 'You' : assistantName}</strong>
                       <pre className="history-reviewed-message">{message.content}</pre>
                     </li>
                   ))}
@@ -1436,7 +1481,7 @@ export function App() {
             </span>
           </div>
           {plan.length > 0 && (
-            <section className="plan-card" aria-label="Vyom's plan">
+            <section className="plan-card" aria-label={`${assistantName}’s plan`}>
               <h3>Plan · {plan.filter(step => step.status === 'done').length}/{plan.length}</h3>
               <ol className="plan-list">
                 {plan.map((step, index) => (
@@ -1452,7 +1497,7 @@ export function App() {
             {activity.length === 0 && toolActivities.length === 0 ? (
               <div className="activity-empty">
                 <span aria-hidden="true">◷</span>
-                <p>Every step Vyom takes appears here while it works.</p>
+                <p>Every step {assistantName} takes appears here while it works.</p>
               </div>
             ) : (
               <ol className="activity-list">
@@ -1495,7 +1540,7 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'In conversation with Vyom' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? `In conversation with ${assistantName}` : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
               <small>{voiceListening ? 'Microphone on · tap the orb or say “bas” to end' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
               {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>

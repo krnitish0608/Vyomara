@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { romanForSpeech } from '../shared/voice-intents.ts';
 
 export type MacSpeechResult =
   | { readonly status: 'completed' }
@@ -21,29 +22,39 @@ export type SpawnSpeechProcess = (executable: string, arguments_: readonly strin
 
 const maximumSpeechChars = 2_000;
 
-/** Installed macOS voices, read once ("Lekha hi_IN # …" lines from `say -v ?`). */
-let installedVoices: Promise<ReadonlySet<string>> | undefined;
+/** Installed macOS voices ("Lekha (Enhanced)  hi_IN # …" lines from `say -v ?`), re-read every few minutes. */
+let installedVoices: { readonly at: number; readonly voices: Promise<ReadonlySet<string>> } | undefined;
 
 function listInstalledVoices(): Promise<ReadonlySet<string>> {
-  installedVoices ??= new Promise(resolve => {
+  // Re-read now and then, so voices downloaded in System Settings are picked up without a restart.
+  if (installedVoices && Date.now() - installedVoices.at < 120_000) return installedVoices.voices;
+  const voices = new Promise<ReadonlySet<string>>(resolve => {
     const child = spawn('/usr/bin/say', ['-v', '?'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let output = '';
     child.stdout.on('data', chunk => { output += String(chunk); });
     child.once('error', () => resolve(new Set()));
     child.once('close', () => resolve(new Set(output.split('\n').map(line => line.split(/\s{2,}/u)[0]?.trim() ?? '').filter(Boolean))));
   });
-  return installedVoices;
+  installedVoices = { at: Date.now(), voices };
+  return voices;
 }
 
 /**
- * Hindi in Devanagari sounds natural with the Hindi voice; English and
- * romanized Hinglish with an Indian English voice. Falls back to the
- * system voice when these are not installed.
+ * One voice per assistant, so it never changes mid-conversation. Better
+ * Premium/Enhanced versions (System Settings → Accessibility → Spoken
+ * Content → Manage Voices) are used when installed.
+ * - Vyomara (female): Lekha, the Hindi voice, which also reads English.
+ * - Vyom (male): Rishi or Aman (Indian English); macOS has no male Hindi voice,
+ *   so Devanagari is read in Roman letters (see romanForSpeech).
  */
-export async function voiceFor(text: string, available?: ReadonlySet<string>): Promise<string | undefined> {
+const VOICES: Readonly<Record<'male' | 'female', readonly string[]>> = {
+  female: ['Lekha (Premium)', 'Lekha (Enhanced)', 'Lekha', 'Tara (Enhanced)', 'Tara'],
+  male: ['Rishi (Premium)', 'Rishi (Enhanced)', 'Aman (Premium)', 'Aman (Enhanced)', 'Rishi', 'Aman'],
+};
+
+export async function voiceFor(gender: 'male' | 'female', available?: ReadonlySet<string>): Promise<string | undefined> {
   const voices = available ?? await listInstalledVoices();
-  const preferred = /[\u0900-\u097F]/u.test(text) ? ['Lekha'] : ['Rishi', 'Aman', 'Tara'];
-  return preferred.find(voice => voices.has(voice));
+  return VOICES[gender].find(voice => voices.has(voice));
 }
 const maximumSpeechDurationMs = 180_000;
 
@@ -65,11 +76,13 @@ export class MacSpeechRunner {
     this.#platform = platform;
   }
 
-  async speak(text: unknown): Promise<MacSpeechResult> {
+  async speak(text: unknown, gender: 'male' | 'female' = 'male'): Promise<MacSpeechResult> {
     const voice = typeof text === 'string' && this.#platform === 'darwin' && this.#spawnProcess === spawnMacSpeechProcess
-      ? await voiceFor(text)
+      ? await voiceFor(gender)
       : undefined;
-    return this.#speak(text, voice);
+    // An English voice cannot read Devanagari; give it Roman letters instead.
+    const spoken = typeof text === 'string' && gender === 'male' ? romanForSpeech(text) : text;
+    return this.#speak(spoken, voice);
   }
 
   #speak(text: unknown, voice: string | undefined): Promise<MacSpeechResult> {
@@ -85,7 +98,7 @@ export class MacSpeechRunner {
 
     let child: SpeechChild;
     try {
-      child = this.#spawnProcess('/usr/bin/say', ['-r', '190', ...(voice === undefined ? [] : ['-v', voice]), '--', text]);
+      child = this.#spawnProcess('/usr/bin/say', ['-r', '180', ...(voice === undefined ? [] : ['-v', voice]), '--', text]);
     } catch (error) {
       return Promise.reject(new MacSpeechError(error instanceof Error ? error.message : 'macOS speech could not be started.'));
     }

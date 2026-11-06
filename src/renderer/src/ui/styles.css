@@ -658,3 +658,20 @@ body.pip-body #root { height: 100vh; }
 .composer-rail .voice-input-button svg { width: 16px; height: 16px; stroke-width: 1.9; }
 .composer-rail .send-button svg { width: 16px; height: 16px; stroke-width: 2.3; }
 .composer-rail .voice-input-button.voice-input-dictating { border-color: rgba(248, 112, 132, .75); background: rgba(130, 32, 56, .45); color: #ffc2cc; box-shadow: 0 0 0 3px rgba(248, 112, 132, .12); }
+
+/* Assistant switch: Vyom (male voice) or Vyomara (female voice). */
+.persona-switch { display: grid; gap: 5px; margin: 0 0 8px; }
+.persona-option { width: 100%; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 6px 9px; border: 1px solid rgba(90, 116, 190, .22); border-radius: 10px; background: rgba(255, 255, 255, .025); color: #9babcd; text-align: left; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease; }
+.persona-option:hover:not(:disabled) { border-color: rgba(120, 150, 230, .45); background: rgba(59, 83, 150, .18); color: #edf2ff; }
+.persona-option:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
+.persona-option:disabled { opacity: .5; cursor: not-allowed; }
+.persona-avatar { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 700; }
+.persona-vyom .persona-avatar { background: linear-gradient(135deg, #2b8cff, #3c48d8); }
+.persona-vyomara .persona-avatar { background: linear-gradient(135deg, #b46cff, #e0559e); }
+.persona-text { min-width: 0; display: grid; line-height: 1.2; }
+.persona-text strong { overflow: hidden; color: inherit; font-size: 10.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.persona-text small { overflow: hidden; color: #6c7c9e; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.persona-option-active { color: #f2f5ff; }
+.persona-vyom.persona-option-active { border-color: rgba(65, 130, 250, .6); background: linear-gradient(100deg, rgba(28, 93, 229, .38), rgba(38, 57, 153, .3)); }
+.persona-vyomara.persona-option-active { border-color: rgba(200, 110, 240, .6); background: linear-gradient(100deg, rgba(150, 60, 210, .34), rgba(190, 60, 140, .26)); }
+.persona-option-active .persona-text small { color: #b9c5e6; }

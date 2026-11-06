@@ -73,6 +73,7 @@ export function PipView() {
   const approval = state?.approval;
   const listening = state?.listening === true;
   const speaking = state?.speaking === true;
+  const name = state?.assistantName ?? 'Vyom';
   const detail = approval?.question ?? (state?.heard ? `“${state.heard}”` : state?.reply);
   const mood = approval ? 'approval' : recording ? 'recording' : speaking ? 'speaking' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
   // Approvals take the middle area; a draft in progress is kept and comes back after.
@@ -86,9 +87,9 @@ export function PipView() {
           listening={listening || recording || speaking || state?.busy === true}
           pressed={listening}
           disabled={!state?.voiceReady}
-          label={speaking && listening ? 'Interrupt Vyom' : listening ? 'End the conversation' : 'Talk to Vyom'}
+          label={speaking && listening ? `Interrupt ${name}` : listening ? 'End the conversation' : `Talk to ${name}`}
           title={state?.voiceReady
-            ? speaking && listening ? 'Interrupt Vyom' : listening ? 'End the conversation (⌥Space)' : 'Talk to Vyom (⌥Space)'
+            ? speaking && listening ? `Interrupt ${name}` : listening ? 'End the conversation (⌥Space)' : `Talk to ${name} (⌥Space)`
             : 'Set up voice in the Vyomara window'}
           onActivate={() => send({ type: 'toggle-listening' })}
         />
@@ -115,9 +116,9 @@ export function PipView() {
                 if (!draft.trim()) input.current?.blur();
               }
             }}
-            placeholder={recording ? 'Speak… your words appear here' : 'Type to Vyom…  (Enter to send)'}
+            placeholder={recording ? 'Speak… your words appear here' : `Type to ${name}…  (Enter to send)`}
             maxLength={32000}
-            aria-label="Message Vyom"
+            aria-label={`Message ${name}`}
           />
         </form>
       ) : (

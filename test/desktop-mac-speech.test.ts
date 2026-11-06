@@ -22,7 +22,7 @@ test('local speech invokes only the fixed macOS voice binary with bounded text',
   const result = await new MacSpeechRunner(spawnProcess, 'darwin').speak('Hello from Vyom.');
   assert.deepEqual(invocation, {
     executable: '/usr/bin/say',
-    args: ['-r', '190', '--', 'Hello from Vyom.'],
+    args: ['-r', '180', '--', 'Hello from Vyom.'],
   });
   assert.deepEqual(result, { status: 'completed' });
 });

@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/config.ts';
+import type { PersonaId } from '../shared/persona.ts';
 import type { Logger } from '../types.ts';
 import type { SessionMessage } from '../session/session.ts';
 import { runAgent } from '../agent/agent.ts';
@@ -82,6 +83,7 @@ export interface RequestOptions {
   readonly onPlan?: (steps: readonly PlanStep[]) => void;
   /** The request was spoken; replies should be short enough to read aloud. */
   readonly voice?: boolean;
+  readonly persona?: PersonaId;
   readonly includeFilesystemTools?: boolean;
   readonly fileOperationApproval?: FileOperationApprovalPort;
   readonly actions?: ActionToolPorts;
@@ -139,6 +141,7 @@ export async function runRequest(
         ...(options.onToolActivity ? { onToolActivity: options.onToolActivity } : {}),
         ...(options.onPlan ? { onPlan: options.onPlan } : {}),
         ...(options.voice ? { voice: true } : {}),
+        ...(options.persona ? { persona: options.persona } : {}),
       });
     } catch (error) {
       requestError = error;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyYesNo, confirmsDeletion, isGoodbye, isLikelyNoise, matchWakePhrase, speechText, VoiceSession } from '../src/shared/voice-intents.ts';
+import { classifyYesNo, confirmsDeletion, isGoodbye, isLikelyNoise, matchWakePhrase, romanForSpeech, speechText, VoiceSession } from '../src/shared/voice-intents.ts';
 
 // Real whisper (base, --language en) transcripts of macOS-synthesized speech.
 test('wake phrase matches the ways whisper hears "Vyomara"', () => {
@@ -104,12 +104,13 @@ test('Devanagari transcripts: wake phrase, yes/no, delete confirmation, and stop
   assert.deepEqual(session.decide('रुको', true), { type: 'cancel' });
 });
 
-test('speech voice follows the script of the reply', async () => {
+test('each assistant keeps one voice, preferring Enhanced versions', async () => {
   const { voiceFor } = await import('../src/desktop/mac-speech.ts');
-  const installed = new Set(['Lekha', 'Rishi', 'Samantha']);
-  assert.equal(await voiceFor('हाँ, बदलाव लागू कर दिया।', installed), 'Lekha');
-  assert.equal(await voiceFor('Theek hai, VS Code khol diya.', installed), 'Rishi');
-  assert.equal(await voiceFor('Hello', new Set(['Samantha'])), undefined);
+  const installed = new Set(['Lekha', 'Rishi', 'Aman', 'Samantha']);
+  assert.equal(await voiceFor('female', installed), 'Lekha');
+  assert.equal(await voiceFor('male', installed), 'Rishi');
+  assert.equal(await voiceFor('female', new Set(['Lekha', 'Lekha (Enhanced)'])), 'Lekha (Enhanced)');
+  assert.equal(await voiceFor('male', new Set(['Samantha'])), undefined);
 });
 
 // Heard through the real microphone in the app: macOS saying "Hello Vyomara", and room noise.
@@ -163,4 +164,9 @@ test('doubled noise words are dropped but doubled answers are kept', () => {
 test('goodbyes are recognised in the spellings whisper uses', () => {
   for (const phrase of ['bas', 'Okay, boss.', 'Oke, bas.', 'Okay, bus.', 'theek hai bas karo', 'बस']) assert.equal(isGoodbye(phrase), true, phrase);
   for (const phrase of ['bas ek file aur bana do', 'bus stand kahan hai', 'Chrome kholo']) assert.equal(isGoodbye(phrase), false, phrase);
+});
+
+test('Devanagari is read in Roman letters by the male voice', () => {
+  assert.equal(romanForSpeech('ठीक है, VS Code खोल दिया। अब क्या करूँ?'), 'theek hai, VS Code khol diya. ab kya karoon?');
+  assert.equal(romanForSpeech('Apply karun?'), 'Apply karun?');
 });

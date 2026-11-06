@@ -1,3 +1,4 @@
+import { DEFAULT_PERSONA, isPersonaId, personaFor, type PersonaId } from '../shared/persona.ts';
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, session, shell, systemPreferences } from 'electron';
 import type { SaveDialogOptions } from 'electron';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -76,6 +77,8 @@ let voiceListeningEnabled = false;
 let dictationActive = false;
 /** Speech-recognition model in use; "best" handles Hindi, English, and mixed speech. */
 let speechModel: SpeechModelId = 'fast';
+/** Which assistant answers and speaks: Vyom (male) or Vyomara (female). */
+let persona: PersonaId = DEFAULT_PERSONA;
 let config: AppConfig | undefined;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -197,6 +200,27 @@ function permissionsState() {
   return {
     grants: approvalMemory.grants().flatMap(id => describeGrant(id) ?? []),
   };
+}
+
+function personaPath(): string {
+  return join(app.getPath('userData'), 'assistant.json');
+}
+
+async function readPersona(): Promise<PersonaId> {
+  try {
+    const value: unknown = JSON.parse(await readFile(personaPath(), 'utf8'));
+    const id = typeof value === 'object' && value !== null ? (value as { persona?: unknown }).persona : undefined;
+    return isPersonaId(id) ? id : DEFAULT_PERSONA;
+  } catch {
+    return DEFAULT_PERSONA;
+  }
+}
+
+async function savePersona(id: PersonaId): Promise<void> {
+  await mkdir(app.getPath('userData'), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${personaPath()}.tmp`;
+  await writeFile(temporaryPath, JSON.stringify({ persona: id }), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporaryPath, personaPath());
 }
 
 function voicePreferencePath(): string {
@@ -638,6 +662,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
       {
         ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         ...(request.voice ? { voice: true } : {}),
+        persona,
         onText: text => send('vyomara:chat-text', { requestId: request.requestId, text }),
         onToolActivity: activity => send('vyomara:tool-activity', { requestId: request.requestId, ...activity }),
         onPlan: steps => send('vyomara:plan', { requestId: request.requestId, steps }),
@@ -914,13 +939,27 @@ ipcMain.handle('vyomara:speech-transcribe', async (event, input: unknown) => {
 ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
   // The renderer stops recording while Vyom speaks, so the reply is not heard as a command.
   try {
-    return await macSpeechRunner.speak(input);
+    return await macSpeechRunner.speak(input, personaFor(persona).gender);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
 });
 
 ipcMain.handle('vyomara:speech-stop', () => macSpeechRunner.stop());
+
+ipcMain.handle('vyomara:persona-get', (event) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Assistant request is invalid.');
+  return persona;
+});
+
+ipcMain.handle('vyomara:persona-set', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Assistant request is invalid.');
+  if (!isPersonaId(input)) throw new Error('Choose Vyom or Vyomara.');
+  if (activeRequest) throw new Error('Wait for the current task to finish before switching assistants.');
+  persona = input;
+  await savePersona(input);
+  return persona;
+});
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
@@ -960,6 +999,7 @@ app.whenReady().then(async () => {
     // Restores the chosen speech model. Listening itself never resumes on launch:
     // an open conversation hears everything, so it starts only when the user presses the orb.
     await readVoiceListeningPreference();
+    persona = await readPersona();
     approvalMemory = new ApprovalMemory({
       grants: await readStandingGrants(),
       onGrantsChanged: grants => {

@@ -872,3 +872,16 @@ test('project discovery lists projects nested inside grouping folders', async t 
     { folder: join(home, 'Projects'), projects: ['notes', 'openSpace/KeylessRN', 'vyomara'] },
   ]);
 });
+
+test('the system prompt names the chosen assistant and its grammatical gender', async () => {
+  const { buildSystemPrompt } = await import('../src/agent/system-prompt.ts');
+  const environment = { date: '2026-11-06', osRelease: 'test', home: '/Users/test', projectFolders: [] } as unknown as Parameters<typeof buildSystemPrompt>[0];
+  const female = buildSystemPrompt(environment, [], { persona: 'vyomara', voice: true });
+  assert.match(female, /You are Vyomara, the female AI assistant/);
+  assert.match(female, /main kar rahi hoon/);
+  assert.doesNotMatch(female, /never Devanagari/);
+  const male = buildSystemPrompt(environment, [], { voice: true });
+  assert.match(male, /You are Vyom, the male AI assistant/);
+  assert.match(male, /main kar raha hoon/);
+  assert.match(male, /never Devanagari/);
+});
