@@ -155,6 +155,25 @@ test('agent accepts a final response without invoking available tools', async ()
   });
 });
 
+test('simple greetings get an immediate response without waiting for the model', async () => {
+  const registry = new ToolRegistry();
+  let providerCalls = 0;
+  const app = harness({
+    id: 'test.greeting-fast-path',
+    async complete() {
+      providerCalls++;
+      throw new Error('The model should not be called for a simple greeting.');
+    },
+  }, registry);
+
+  assert.equal(await app.run(undefined, 'hi vyom'), "Hi! I'm here—what can I help you with?");
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(app.session.messages().slice(-2), [
+    { role: 'user', content: 'hi vyom' },
+    { role: 'assistant', content: "Hi! I'm here—what can I help you with?" },
+  ]);
+});
+
 test('agent withholds filesystem tools for greetings and limits project location to name search', async t => {
   const root = await mkdtemp(join(tmpdir(), 'vyomara-filesystem-intent-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -177,11 +196,6 @@ test('agent withholds filesystem tools for greetings and limits project location
       kind: 'tool-calls',
       calls: [{ toolId: 'filesystem.list-directory', arguments: { path: root } }],
     },
-    { kind: 'final', text: 'Hi there!' },
-    {
-      kind: 'tool-calls',
-      calls: [{ toolId: 'filesystem.list-directory', arguments: { path: root } }],
-    },
     {
       kind: 'tool-calls',
       calls: [{ toolId: 'filesystem.search', arguments: { query: 'keylessrn', path: root } }],
@@ -192,13 +206,11 @@ test('agent withholds filesystem tools for greetings and limits project location
     maxAgentIterations: 4,
   });
 
-  assert.equal(await app.run(undefined, 'Hi Vyom'), 'Hi there!');
+  assert.equal(await app.run(undefined, 'Hi Vyom'), "Hi! I'm here—what can I help you with?");
   assert.equal(directoryOpens, 0);
   assert.match(await app.run(undefined, 'Where is my keylessrn project?'), /keylessrn/u);
   assert.equal(directoryOpens, 1);
   assert.deepEqual(advertised, [
-    [],
-    [],
     ['filesystem.search'],
     ['filesystem.search'],
     ['filesystem.search'],
@@ -311,6 +323,40 @@ test('filename search ignores an out-of-scope model path and searches the config
   assert.deepEqual(JSON.parse(search.content).matches, [{
     path: await realpath(marker),
     type: 'file',
+  }]);
+});
+
+test('project search drops malformed model paths and searches the configured root', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-malformed-search-path-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectPath = join(root, 'Vyomara');
+  await mkdir(projectPath);
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [root],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{
+        toolId: 'filesystem.search',
+        arguments: { query: 'vyomara', path: '../relative/path' },
+      }],
+    },
+    { kind: 'final', text: 'I found the project.' },
+  ]), registry, config);
+
+  const response = await app.run(undefined, 'can you tell me where is my project vyomara located?');
+
+  assert.ok(response.includes(projectPath));
+  const search = app.session.messages().find(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(search?.role, 'tool');
+  assert.deepEqual(JSON.parse(search.content).matches, [{
+    path: await realpath(projectPath),
+    type: 'directory',
   }]);
 });
 
@@ -650,6 +696,150 @@ test('Markdown read requests deterministically read verified docs and summarize 
     '# Architecture\nIt stores inventory records locally.\n',
   ]);
   assert.equal(readResults.length, 2);
+});
+
+test('Markdown reading searches beyond a truncated tree before reporting no documents', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-truncated-markdown-tree-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const allowedRoot = await realpath(root);
+  const projectPath = join(allowedRoot, 'sample-project');
+  const readme = join(projectPath, 'z-docs', 'README.md');
+  const guide = join(projectPath, 'z-docs', 'guide.markdown');
+  await mkdir(join(projectPath, 'alpha'), { recursive: true });
+  await mkdir(join(projectPath, 'z-docs'), { recursive: true });
+  await writeFile(join(projectPath, 'alpha', 'a.ts'), 'export const a = 1;\n');
+  await writeFile(join(projectPath, 'alpha', 'b.ts'), 'export const b = 2;\n');
+  await writeFile(readme, '# Sample project\nA local-first notes application.\n');
+  await writeFile(guide, '# Design\nNotes stay on the device.\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [allowedRoot],
+    maxDirectoryEntries: 3,
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const advertised: string[][] = [];
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.directory-tree', arguments: { path: '/wrong/path' } }],
+    },
+    { kind: 'final', text: 'I checked the tree and found no Markdown files.' },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.search', arguments: { query: 'anything', path: '/wrong/path' } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: '/wrong/README.md' } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: '/wrong/guide.markdown' } }],
+    },
+    { kind: 'final', text: 'The documentation describes a local-first notes application that keeps notes on the device.' },
+  ], (_messages, tools) => advertised.push((tools ?? []).map(tool => tool.id))), registry, {
+    ...config,
+    maxAgentIterations: 8,
+  });
+
+  const result = await app.run(
+    undefined,
+    `Read the md files and tell me what this project is. Project: ${projectPath}`,
+  );
+
+  assert.match(result, /local-first notes application/u);
+  assert.doesNotMatch(result, /found no Markdown files/u);
+  const toolMessages = app.session.messages().filter(message => message.role === 'tool');
+  const searchResults = toolMessages.filter(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.search');
+  assert.equal(searchResults.length, 1);
+  assert.deepEqual(searchResults.map(message => message.role === 'tool'
+    ? JSON.parse(message.content).matches.map((match: { path: string }) => match.path)
+    : []), [[await realpath(readme), await realpath(guide)]]);
+  const readResults = toolMessages.filter(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.read-file');
+  assert.equal(readResults.length, 2);
+  assert.deepEqual(readResults.map(message => message.role === 'tool'
+    ? JSON.parse(message.content).content
+    : undefined), [
+    '# Sample project\nA local-first notes application.\n',
+    '# Design\nNotes stay on the device.\n',
+  ]);
+  assert.deepEqual(advertised, [
+    ['filesystem.directory-tree'],
+    ['filesystem.search'],
+    ['filesystem.search'],
+    ['filesystem.read-file'],
+    ['filesystem.read-file'],
+    [],
+  ]);
+});
+
+test('Hinglish follow-up continues the previous Markdown reading request', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'vyomara-hinglish-markdown-followup-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const allowedRoot = await realpath(root);
+  const projectPath = join(allowedRoot, 'sample-project');
+  const readme = join(projectPath, 'README.md');
+  await mkdir(projectPath);
+  await writeFile(readme, '# Sample project\nA local-first notes application.\n');
+  const config = {
+    ...loadConfig({ VYOM_PROVIDER: 'placeholder' }),
+    filesystemAllowedRoots: [allowedRoot],
+  };
+  const registry = new ToolRegistry();
+  registerFilesystemTools(registry, config);
+  const app = harness(sequenceProvider([
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.directory-tree', arguments: { path: '/wrong/path' } }],
+    },
+    {
+      kind: 'tool-calls',
+      calls: [{ toolId: 'filesystem.read-file', arguments: { path: '/wrong/README.md' } }],
+    },
+    { kind: 'final', text: 'It is a local-first notes application.' },
+  ]), registry, config);
+  app.session.add({
+    role: 'user',
+    content: `Check this project and analyse it. Project: ${projectPath}`,
+  });
+  app.session.add({
+    role: 'assistant',
+    kind: 'tool-call',
+    content: '',
+    toolCalls: [{
+      toolId: 'filesystem.directory-tree',
+      arguments: { path: projectPath },
+    }],
+  });
+  app.session.add({
+    role: 'tool',
+    toolId: 'filesystem.directory-tree',
+    content: JSON.stringify({
+      entries: [],
+      truncated: true,
+    }),
+  });
+  app.session.add({
+    role: 'assistant',
+    content: 'I found 100 entries, but could not verify the project location.',
+  });
+  app.session.add({
+    role: 'user',
+    content: 'Read the md files and tell me what this project is.',
+  });
+  app.session.add({
+    role: 'assistant',
+    content: 'I found no Markdown files.',
+  });
+
+  const result = await app.run(undefined, 'read karo yaar ache se');
+
+  assert.match(result, /local-first notes application/u);
+  assert.ok(app.session.messages().some(message =>
+    message.role === 'tool' && message.toolId === 'filesystem.read-file'));
 });
 
 test('Markdown read follow-ups retain the requested workflow and report model output limits safely', async t => {

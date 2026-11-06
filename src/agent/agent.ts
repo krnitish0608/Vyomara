@@ -28,6 +28,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function simpleGreetingResponse(prompt: string): string | undefined {
+  const greeting = prompt.trim().toLocaleLowerCase().replace(/[.!?]+$/u, '');
+  if (!/^(?:hi|hello|hey|hiya|yo|good morning|good afternoon|good evening)(?:\s+(?:vyom|there))?$/u.test(greeting)) {
+    return undefined;
+  }
+  return "Hi! I'm here—what can I help you with?";
+}
+
 function unsupportedCapability(
   prompt: string,
   canProposeEdits: boolean,
@@ -93,7 +101,8 @@ function filesystemToolsForPrompt(
   const hasFilesystemSubject =
     filesystemSubjectPattern.test(prompt) ||
     (hasRecentSearchResult && /\b(?:repository|repo|project|folder|directory|files?|folders?)\b/i.test(prompt)) ||
-    refersToRecentSubject;
+    refersToRecentSubject ||
+    asksForMarkdownRead(prompt, recentUserContext);
   const asksForNameSearch =
     /\b(?:find|search|serch|locate|look\s+for|where|whre|whrere|where's|where\s+is|where\s+can\s+i\s+find|open)\b|\bcheck\b[\s\S]{0,24}\b(?:again|once\s+more)\b|(?:ढूंढ|ढूँढ|खोज|कहाँ|कहां)/iu.test(intentPrompt);
   const asksForFilesystemAction =
@@ -117,6 +126,7 @@ function filesystemToolsForPrompt(
     return tools.filter(tool =>
       !tool.id.startsWith('filesystem.') ||
       tool.id === 'filesystem.directory-tree' ||
+      tool.id === 'filesystem.search' ||
       tool.id === 'filesystem.read-file');
   }
   if (asksForProjectAnalysis(intentPrompt)) {
@@ -372,9 +382,11 @@ function asksForProjectAnalysis(prompt: string): boolean {
 function asksForMarkdownRead(prompt: string, recentUserContext = ''): boolean {
   const markdownMention = /\bmarkdown\b|\bmd\s+files?\b|\.md(?:\b|$)/i;
   const readIntent = /\b(?:read|open|inspect|review|summari[sz]e|understand)\b/i;
+  const markdownFollowup =
+    /\b(?:karo|kar|properly|carefully|again|well|ache\s+se|achhe\s+se|theek\s+se|thik\s+se)\b|(?:करो|करिए|करें|अच्छे\s+से|ठीक\s+से)/iu;
   return (readIntent.test(prompt) && markdownMention.test(prompt)) ||
     (markdownMention.test(recentUserContext) &&
-      /\b(?:read|open|inspect|review|summari[sz]e|understand)\s+(?:those|them|these)\b/i.test(prompt));
+      (readIntent.test(prompt) || markdownFollowup.test(prompt)));
 }
 
 function verifiedMarkdownFiles(
@@ -532,6 +544,42 @@ function latestVerifiedSearchDirectory(messages: ReturnType<Session['messages']>
   return undefined;
 }
 
+function latestVerifiedTreeDirectory(
+  messages: ReturnType<Session['messages']>,
+  allowedRoots: readonly string[],
+): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const resultMessage = messages[index];
+    if (resultMessage?.role !== 'tool' || resultMessage.toolId !== 'filesystem.directory-tree') continue;
+    let result: unknown;
+    try {
+      result = JSON.parse(resultMessage.content);
+    } catch {
+      return undefined;
+    }
+    if (!isRecord(result) || !Array.isArray(result.entries) || typeof result.truncated !== 'boolean') {
+      return undefined;
+    }
+    for (let callIndex = index - 1; callIndex >= 0; callIndex -= 1) {
+      const callMessage = messages[callIndex];
+      if (callMessage?.role !== 'assistant' || callMessage.kind !== 'tool-call') continue;
+      const call = callMessage.toolCalls.find(candidate => candidate.toolId === 'filesystem.directory-tree');
+      const path = call?.arguments.path;
+      if (
+        typeof path === 'string' &&
+        isAbsolute(path) &&
+        !path.split(sep).includes('..') &&
+        pathWithinConfiguredRoots(path, allowedRoots)
+      ) {
+        return resolve(path);
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 function exactQuotedAbsolutePath(prompt: string): string | undefined {
   const matches = [...prompt.matchAll(/(["'`])(\/[^\r\n]{1,4096}?)\1/g)];
   return matches.length === 1 ? matches[0]?.[2] : undefined;
@@ -629,11 +677,27 @@ function executionArguments(
   }
   if (toolId === 'filesystem.search') {
     const searchArguments = normalizedArguments;
+    const hasExplicitPath = /(?:^|\s)(?:\/|[A-Za-z]:[\\/])(?:[^\s"'`]+)?/.test(prompt);
+    if (typeof searchArguments.path === 'string') {
+      if (searchArguments.path === '') {
+        delete searchArguments.path;
+      } else if (
+        searchArguments.path === '~' ||
+        searchArguments.path.startsWith('~/')
+      ) {
+        const relativePath = searchArguments.path === '~' ? '' : searchArguments.path.slice(2);
+        if (!relativePath.split('/').includes('..')) {
+          searchArguments.path = join(homedir(), relativePath);
+        }
+      }
+    }
     if (
-      typeof searchArguments.path === 'string' &&
-      isAbsolute(searchArguments.path) &&
-      !pathWithinConfiguredRoots(searchArguments.path, allowedRoots) &&
-      !/(?:^|\s)(?:\/|[A-Za-z]:[\\/])(?:[^\s"'`]+)?/.test(prompt)
+      !hasExplicitPath &&
+      searchArguments.path !== undefined &&
+      (typeof searchArguments.path !== 'string' ||
+        !isAbsolute(searchArguments.path) ||
+        searchArguments.path.split(sep).includes('..') ||
+        !pathWithinConfiguredRoots(searchArguments.path, allowedRoots))
     ) {
       delete searchArguments.path;
     }
@@ -655,17 +719,6 @@ function executionArguments(
         .replace(/\b(?:project|projects|folder|folders|directory|directories|repo|repository|repositories|file|files|document|documents)\b/giu, ' ')
         .trim();
       if (specificQuery !== '') searchArguments.query = specificQuery;
-    }
-    if (searchArguments.path === '') {
-      delete searchArguments.path;
-    } else if (
-      typeof searchArguments.path === 'string' &&
-      (searchArguments.path === '~' || searchArguments.path.startsWith('~/'))
-    ) {
-      const relativePath = searchArguments.path === '~' ? '' : searchArguments.path.slice(2);
-      if (!relativePath.split('/').includes('..')) {
-        searchArguments.path = join(homedir(), relativePath);
-      }
     }
     return searchArguments;
   }
@@ -806,6 +859,18 @@ async function runAgentTask(
   options.session.add({ role: 'user', content: prompt });
   const start = Date.now();
   task.transition('planning');
+  const greetingResponse = simpleGreetingResponse(prompt);
+  if (greetingResponse) {
+    options.session.add({ role: 'assistant', content: greetingResponse });
+    options.logger.emit({
+      event: 'request.completed',
+      taskId: task.taskId,
+      runId: task.runId,
+      durationMs: Date.now() - start,
+      iterations: 0,
+    });
+    return greetingResponse;
+  }
   const canProposeEdits = options.tools.modelTools().some(tool => tool.id.startsWith('filesystem.propose-'));
   const canOpenApplications = options.tools.modelTools().some(tool => tool.id === 'application.open');
   const unsupportedResponse = unsupportedCapability(
@@ -836,6 +901,9 @@ async function runAgentTask(
   const verifiedFileContents = new Map<string, string>();
   const verifiedTreeFilesByRoot = new Map<string, Set<string>>();
   let markdownTreeTruncated = false;
+  let markdownSearchCompleted = false;
+  let markdownSearchTruncated = false;
+  let markdownTreeRoot: string | undefined;
   const filesystemToolResults: string[] = [];
   let editToolRepairInstruction: string | undefined;
   let editToolRepairAttempts = 0;
@@ -853,6 +921,16 @@ async function runAgentTask(
     .join('\n');
   const markdownReadRequest = asksForMarkdownRead(prompt, recentUserContext);
   const recentSearchDirectory = latestVerifiedSearchDirectory(options.session.messages());
+  const recentProjectDirectory = recentSearchDirectory ??
+    latestVerifiedTreeDirectory(options.session.messages(), options.config.filesystemAllowedRoots);
+  if (markdownReadRequest) {
+    const projectRoot =
+      explicitProjectRoot(prompt, options.config.filesystemAllowedRoots) ??
+      recentProjectDirectory;
+    markdownReadRepairInstruction = projectRoot
+      ? `Continue the user's request to read this project's Markdown documentation. Start by calling filesystem.directory-tree with this exact project path: ${projectRoot}. Do not answer by translating or paraphrasing the latest short follow-up.`
+      : 'Continue the user’s request to read the project Markdown documentation. Start with filesystem.directory-tree for the exact project directory already established in the conversation. Do not treat a short follow-up as a request to translate it.';
+  }
   const currentTurnMessages = () => {
     const messages = options.session.messages();
     if (!markdownReadRequest) return [...messages];
@@ -901,9 +979,11 @@ async function runAgentTask(
     const analysisRepairTools = markdownReadRequest
       ? availableTools.filter(tool =>
         tool.id === (
-          successfulToolIds.has('filesystem.directory-tree')
-            ? unreadMarkdownFiles.length > 0 ? 'filesystem.read-file' : ''
-            : 'filesystem.directory-tree'
+          !successfulToolIds.has('filesystem.directory-tree')
+            ? 'filesystem.directory-tree'
+            : markdownTreeTruncated && !markdownSearchCompleted
+              ? 'filesystem.search'
+              : unreadMarkdownFiles.length > 0 ? 'filesystem.read-file' : ''
         ))
       : !asksForProjectAnalysis(prompt)
         ? availableTools
@@ -1027,11 +1107,26 @@ async function runAgentTask(
         }
         throw recoverableToolFailure;
       }
+      if (
+        markdownReadRequest &&
+        successfulToolIds.has('filesystem.directory-tree') &&
+        markdownTreeTruncated &&
+        !markdownSearchCompleted &&
+        toolCalls < options.config.maxToolCalls &&
+        markdownReadRepairAttempts < 3
+      ) {
+        markdownReadRepairAttempts++;
+        markdownReadRepairInstruction =
+          `The project tree was truncated. Search Markdown filenames in this exact directory before answering: ${markdownTreeRoot ?? 'the verified project directory'}.`;
+        continue;
+      }
       if (markdownReadRequest && successfulToolIds.has('filesystem.directory-tree')) {
         const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
         const unreadMarkdownFiles = markdownFiles.filter(path => !readFilePaths.has(path));
         if (markdownFiles.length === 0) {
-          const safeResponse = 'I checked the verified project tree and found no Markdown files to read.';
+          const safeResponse = markdownTreeTruncated && !markdownSearchCompleted
+            ? 'The project listing was truncated, so I couldn’t verify whether it contains Markdown files.'
+            : 'I checked the verified project tree and found no Markdown files to read.';
           options.session.add({ role: 'assistant', content: safeResponse });
           options.logger.emit({
             event: 'request.completed',
@@ -1423,12 +1518,25 @@ async function runAgentTask(
           options.config.filesystemAllowedRoots,
         );
         if (
+          call.toolId === 'filesystem.search' &&
+          markdownReadRequest &&
+          markdownTreeTruncated &&
+          !markdownSearchCompleted &&
+          markdownTreeRoot
+        ) {
+          args = {
+            ...args,
+            query: '.m',
+            path: markdownTreeRoot,
+          };
+        }
+        if (
           call.toolId === 'filesystem.directory-tree' &&
           (asksForProjectAnalysis(prompt) || markdownReadRequest)
         ) {
           const projectRoot =
             explicitProjectRoot(prompt, options.config.filesystemAllowedRoots) ??
-            (markdownReadRequest ? recentSearchDirectory : undefined);
+            (markdownReadRequest ? recentProjectDirectory : undefined);
           args = {
             ...args,
             ...(projectRoot === undefined ? {} : { path: projectRoot }),
@@ -1625,6 +1733,7 @@ async function runAgentTask(
           Array.isArray(result.entries)
         ) {
           const treeRoot = resolve(args.path);
+          if (markdownReadRequest) markdownTreeRoot = treeRoot;
           if (markdownReadRequest && result.truncated === true) {
             markdownTreeTruncated = true;
           }
@@ -1640,6 +1749,36 @@ async function runAgentTask(
             treeFiles.add(resolve(treeRoot, entry.path));
           }
           verifiedTreeFilesByRoot.set(treeRoot, treeFiles);
+        }
+        if (
+          call.toolId === 'filesystem.search' &&
+          markdownReadRequest &&
+          markdownTreeRoot &&
+          isRecord(result) &&
+          Array.isArray(result.matches)
+        ) {
+          const treeFiles = verifiedTreeFilesByRoot.get(markdownTreeRoot) ?? new Set<string>();
+          for (const match of result.matches) {
+            if (
+              !isRecord(match) ||
+              match.type !== 'file' ||
+              typeof match.path !== 'string' ||
+              !isAbsolute(match.path) ||
+              !/\.(?:md|markdown)$/i.test(match.path) ||
+              !pathWithinConfiguredRoots(match.path, [markdownTreeRoot])
+            ) continue;
+            treeFiles.add(resolve(match.path));
+          }
+          verifiedTreeFilesByRoot.set(markdownTreeRoot, treeFiles);
+          markdownSearchTruncated ||= result.truncated === true;
+          markdownSearchCompleted = true;
+          markdownTreeTruncated = markdownSearchTruncated;
+          const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
+          markdownReadRepairInstruction = markdownFiles.length > 0
+            ? `Read the Markdown files found by the verified filename search, starting with this exact path: ${markdownFiles.find(path => !readFilePaths.has(path)) ?? markdownFiles[0]}. After the files have been read, summarize what the project is in a few sentences. Do not reproduce document text.`
+            : markdownTreeTruncated
+              ? 'The Markdown filename search was incomplete. Do not claim that the project contains no Markdown files; explain that the search was partial.'
+              : 'The complete Markdown filename search found no Markdown files. Report that clearly without guessing about the project.';
         }
         options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
         successfulToolIds.add(call.toolId);
@@ -1661,7 +1800,9 @@ async function runAgentTask(
         }
         if (call.toolId === 'filesystem.directory-tree' && markdownReadRequest) {
           const markdownFiles = verifiedMarkdownFiles(verifiedTreeFilesByRoot);
-          markdownReadRepairInstruction = markdownFiles.length > 0
+          markdownReadRepairInstruction = markdownTreeTruncated
+            ? `The verified project tree is truncated. Search for Markdown filenames in this exact project directory before concluding whether Markdown files exist: ${markdownTreeRoot ?? args.path}.`
+            : markdownFiles.length > 0
             ? `Read the Markdown files from the verified tree, starting with this exact path: ${markdownFiles[0]}. After the files have been read, summarize what the project is in a few sentences.${markdownTreeTruncated ? ' The tree was truncated, so clearly state that this is a partial read.' : ''} Do not reproduce document text.`
             : 'The verified project tree contains no Markdown files. Report that clearly without guessing about the project.';
         }

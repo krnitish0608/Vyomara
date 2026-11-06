@@ -313,7 +313,7 @@ test('agent rejects malformed provider responses', async () => {
     },
   };
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(provider)),
+    runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(provider)),
     (error: unknown) => error instanceof AgentError && error.code === 'invalid-provider-response',
   );
 });
@@ -337,7 +337,7 @@ test('agent enforces the iteration limit', async () => {
     },
   };
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(
+    runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(
       provider,
       config({ maxAgentIterations: 1 }),
       createLogger(() => {}),
@@ -356,7 +356,7 @@ test('provider timeout is enforced even if a provider ignores its signal', async
     },
   };
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(
+    runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(
       provider,
       config({ requestTimeoutMs: 100 }),
     )),
@@ -402,7 +402,7 @@ test('cancellation stops a pending provider request', async () => {
       });
     },
   };
-  const pending = runAgent('hello', controller.signal, agentOptions(provider));
+  const pending = runAgent('Tell me a fun fact.', controller.signal, agentOptions(provider));
   controller.abort();
   await assert.rejects(
     pending,

@@ -573,7 +573,7 @@ test('agent timeout bounds an Ollama request even if fetch does not settle', asy
   });
 
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, {
+    runAgent('Tell me a fun fact.', new AbortController().signal, {
       provider: ollama,
       tools: executor,
       config,
