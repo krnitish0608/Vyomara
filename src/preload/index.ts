@@ -1,11 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
+  DesktopActionProposal,
   DesktopChatRequest,
-  DesktopApplicationLaunchProposal,
   DesktopFileOperationProposal,
+  DesktopModelPullProgress,
   DesktopSpeechRecognitionEvent,
+  DesktopToolActivity,
   VyomaraDesktopApi,
 } from '../desktop/contracts.ts';
+
+function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
+  const handler = (_event: Electron.IpcRendererEvent, value: T): void => listener(value);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
 
 const api: VyomaraDesktopApi = {
@@ -38,18 +46,29 @@ const api: VyomaraDesktopApi = {
   rejectFileOperation(id: string) {
     return ipcRenderer.invoke('vyomara:file-operation-reject', id);
   },
-  onApplicationLaunchProposal(listener: (proposal: DesktopApplicationLaunchProposal) => void) {
-    const handler = (_event: Electron.IpcRendererEvent, proposal: DesktopApplicationLaunchProposal): void => {
-      listener(proposal);
-    };
-    ipcRenderer.on('vyomara:application-launch-proposed', handler);
-    return () => ipcRenderer.removeListener('vyomara:application-launch-proposed', handler);
+  onActionProposal(listener: (proposal: DesktopActionProposal) => void) {
+    return subscribe('vyomara:action-proposed', listener);
   },
-  approveApplicationLaunch(id: string) {
-    return ipcRenderer.invoke('vyomara:application-launch-approve', id);
+  approveAction(id: string) {
+    return ipcRenderer.invoke('vyomara:action-approve', id);
   },
-  rejectApplicationLaunch(id: string) {
-    return ipcRenderer.invoke('vyomara:application-launch-reject', id);
+  rejectAction(id: string) {
+    return ipcRenderer.invoke('vyomara:action-reject', id);
+  },
+  onToolActivity(listener: (activity: DesktopToolActivity) => void) {
+    return subscribe('vyomara:tool-activity', listener);
+  },
+  listModels() {
+    return ipcRenderer.invoke('vyomara:models-list');
+  },
+  selectModel(model: string) {
+    return ipcRenderer.invoke('vyomara:model-select', model);
+  },
+  pullModel(model: string) {
+    return ipcRenderer.invoke('vyomara:model-pull', model);
+  },
+  onModelPullProgress(listener: (progress: DesktopModelPullProgress) => void) {
+    return subscribe('vyomara:model-pull-progress', listener);
   },
   cancelRequest() {
     return ipcRenderer.invoke('vyomara:chat-cancel');

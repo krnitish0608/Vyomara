@@ -2,7 +2,7 @@
   "name": "vyomara",
   "version": "0.1.0",
   "private": true,
-  "description": "Vyomara — a local-first personal AI assistant",
+  "description": "Vyomara \u2014 a local-first personal AI assistant",
   "packageManager": "pnpm@12.16.1",
   "type": "module",
   "main": "out/main/index.js",
@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "desktop": "node scripts/desktop-app.mjs",
     "build:desktop": "electron-vite build",
-    "preview:desktop": "node scripts/desktop-app.mjs"
+    "preview:desktop": "node scripts/desktop-app.mjs",
+    "check": "pnpm typecheck && pnpm test"
   },
   "engines": {
     "node": ">=22.22.1"

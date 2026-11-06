@@ -2,8 +2,9 @@ import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import type { SessionMessage } from '../session/session.ts';
 import { runAgent } from '../agent/agent.ts';
-import { requestedApplicationId } from '../agent/intents.ts';
+import type { ToolActivity } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
+import type { ModelProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
   DesktopConversationMessage,
@@ -12,17 +13,10 @@ import type {
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
 import { createDefaultToolRegistry } from '../tools/default-tools.ts';
-import type {
-  ApplicationLaunchApprovalPort,
-  ApplicationLauncherPort,
-} from '../tools/application-tools.ts';
+import type { ActionToolPorts } from '../tools/action-tools.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
 import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
-
-function promptContainsAbsoluteLocalPath(prompt: string): boolean {
-  return /(?:^|[\s"'`])\/(?!\/)[^\s"'`]+/.test(prompt);
-}
 
 export interface RequestResult {
   readonly response: string;
@@ -80,44 +74,49 @@ export function exportDesktopSession(config: AppConfig, sessionId: string): stri
   }
 }
 
+export interface RequestOptions {
+  readonly sessionId?: string;
+  readonly onText?: (text: string) => void;
+  readonly onToolActivity?: (activity: ToolActivity) => void;
+  readonly includeFilesystemTools?: boolean;
+  readonly fileOperationApproval?: FileOperationApprovalPort;
+  readonly actions?: ActionToolPorts;
+}
+
+export function createProvider(config: AppConfig): ModelProvider {
+  return config.provider === 'ollama'
+    ? new OllamaProvider({
+      baseUrl: config.ollamaBaseUrl,
+      model: config.ollamaModel,
+      numCtx: config.ollamaNumCtx,
+      think: config.ollamaThink,
+      maxResponseChars: config.maxResponseChars,
+      maxToolCallArgumentsChars: config.maxToolInputChars,
+    })
+    : new PlaceholderProvider();
+}
+
 export async function runRequest(
   prompt: string,
   signal: AbortSignal,
   config: AppConfig,
   logger: Logger,
-  sessionId?: string,
-  onText?: (text: string) => void,
-  includeFilesystemTools?: boolean,
-  fileOperationApproval?: FileOperationApprovalPort,
-  applicationLauncher?: ApplicationLauncherPort,
-  applicationLaunchApproval?: ApplicationLaunchApprovalPort,
+  options: RequestOptions = {},
 ): Promise<RequestResult> {
-  const enableFilesystemTools = includeFilesystemTools ??
-    (config.filesystemAllowedRoots.length > 0 && promptContainsAbsoluteLocalPath(prompt));
   const store = new SqliteStore(config.dataDirectory);
   try {
-    const session = sessionId === undefined
+    const session = options.sessionId === undefined
       ? store.createSession()
-      : store.getSession(sessionId);
+      : store.getSession(options.sessionId);
     const taskLogger = withPersistentAudit(logger, store);
-    const provider = config.provider === 'ollama'
-      ? new OllamaProvider({
-        baseUrl: config.ollamaBaseUrl,
-        model: config.ollamaModel,
-        maxResponseChars: config.maxResponseChars,
-        maxToolCallArgumentsChars: config.maxToolOutputChars,
-      })
-      : new PlaceholderProvider();
     const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(
-        config,
-        enableFilesystemTools,
-        fileOperationApproval,
-        applicationLauncher,
-        applicationLaunchApproval,
-      ),
+      registry: createDefaultToolRegistry(config, {
+        ...(options.includeFilesystemTools === undefined ? {} : { includeFilesystemTools: options.includeFilesystemTools }),
+        ...(options.fileOperationApproval ? { fileOperationApproval: options.fileOperationApproval } : {}),
+        ...(options.actions ? { actions: options.actions } : {}),
+      }),
       policy: new PolicyGateway({
-        authorizedApplication: requestedApplicationId(prompt),
+        allowedEffects: options.actions ? ['launch', 'shell', 'network'] : [],
       }),
       config,
       logger: taskLogger,
@@ -127,12 +126,13 @@ export async function runRequest(
     let requestError: unknown;
     try {
       response = await runAgent(prompt, signal, {
-        provider,
+        provider: createProvider(config),
         tools,
         config,
         session,
         logger: taskLogger,
-        onText,
+        ...(options.onText ? { onText: options.onText } : {}),
+        ...(options.onToolActivity ? { onToolActivity: options.onToolActivity } : {}),
       });
     } catch (error) {
       requestError = error;
@@ -163,3 +163,24 @@ export async function runRequest(
     store.close();
   }
 }
+
+/** The model chosen in the app (stored locally), if any. */
+export function readSelectedModel(config: AppConfig): string | undefined {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    return store.getAppSetting(SELECTED_MODEL_SETTING);
+  } finally {
+    store.close();
+  }
+}
+
+export function saveSelectedModel(config: AppConfig, model: string): void {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.setAppSettings({ [SELECTED_MODEL_SETTING]: model });
+  } finally {
+    store.close();
+  }
+}
+
+const SELECTED_MODEL_SETTING = 'selected-model';

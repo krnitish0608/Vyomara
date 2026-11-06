@@ -1,5 +1,5 @@
 import type { DiagnosticEvent } from '../diagnostics/logger.ts';
-import type { ApplicationId } from '../tools/application-tools.ts';
+import type { ActionProposal } from '../tools/action-tools.ts';
 
 export interface DesktopChatRequest {
   readonly prompt: string;
@@ -26,6 +26,8 @@ export interface FileOperationRequest {
   readonly replacement?: {
     readonly find: string;
     readonly replace: string;
+    /** Replace every occurrence instead of requiring exactly one. */
+    readonly all?: true;
   };
 }
 
@@ -38,9 +40,36 @@ export interface DesktopFileOperationProposal {
   readonly proposedContent?: string;
 }
 
-export interface DesktopApplicationLaunchProposal {
+/** A command, application launch, or web page awaiting the user's approval. */
+export type DesktopActionProposal = ActionProposal & { readonly id: string };
+
+/** A short, human-readable description of what the agent is doing right now. */
+export interface DesktopToolActivity {
+  readonly requestId: string;
   readonly id: string;
-  readonly application: ApplicationId;
+  readonly toolId: string;
+  readonly label: string;
+  readonly status: 'running' | 'done' | 'failed' | 'rejected';
+  readonly detail?: string;
+}
+
+export interface DesktopModelInfo {
+  readonly name: string;
+  readonly sizeBytes?: number;
+  readonly parameterSize?: string;
+  readonly family?: string;
+}
+
+export interface DesktopModelList {
+  readonly current: string;
+  readonly models: readonly DesktopModelInfo[];
+}
+
+export interface DesktopModelPullProgress {
+  readonly model: string;
+  readonly status: string;
+  readonly completed?: number;
+  readonly total?: number;
 }
 
 export type FileOperationResult =
@@ -54,6 +83,7 @@ export interface FileOperationApprovalPort {
 export interface DesktopProviderStatus {
   readonly provider: 'ollama' | 'placeholder';
   readonly model: string;
+  readonly contextTokens: number;
 }
 
 export interface DesktopSessionSummary {
@@ -102,9 +132,14 @@ export interface VyomaraDesktopApi {
   onFileOperationProposal(listener: (proposal: DesktopFileOperationProposal) => void): () => void;
   approveFileOperation(id: string, confirmation?: string): Promise<void>;
   rejectFileOperation(id: string): Promise<void>;
-  onApplicationLaunchProposal(listener: (proposal: DesktopApplicationLaunchProposal) => void): () => void;
-  approveApplicationLaunch(id: string): Promise<void>;
-  rejectApplicationLaunch(id: string): Promise<void>;
+  onActionProposal(listener: (proposal: DesktopActionProposal) => void): () => void;
+  approveAction(id: string): Promise<void>;
+  rejectAction(id: string): Promise<void>;
+  onToolActivity(listener: (activity: DesktopToolActivity) => void): () => void;
+  listModels(): Promise<DesktopModelList>;
+  selectModel(model: string): Promise<DesktopProviderStatus>;
+  pullModel(model: string): Promise<void>;
+  onModelPullProgress(listener: (progress: DesktopModelPullProgress) => void): () => void;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;
   loadSession(sessionId: string): Promise<DesktopSessionHistory>;

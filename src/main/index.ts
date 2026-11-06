@@ -9,9 +9,12 @@ import {
   exportDesktopSession,
   readDesktopSession,
   readDesktopSessions,
+  readSelectedModel,
   runRequest,
+  saveSelectedModel,
 } from '../app/application.ts';
-import { loadConfig } from '../config/config.ts';
+import { loadConfig, validateOllamaModel } from '../config/config.ts';
+import { OllamaProvider } from '../providers/provider.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
 import { ProviderError } from '../providers/provider.ts';
 import { ToolExecutionError } from '../tools/executor.ts';
@@ -30,11 +33,9 @@ import {
   FileOperationApprovalError,
   FileOperationApprovalManager,
 } from '../desktop/file-operation-approval.ts';
-import {
-  ApplicationLaunchApprovalError,
-  ApplicationLaunchApprovalManager,
-} from '../desktop/application-launch-approval.ts';
+import { ActionApprovalError, ActionApprovalManager } from '../desktop/action-approval.ts';
 import { MacApplicationLauncher } from '../desktop/mac-application-launcher.ts';
+import { ShellCommandRunner } from '../tools/command-runner.ts';
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary } from '../desktop/local-whisper.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
@@ -42,7 +43,9 @@ import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 let mainWindow: BrowserWindow | undefined;
 let activeRequest: AbortController | undefined;
 let activeFileOperationApproval: FileOperationApprovalManager | undefined;
-let activeApplicationLaunchApproval: ApplicationLaunchApprovalManager | undefined;
+let activeActionApproval: ActionApprovalManager | undefined;
+let activeModelPull: AbortController | undefined;
+const shellCommandRunner = new ShellCommandRunner();
 const macSpeechRunner = new MacSpeechRunner();
 const macApplicationLauncher = process.platform === 'darwin'
   ? new MacApplicationLauncher()
@@ -72,7 +75,7 @@ function publicErrorMessage(error: unknown): string {
     error instanceof MacSpeechError ||
     error instanceof LocalSpeechError ||
     error instanceof FileOperationApprovalError ||
-    error instanceof ApplicationLaunchApprovalError
+    error instanceof ActionApprovalError
   ) {
     return error.message;
   }
@@ -95,9 +98,10 @@ function createDesktopLogger(): Logger {
 }
 
 function getLocalWhisperRunner(): LocalWhisperRunner {
+  const binaryPath = resolveWhisperBinary();
   localWhisperRunner ??= new LocalWhisperRunner({
     modelDirectory: join(app.getPath('userData'), 'speech-models'),
-    binaryPath: resolveWhisperBinary(),
+    ...(binaryPath === undefined ? {} : { binaryPath }),
   });
   return localWhisperRunner;
 }
@@ -179,12 +183,82 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
+function providerStatus(current: AppConfig) {
+  return {
+    provider: current.provider,
+    model: current.ollamaModel,
+    contextTokens: current.ollamaNumCtx,
+  };
+}
+
+function ollamaProvider(current: AppConfig): OllamaProvider {
+  return new OllamaProvider({ baseUrl: current.ollamaBaseUrl, model: current.ollamaModel });
+}
+
 ipcMain.handle('vyomara:provider-status', () => {
   if (!config) throw new Error('Application configuration is unavailable.');
-  return {
-    provider: config.provider,
-    model: config.ollamaModel,
-  };
+  return providerStatus(config);
+});
+
+ipcMain.handle('vyomara:models-list', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  try {
+    const models = await ollamaProvider(config).listModels();
+    return { current: config.ollamaModel, models };
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:model-select', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest) throw new Error('Wait for the current task to finish before switching models.');
+  if (typeof input !== 'string') throw new Error('Choose a model by name.');
+  let model: string;
+  try {
+    model = validateOllamaModel(input);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'The model name is invalid.');
+  }
+  const candidate: AppConfig = { ...config, provider: 'ollama', ollamaModel: model };
+  try {
+    if (await ollamaProvider(candidate).checkModelAvailability() !== 'installed') {
+      throw new Error(`The model “${model}” is not installed. Pull it first.`);
+    }
+    saveSelectedModel(config, model);
+  } catch (error) {
+    throw new Error(error instanceof Error && !(error instanceof ProviderError) ? error.message : publicErrorMessage(error));
+  }
+  config = candidate;
+  return providerStatus(config);
+});
+
+ipcMain.handle('vyomara:model-pull', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeModelPull) throw new Error('A model download is already in progress.');
+  if (typeof input !== 'string') throw new Error('Enter a model name, for example qwen3:14b.');
+  let model: string;
+  try {
+    model = validateOllamaModel(input);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'The model name is invalid.');
+  }
+  const controller = new AbortController();
+  activeModelPull = controller;
+  try {
+    await ollamaProvider(config).pullModel(model, progress => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('vyomara:model-pull-progress', { model, ...progress });
+      }
+    }, controller.signal);
+  } catch (error) {
+    if (error instanceof ProviderError && error.code === 'model-not-found') {
+      throw new Error(`Ollama could not download “${model}”. Check the name on ollama.com/library.`);
+    }
+    throw new Error(publicErrorMessage(error));
+  } finally {
+    activeModelPull = undefined;
+  }
 });
 
 ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
@@ -197,8 +271,6 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
   const desktopConfig: AppConfig = {
     ...config,
     filesystemAllowedRoots: ['/'],
-    toolTimeoutMs: 10_000,
-    maxToolOutputChars: 20_000,
   };
   const approvals = new FileOperationApprovalManager({
     config: desktopConfig,
@@ -211,40 +283,43 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     moveToTrash: path => shell.trashItem(path),
   });
   activeFileOperationApproval = approvals;
-  const applicationApprovals = new ApplicationLaunchApprovalManager({
+  const actionApprovals = new ActionApprovalManager({
     onProposal(proposal) {
       if (!mainWindow || mainWindow.isDestroyed()) {
-        throw new ApplicationLaunchApprovalError(
-          'The approval window is unavailable; no application was opened.',
-        );
+        throw new ActionApprovalError('The approval window is unavailable; nothing was run or opened.');
       }
-      mainWindow.webContents.send('vyomara:application-launch-proposed', proposal);
+      mainWindow.webContents.send('vyomara:action-proposed', proposal);
     },
   });
-  activeApplicationLaunchApproval = applicationApprovals;
+  activeActionApproval = actionApprovals;
+  const send = (channel: string, payload: unknown): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  };
   try {
     return await runRequest(
       request.prompt,
       controller.signal,
       desktopConfig,
       createDesktopLogger(),
-      request.sessionId,
-      text => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('vyomara:chat-text', { requestId: request.requestId, text });
-        }
+      {
+        ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+        onText: text => send('vyomara:chat-text', { requestId: request.requestId, text }),
+        onToolActivity: activity => send('vyomara:tool-activity', { requestId: request.requestId, ...activity }),
+        includeFilesystemTools: true,
+        fileOperationApproval: approvals,
+        actions: {
+          approval: actionApprovals,
+          commandRunner: shellCommandRunner,
+          ...(macApplicationLauncher ? { launcher: macApplicationLauncher } : {}),
+        },
       },
-      true,
-      approvals,
-      macApplicationLauncher,
-      applicationApprovals,
     );
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
     activeRequest = undefined;
     activeFileOperationApproval = undefined;
-    activeApplicationLaunchApproval = undefined;
+    activeActionApproval = undefined;
   }
 });
 
@@ -273,29 +348,21 @@ ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
   }
 });
 
-ipcMain.handle('vyomara:application-launch-approve', (event, input: unknown) => {
-  if (event.sender !== mainWindow?.webContents) {
-    throw new Error('Application launch approval request is invalid.');
-  }
-  if (!activeRequest || !activeApplicationLaunchApproval) {
-    throw new Error('There is no active application launch to approve.');
-  }
+ipcMain.handle('vyomara:action-approve', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Approval request is invalid.');
+  if (!activeRequest || !activeActionApproval) throw new Error('There is no pending action to approve.');
   try {
-    activeApplicationLaunchApproval.approve(parseDesktopSessionId(input));
+    activeActionApproval.approve(parseDesktopSessionId(input));
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
 });
 
-ipcMain.handle('vyomara:application-launch-reject', (event, input: unknown) => {
-  if (event.sender !== mainWindow?.webContents) {
-    throw new Error('Application launch approval request is invalid.');
-  }
-  if (!activeRequest || !activeApplicationLaunchApproval) {
-    throw new Error('There is no active application launch to reject.');
-  }
+ipcMain.handle('vyomara:action-reject', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Approval request is invalid.');
+  if (!activeRequest || !activeActionApproval) throw new Error('There is no pending action to reject.');
   try {
-    activeApplicationLaunchApproval.reject(parseDesktopSessionId(input));
+    activeActionApproval.reject(parseDesktopSessionId(input));
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
@@ -496,9 +563,17 @@ app.whenReady().then(async () => {
     );
   });
   try {
+    const loaded = loadConfig(process.env);
+    let selectedModel: string | undefined;
+    try {
+      selectedModel = readSelectedModel(loaded);
+    } catch {
+      selectedModel = undefined;
+    }
     config = {
-      ...loadConfig(process.env),
+      ...loaded,
       filesystemAllowedRoots: ['/'],
+      ...(loaded.provider === 'ollama' && selectedModel ? { ollamaModel: validateOllamaModel(selectedModel) } : {}),
     };
     voiceListeningEnabled = await readVoiceListeningPreference();
   } catch (error) {
@@ -516,6 +591,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   activeRequest?.abort();
+  activeModelPull?.abort();
   macSpeechRunner.stop();
   void localWhisperRunner?.stop();
 });

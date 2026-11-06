@@ -82,7 +82,7 @@ function validToolCalls(value: unknown): value is SessionMessage & {
       isRecord(call) &&
       exactKeys(call, ['toolId', 'arguments']) &&
       typeof call.toolId === 'string' &&
-      /^[a-z][a-z0-9.-]{0,63}$/.test(call.toolId) &&
+      /^[a-z][a-z0-9_.-]{0,63}$/.test(call.toolId) &&
       isRecord(call.arguments));
 }
 
@@ -97,7 +97,7 @@ function validSessionMessage(value: unknown): value is SessionMessage {
   if (value.role === 'tool') {
     return exactKeys(value, ['role', 'toolId', 'content']) &&
       typeof value.toolId === 'string' &&
-      /^[a-z][a-z0-9.-]{0,63}$/.test(value.toolId) &&
+      /^[a-z][a-z0-9_.-]{0,63}$/.test(value.toolId) &&
       typeof value.content === 'string';
   }
   if (value.role === 'assistant' && value.kind === 'tool-call') {

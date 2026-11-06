@@ -67,7 +67,7 @@ test('filesystem listing returns bounded structured entries for an allowed direc
   await mkdir(join(root, 'Alpha'));
   await writeFile(join(root, 'alpha.txt'), 'alpha');
 
-  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: root }), {
+  assert.deepEqual(await execute(executor, 'list_directory', { path: root }), {
     entries: [
       { name: 'Alpha', type: 'directory' },
       { name: 'alpha.txt', type: 'file' },
@@ -81,11 +81,11 @@ test('empty directories produce empty non-truncated listings and trees', async t
   const { root, executor } = await fixture(t);
   const empty = join(root, 'empty');
   await mkdir(empty);
-  assert.deepEqual(await execute(executor, 'filesystem.list-directory', { path: empty }), {
+  assert.deepEqual(await execute(executor, 'list_directory', { path: empty }), {
     entries: [],
     truncated: false,
   });
-  assert.deepEqual(await execute(executor, 'filesystem.directory-tree', { path: empty }), {
+  assert.deepEqual(await execute(executor, 'directory_tree', { path: empty }), {
     entries: [],
     truncated: false,
   });
@@ -99,7 +99,7 @@ test('filesystem permission errors are classified without exposing paths', async
     },
   });
   await assert.rejects(
-    execute(executor, 'filesystem.list-directory', { path: root }),
+    execute(executor, 'list_directory', { path: root }),
     error => error instanceof ToolExecutionError &&
       error.code === 'permission-denied' &&
       !error.message.includes(root) &&
@@ -118,7 +118,7 @@ test('filesystem listing subset is independent of directory enumeration order', 
     await writeFile(join(root, 'z.txt'), 'z');
     await writeFile(join(root, 'a.txt'), 'a');
     await writeFile(join(root, 'm.txt'), 'm');
-    outputs.push(await execute(executor, 'filesystem.list-directory', { path: root }));
+    outputs.push(await execute(executor, 'list_directory', { path: root }));
   }
   assert.deepEqual(outputs[0], outputs[1]);
   assert.deepEqual(outputs[0], {
@@ -132,9 +132,12 @@ test('filesystem read returns permitted UTF-8 text without exposing the path in 
   const file = join(root, 'example.ts');
   await writeFile(file, 'export const greeting = "hello";\n');
 
-  assert.deepEqual(await execute(executor, 'filesystem.read-file', { path: file }), {
+  assert.deepEqual(await execute(executor, 'read_file', { path: file }), {
     content: 'export const greeting = "hello";\n',
-    bytes: Buffer.byteLength('export const greeting = "hello";\n'),
+    startLine: 1,
+    endLine: 1,
+    totalLines: 1,
+    truncated: false,
   });
 });
 
@@ -146,7 +149,7 @@ test('filesystem search finds file and folder names without following symlinks',
   await writeFile(join(folder, 'icon.txt'), 'icon');
   await symlink(folder, join(root, 'linked-assets'));
 
-  const result = await execute(executor, 'filesystem.search', { query: 'readme', path: root }) as {
+  const result = await execute(executor, 'find_files', { query: 'readme', path: root }) as {
     matches: Array<{ path: string; type: string }>;
     scannedDirectories: number;
     skippedDirectories: number;
@@ -169,7 +172,7 @@ test('filesystem search returns exact name matches without scanning the entire t
     await mkdir(join(root, `other-${index}`));
   }
 
-  const result = await execute(executor, 'filesystem.search', {
+  const result = await execute(executor, 'find_files', {
     query: 'KeylessRN',
     path: root,
   }) as {
@@ -199,7 +202,7 @@ test('whole-machine filesystem access rejects protected system paths', async () 
   });
 
   await assert.rejects(
-    execute(executor, 'filesystem.list-directory', { path: '/System' }),
+    execute(executor, 'list_directory', { path: '/System' }),
     (error: unknown) => error instanceof ToolExecutionError && error.code === 'permission-denied',
   );
 });
@@ -214,14 +217,14 @@ test('filesystem access rejects paths outside configured roots', async t => {
   await writeFile(siblingFile, 'private sibling');
 
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: outside }),
+    execute(executor, 'read_file', { path: outside }),
     error => error instanceof ToolExecutionError &&
       error.code === 'outside-root' &&
       error.message.includes('outside the allowed filesystem roots') &&
       !error.message.includes(parent),
   );
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: siblingFile }),
+    execute(executor, 'read_file', { path: siblingFile }),
     error => error instanceof ToolExecutionError && error.code === 'outside-root',
   );
   assert.notEqual(root, outside);
@@ -234,7 +237,7 @@ test('filesystem access rejects explicit parent traversal', async t => {
   const traversal = `${root}/../outside.txt`;
 
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: traversal }),
+    execute(executor, 'read_file', { path: traversal }),
     (error: unknown) => error instanceof ToolExecutionError && error.code === 'invalid-input',
   );
 });
@@ -256,19 +259,19 @@ test('filesystem tools reject a symlink to a file outside an allowed root', asyn
   }
 
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: link }),
+    execute(executor, 'read_file', { path: link }),
     error => error instanceof ToolExecutionError &&
       error.code === 'invalid-path' &&
       /Symbolic links are not allowed/.test(error.message),
   );
-  const listing = await execute(executor, 'filesystem.list-directory', { path: root }) as {
+  const listing = await execute(executor, 'list_directory', { path: root }) as {
     entries: Array<{ name: string; type: string }>;
   };
   assert.deepEqual(listing.entries, [
     { name: 'outside-directory-link', type: 'symlink' },
     { name: 'outside-link.txt', type: 'symlink' },
   ]);
-  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+  const tree = await execute(executor, 'directory_tree', { path: root }) as {
     entries: Array<{ name: string; path: string; type: string; depth: number }>;
   };
   assert.deepEqual(tree.entries, [
@@ -288,14 +291,14 @@ test('filesystem tools handle missing files and directories without exposing mac
   const missingDirectory = join(root, 'missing-directory');
 
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: missingFile }),
+    execute(executor, 'read_file', { path: missingFile }),
     error => error instanceof Error &&
       error.message.includes('not found') &&
       'code' in error && error.code === 'not-found' &&
       !error.message.includes(root),
   );
   await assert.rejects(
-    execute(executor, 'filesystem.list-directory', { path: missingDirectory }),
+    execute(executor, 'list_directory', { path: missingDirectory }),
     error => error instanceof Error &&
       error.message.includes('not found') &&
       'code' in error && error.code === 'not-found' &&
@@ -309,19 +312,36 @@ test('filesystem read rejects files above the byte limit', async t => {
   await writeFile(file, '123456789');
 
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: file }),
-    /maximum size/,
+    execute(executor, 'read_file', { path: file }),
+    /readable limit/,
   );
 });
 
-test('filesystem read stays within the configured serialized output limit', async t => {
+test('filesystem read returns a bounded window within the configured output limit', async t => {
   const { root, executor } = await fixture(t, { VYOM_MAX_TOOL_OUTPUT_CHARS: '300' });
   const file = join(root, 'output-bound.txt');
   await writeFile(file, 'x'.repeat(400));
 
+  const result = await execute(executor, 'read_file', { path: file }) as { content: string };
+  assert.ok(JSON.stringify(result).length <= 300);
+  assert.match(result.content, /\[line truncated\]/);
+});
+
+test('read_file pages through long files with offset and limit', async t => {
+  const { root, executor } = await fixture(t);
+  const file = join(root, 'long.ts');
+  await writeFile(file, Array.from({ length: 50 }, (_, index) => `line ${index + 1}`).join('\n') + '\n');
+
+  assert.deepEqual(await execute(executor, 'read_file', { path: file, offset: 10, limit: 3 }), {
+    content: 'line 10\nline 11\nline 12\n',
+    startLine: 10,
+    endLine: 12,
+    totalLines: 50,
+    truncated: true,
+  });
   await assert.rejects(
-    execute(executor, 'filesystem.read-file', { path: file }),
-    /tool-output limit/,
+    execute(executor, 'read_file', { path: file, offset: 99 }),
+    /beyond the end of the file/,
   );
 });
 
@@ -334,9 +354,9 @@ test('filesystem read rejects binary and invalid UTF-8 content', async t => {
   await writeFile(control, Buffer.from([0x61, 0x07, 0x62]));
   await writeFile(invalid, Buffer.from([0xc3, 0x28]));
 
-  await assert.rejects(execute(executor, 'filesystem.read-file', { path: binary }), /Binary files/);
-  await assert.rejects(execute(executor, 'filesystem.read-file', { path: control }), /Binary files/);
-  await assert.rejects(execute(executor, 'filesystem.read-file', { path: invalid }), /valid UTF-8/);
+  await assert.rejects(execute(executor, 'read_file', { path: binary }), /Binary files/);
+  await assert.rejects(execute(executor, 'read_file', { path: control }), /Binary files/);
+  await assert.rejects(execute(executor, 'read_file', { path: invalid }), /valid UTF-8/);
 });
 
 test('directory tree honors configured depth, entry, and output bounds', async t => {
@@ -351,7 +371,7 @@ test('directory tree honors configured depth, entry, and output bounds', async t
   await writeFile(join(root, 'b.txt'), 'x');
   await writeFile(join(root, 'c.txt'), 'x');
 
-  const tree = await execute(executor, 'filesystem.directory-tree', {
+  const tree = await execute(executor, 'directory_tree', {
     path: root,
     maxDepth: 1,
     maxEntries: 1,
@@ -360,7 +380,7 @@ test('directory tree honors configured depth, entry, and output bounds', async t
   assert.ok(tree.entries.every(entry => entry.depth <= 1));
   assert.equal(tree.truncated, true);
 
-  const list = await execute(executor, 'filesystem.list-directory', { path: root }) as {
+  const list = await execute(executor, 'list_directory', { path: root }) as {
     entries: unknown[];
     truncated: boolean;
   };
@@ -387,7 +407,7 @@ test('directory tree subset is independent of enumeration order at a nested entr
     await writeFile(join(root, 'a', 'a-child.txt'), 'a');
     await writeFile(join(root, 'b.txt'), 'b');
     await writeFile(join(root, 'c.txt'), 'c');
-    outputs.push(await execute(executor, 'filesystem.directory-tree', { path: root }));
+    outputs.push(await execute(executor, 'directory_tree', { path: root }));
   }
   assert.deepEqual(outputs[0], outputs[1]);
   assert.deepEqual(outputs[0], {
@@ -411,7 +431,7 @@ test('directory tree enforces maxEntries across nested directories', async t => 
   await writeFile(join(root, 'a', 'second.txt'), 'second');
   await writeFile(join(root, 'b.txt'), 'b');
 
-  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+  const tree = await execute(executor, 'directory_tree', { path: root }) as {
     entries: Array<{ path: string }>;
     truncated: boolean;
   };
@@ -428,7 +448,7 @@ test('directory tree marks omitted descendants when the depth limit is reached',
   await mkdir(join(root, 'folder'));
   await writeFile(join(root, 'folder', 'child.txt'), 'x');
 
-  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+  const tree = await execute(executor, 'directory_tree', { path: root }) as {
     entries: Array<{ path: string; depth: number }>;
     truncated: boolean;
   };
@@ -440,7 +460,7 @@ test('directory tree does not report truncation for empty directories at the dep
   const { root, executor } = await fixture(t, { VYOM_MAX_TREE_DEPTH: '1' });
   await mkdir(join(root, 'empty'));
 
-  const tree = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+  const tree = await execute(executor, 'directory_tree', { path: root }) as {
     entries: Array<{ path: string }>;
     truncated: boolean;
   };
@@ -458,7 +478,7 @@ test('directory tree output-size truncation stays valid and within the configure
     await writeFile(join(root, `long-entry-name-${index}.txt`), 'x');
   }
 
-  const result = await execute(executor, 'filesystem.directory-tree', { path: root }) as {
+  const result = await execute(executor, 'directory_tree', { path: root }) as {
     entries: Array<{ path: string }>;
     truncated: boolean;
   };
@@ -484,7 +504,7 @@ test('filesystem cancellation and read errors close active directory and file ha
         };
       },
     });
-    await assert.rejects(execute(executor, 'filesystem.directory-tree', { path: root }), /failed safely/);
+    await assert.rejects(execute(executor, 'directory_tree', { path: root }), /failed safely/);
     assert.equal(closed, true);
   });
 
@@ -508,7 +528,7 @@ test('filesystem cancellation and read errors close active directory and file ha
       },
     });
     const controller = new AbortController();
-    const pending = executor.execute('filesystem.directory-tree', { path: root }, controller.signal);
+    const pending = executor.execute('directory_tree', { path: root }, controller.signal);
     await readStarted;
     controller.abort();
     await assert.rejects(pending, (error: unknown) =>
@@ -535,7 +555,7 @@ test('filesystem cancellation and read errors close active directory and file ha
     });
     const file = join(root, 'read.txt');
     await writeFile(file, 'contents');
-    await assert.rejects(execute(executor, 'filesystem.read-file', { path: file }), /failed safely/);
+    await assert.rejects(execute(executor, 'read_file', { path: file }), /failed safely/);
     assert.equal(closed, true);
   });
 
@@ -562,7 +582,7 @@ test('filesystem cancellation and read errors close active directory and file ha
     const file = join(root, 'read.txt');
     await writeFile(file, 'contents');
     const controller = new AbortController();
-    const pending = executor.execute('filesystem.read-file', { path: file }, controller.signal);
+    const pending = executor.execute('read_file', { path: file }, controller.signal);
     await readStarted;
     controller.abort();
     await assert.rejects(pending, (error: unknown) =>
@@ -574,29 +594,31 @@ test('filesystem cancellation and read errors close active directory and file ha
 test('filesystem tool inputs reject malformed objects, unknown fields, and unreasonable limits', async t => {
   const { root, executor } = await fixture(t);
   const invalidInputs: Array<{ input: unknown; message: string }> = [
-    { input: null, message: 'Arguments must be an object containing an absolute path.' },
-    { input: [], message: 'Arguments must be an object containing an absolute path.' },
+    { input: null, message: 'Arguments must be a JSON object.' },
+    { input: [], message: 'Arguments must be a JSON object.' },
     {
       input: { path: root, unexpected: true },
-      message: 'Use only these arguments: path, maxDepth, maxEntries.',
+      message: 'Unknown argument(s): unexpected. Use only: path, maxDepth, maxEntries.',
     },
-    { input: {}, message: 'The required path argument is missing.' },
-    { input: { path: 'relative/path' }, message: 'Path must be an absolute path without parent-directory traversal.' },
-    { input: { path: root, maxEntries: 0 }, message: 'maxEntries must be between 1 and 100.' },
-    { input: { path: root, maxEntries: null }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
-    { input: { path: root, maxEntries: '10' }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
-    { input: { path: root, maxEntries: 'null' }, message: 'maxEntries must be an integer number; omit it to use the configured default.' },
-    { input: { path: root, maxEntries: 501 }, message: 'maxEntries must be between 1 and 100.' },
-    { input: { path: root, maxDepth: -1 }, message: 'maxDepth must be between 1 and 3.' },
+    { input: {}, message: 'The required argument "path" is missing.' },
+    { input: { path: 'relative/path' }, message: '"path" must be an absolute path (starting with /) without "..".' },
+    { input: { path: `${root}/../x` }, message: '"path" must be an absolute path (starting with /) without "..".' },
+    { input: { path: root, maxEntries: 0 }, message: '"maxEntries" must be at least 1.' },
+    { input: { path: root, maxEntries: 'null' }, message: '"maxEntries" must be an integer number.' },
+    { input: { path: root, maxEntries: 501 }, message: '"maxEntries" must be at most 300.' },
+    { input: { path: root, maxDepth: -1 }, message: '"maxDepth" must be at least 1.' },
   ];
   for (const { input, message } of invalidInputs) {
     await assert.rejects(
-      execute(executor, 'filesystem.directory-tree', input),
+      execute(executor, 'directory_tree', input),
       (error: unknown) => error instanceof ToolExecutionError &&
         error.code === 'invalid-input' &&
         error.message === message,
     );
   }
+  // Small models often send null for omitted options or numbers as strings; these are normalized.
+  await execute(executor, 'directory_tree', { path: root, maxEntries: null });
+  await execute(executor, 'directory_tree', { path: root, maxEntries: '10' });
 });
 
 test('filesystem registry exposes no write or delete tools and policy denies side effects', async t => {
@@ -623,7 +645,7 @@ test('filesystem registry exposes no write or delete tools and policy denies sid
 
 test('filesystem operations fail closed when no allowed roots are configured', async t => {
   const { root } = await fixture(t);
-  const config = loadConfig({ VYOM_PROVIDER: 'placeholder' });
+  const config = loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_ALLOWED_ROOTS: '[]' });
   const registry = new ToolRegistry();
   registerFilesystemTools(registry, config);
   const executor = new ToolExecutor({
@@ -634,7 +656,7 @@ test('filesystem operations fail closed when no allowed roots are configured', a
   });
 
   await assert.rejects(
-    execute(executor, 'filesystem.list-directory', { path: root }),
+    execute(executor, 'list_directory', { path: root }),
     /no allowed roots are configured/,
   );
 });
@@ -644,10 +666,10 @@ test('filesystem diagnostics omit file content and absolute paths', async t => {
   const file = join(root, 'private.txt');
   const secretText = 'private filesystem content must not enter logs';
   await writeFile(file, secretText);
-  await execute(executor, 'filesystem.read-file', { path: file });
+  await execute(executor, 'read_file', { path: file });
 
   const logs = logLines.join('\n');
   assert.doesNotMatch(logs, new RegExp(secretText));
   assert.doesNotMatch(logs, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(logs, /filesystem\.read-file/);
+  assert.match(logs, /read_file/);
 });

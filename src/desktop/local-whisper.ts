@@ -63,7 +63,7 @@ async function fileSha1(path: string): Promise<string> {
 export class LocalWhisperRunner {
   readonly modelPath: string;
   readonly #modelDirectory: string;
-  readonly #binaryPath?: string;
+  readonly #binaryPath: string | undefined;
   readonly #spawnProcess: typeof spawn;
   #child: ReturnType<typeof spawn> | undefined;
   #stoppingChild: ReturnType<typeof spawn> | undefined;

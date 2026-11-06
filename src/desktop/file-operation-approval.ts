@@ -23,6 +23,13 @@ interface FileSnapshot {
   readonly contentHash?: string;
 }
 
+interface PreparedOperation {
+  readonly targetPath: string;
+  readonly directory: boolean;
+  readonly snapshot?: FileSnapshot;
+  readonly currentContent?: string;
+}
+
 interface PendingOperation {
   readonly request: FileOperationRequest;
   readonly proposal: DesktopFileOperationProposal;
@@ -42,9 +49,10 @@ export interface FileOperationApprovalOptions {
   readonly moveToTrash: (path: string) => Promise<void>;
 }
 
-export class FileOperationApprovalError extends Error {
+/** A safe, user- and model-facing explanation of why a reviewed change could not proceed. */
+export class FileOperationApprovalError extends ToolFailure {
   constructor(message: string) {
-    super(message);
+    super(message, 'tool-failed');
     this.name = 'FileOperationApprovalError';
   }
 }
@@ -159,22 +167,36 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
 
   async request(request: FileOperationRequest, signal: AbortSignal): Promise<FileOperationResult> {
     if (isAbortError(signal)) throw new OperationStoppedError('cancelled');
-    const prepared = await this.#prepare(request, signal);
+    let prepared: PreparedOperation;
+    try {
+      prepared = await this.#prepare(request, signal);
+    } catch (error) {
+      if (error instanceof OperationStoppedError) throw error;
+      throw publicOperationError(error);
+    }
     if (signal.aborted) throw new OperationStoppedError('cancelled');
     let reviewedRequest = request;
     if (request.replacement) {
       if (request.operation !== 'edit-file' || prepared.currentContent === undefined) {
         throw new FileOperationApprovalError('Text replacement requires an existing regular file.');
       }
-      const { find, replace } = request.replacement;
-      const firstIndex = prepared.currentContent.indexOf(find);
-      if (find.length === 0 || firstIndex === -1 ||
-          prepared.currentContent.indexOf(find, firstIndex + find.length) !== -1) {
-        throw new FileOperationApprovalError('The exact text to replace must match the file exactly once.');
+      const { find, replace, all } = request.replacement;
+      const current = prepared.currentContent;
+      const firstIndex = find.length === 0 ? -1 : current.indexOf(find);
+      if (firstIndex === -1) {
+        throw new FileOperationApprovalError(
+          'old_text was not found in the file. Read the file again and copy the exact text, including whitespace and indentation.',
+        );
       }
-      const content = prepared.currentContent.slice(0, firstIndex) +
-        replace +
-        prepared.currentContent.slice(firstIndex + find.length);
+      const occurrences = current.split(find).length - 1;
+      if (occurrences > 1 && all !== true) {
+        throw new FileOperationApprovalError(
+          `old_text matches ${occurrences} places in the file. Include more surrounding lines so it matches exactly once, or set replace_all to true.`,
+        );
+      }
+      const content = all === true
+        ? current.split(find).join(replace)
+        : current.slice(0, firstIndex) + replace + current.slice(firstIndex + find.length);
       if (Buffer.byteLength(content, 'utf8') > this.#options.config.maxFileBytes) {
         throw new FileOperationApprovalError('The proposed file exceeds the configured maximum size.');
       }
@@ -255,12 +277,7 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
   async #prepare(
     request: FileOperationRequest,
     signal: AbortSignal,
-  ): Promise<{
-    readonly targetPath: string;
-    readonly directory: boolean;
-    readonly snapshot?: FileSnapshot;
-    readonly currentContent?: string;
-  }> {
+  ): Promise<PreparedOperation> {
     const normalizedPath = resolve(request.path);
     if (
       request.operation === 'delete' &&

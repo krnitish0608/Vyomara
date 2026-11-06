@@ -47,9 +47,9 @@ test('session history survives reopening, stays isolated, and cascades on deleti
     role: 'assistant',
     kind: 'tool-call',
     content: '',
-    toolCalls: [{ toolId: 'filesystem.read-file', arguments: { path: '/private/file.txt' } }],
+    toolCalls: [{ toolId: 'read_file', arguments: { path: '/private/file.txt' } }],
   });
-  first.add({ role: 'tool', toolId: 'filesystem.read-file', content: '{"content":"private fixture"}' });
+  first.add({ role: 'tool', toolId: 'read_file', content: '{"content":"private fixture"}' });
   first.add({ role: 'assistant', content: 'private fixture' });
   const second = store.createSession();
   second.add({ role: 'user', content: 'second session prompt' });
@@ -346,7 +346,7 @@ test('audit events are persisted as metadata without conversation payloads', t =
     runId: 'run-id-fixture',
     toolCallId: 'call-id-fixture',
     attempt: 1,
-    toolId: 'filesystem.read-file',
+    toolId: 'read_file',
     durationMs: 12,
     outputChars: 45,
   });

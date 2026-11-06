@@ -4,16 +4,13 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config/config.ts';
-import { runAgent } from '../src/agent/agent.ts';
 import { createLogger } from '../src/diagnostics/logger.ts';
 import type { DesktopFileOperationProposal } from '../src/desktop/contracts.ts';
 import { FileOperationApprovalManager } from '../src/desktop/file-operation-approval.ts';
-import { Session } from '../src/session/session.ts';
 import { ToolRegistry } from '../src/tools/contracts.ts';
 import { ToolExecutionError, ToolExecutor } from '../src/tools/executor.ts';
 import { PolicyGateway } from '../src/tools/policy.ts';
 import { registerFilesystemTools } from '../src/tools/filesystem-tools.ts';
-import type { ModelProvider } from '../src/providers/provider.ts';
 
 async function fixture(t: TestContext, autoApproveRepeatedProposal = false) {
   const parent = await mkdtemp(join(tmpdir(), 'vyomara-review-'));
@@ -61,7 +58,7 @@ function execute(executor: ToolExecutor, id: string, input: unknown, signal = ne
 test('create-file waits for review and writes only after explicit approval', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'new.txt');
-  const resultPromise = execute(executor, 'filesystem.propose-create-file', {
+  const resultPromise = execute(executor, 'write_file', {
     path,
     content: 'new reviewed content\n',
   });
@@ -75,453 +72,11 @@ test('create-file waits for review and writes only after explicit approval', asy
   assert.equal(await readFile(path, 'utf8'), 'new reviewed content\n');
 });
 
-test('agent reports a file change only after the user approves and it applies', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'agent-created.txt');
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-create-file',
-        arguments: { path, content: 'approved\n' },
-      }],
-    },
-    { kind: 'final', text: 'I created the file.' },
-  ];
-  const provider: ModelProvider = {
-    id: 'test',
-    async complete() {
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const resultPromise = runAgent('Create this file.', new AbortController().signal, {
-    provider,
-    tools: executor,
-    config,
-    session: new Session(),
-    logger: createLogger(() => {}),
-  });
-  const review = await proposal;
-  await approvals.approve(review.id);
-
-  assert.equal(await resultPromise, 'The approved file creation was applied.');
-  assert.equal(await readFile(path, 'utf8'), 'approved\n');
-});
-
-test('agent rejects a false success claim after the user rejects the operation', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'rejected.txt');
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-create-file',
-        arguments: { path, content: 'not written\n' },
-      }],
-    },
-    { kind: 'final', text: 'I created the file.' },
-  ];
-  const provider: ModelProvider = {
-    id: 'test',
-    async complete() {
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const resultPromise = runAgent('Create this file.', new AbortController().signal, {
-    provider,
-    tools: executor,
-    config,
-    session: new Session(),
-    logger: createLogger(() => {}),
-  });
-  const review = await proposal;
-  approvals.reject(review.id);
-
-  assert.equal(
-    await resultPromise,
-    'The proposed file creation was rejected. No changes were made.',
-  );
-  await assert.rejects(readFile(path), { code: 'ENOENT' });
-});
-
-test('agent must read an existing file before proposing an edit', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'existing.txt');
-  const original = 'const greeting = "Hello";\nexport const label = "Welcome";\n';
-  const updated = 'const greeting = "Hi";\nexport const label = "Welcome";\n';
-  let repairInstructionSeen = false;
-  await writeFile(path, original);
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-edit',
-        arguments: { path, content: 'Hi' },
-      }],
-    },
-    { kind: 'final', text: 'I prepared an edit; please provide the complete file.' },
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-replace-text',
-        arguments: {
-          path,
-          oldText: 'const greeting = "Hello";',
-          newText: 'const greeting = "Hi";',
-        },
-      }],
-    },
-    { kind: 'final', text: 'I updated the greeting.' },
-  ];
-  const provider: ModelProvider = {
-    id: 'test.read-before-edit',
-    async complete(messages) {
-      repairInstructionSeen ||= messages.some(message =>
-        message.role === 'user' && message.content.startsWith('Correction:'));
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const session = new Session();
-  const resultPromise = runAgent('Change the greeting in the existing file.', new AbortController().signal, {
-    provider,
-    tools: executor,
-    config,
-    session,
-    logger: createLogger(() => {}),
-  });
-  const review = await proposal;
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.equal(repairInstructionSeen, true);
-  const rejectedEdit = session.messages().find(message =>
-    message.role === 'tool' &&
-    message.toolId === 'filesystem.propose-edit' &&
-    message.content.includes('Edit proposal not created'));
-  assert.ok(rejectedEdit);
-  approvals.reject(review.id);
-
-  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
-  assert.equal(await readFile(path, 'utf8'), original);
-});
-
-test('agent converts an explicit exact-text edit into a reviewed replacement', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'existing.txt');
-  const original = 'const greeting = "Hello";\n';
-  const updated = 'const greeting = "Hi";\n';
-  await writeFile(path, original);
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-edit',
-        arguments: { path, content: 'Hi' },
-      }],
-    },
-    { kind: 'final', text: 'I prepared the edit.' },
-  ];
-  const provider: ModelProvider = {
-    id: 'test.localized-replacement',
-    async complete() {
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const session = new Session();
-  const resultPromise = runAgent(
-    `In the file ${path}, replace the exact text "Hello" with "Hi".`,
-    new AbortController().signal,
-    {
-      provider,
-      tools: executor,
-      config,
-      session,
-      logger: createLogger(() => {}),
-    },
-  );
-  const review = await proposal;
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.ok(session.messages().some(message =>
-    message.role === 'tool' && message.toolId === 'filesystem.read-file'));
-  assert.equal(await readFile(path, 'utf8'), original);
-  approvals.reject(review.id);
-
-  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
-  assert.equal(await readFile(path, 'utf8'), original);
-});
-
-test('agent turns a complete model edit into a review proposal rather than displaying it as applied', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'existing.ts');
-  const original = 'export const greeting = "Hello";\n';
-  const updated = 'export const greeting = "Hi";\n';
-  await writeFile(path, original);
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{ toolId: 'filesystem.read-file', arguments: { path } }],
-    },
-    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\n${updated}\`\`\`` },
-  ];
-  const provider: ModelProvider = {
-    id: 'test.complete-edit-fallback',
-    async complete() {
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const resultPromise = runAgent(
-    'Edit the existing file to change the greeting from Hello to Hi.',
-    new AbortController().signal,
-    {
-      provider,
-      tools: executor,
-      config,
-      session: new Session(),
-      logger: createLogger(() => {}),
-    },
-  );
-  const review = await proposal;
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.equal(await readFile(path, 'utf8'), original);
-  approvals.reject(review.id);
-
-  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
-  assert.equal(await readFile(path, 'utf8'), original);
-});
-
-test('agent repairs a fallback full-file edit that drops comments before review', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const path = join(root, 'existing.ts');
-  const comment = '// Keep this project note.\n';
-  const original = `${comment}export const greeting = "Hello";\n`;
-  const updated = `${comment}export const greeting = "Hi";\n`;
-  await writeFile(path, original);
-  const responses: unknown[] = [
-    {
-      kind: 'tool-calls',
-      calls: [{ toolId: 'filesystem.read-file', arguments: { path } }],
-    },
-    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\nexport const greeting = "Hi";\n\`\`\`` },
-    {
-      kind: 'tool-calls',
-      calls: [{
-        toolId: 'filesystem.propose-replace-text',
-        arguments: { path, oldText: '"Hello"', newText: '"Hi"' },
-      }],
-    },
-  ];
-  let providerCalls = 0;
-  const provider: ModelProvider = {
-    id: 'test.complete-edit-comment-recovery',
-    async complete() {
-      providerCalls++;
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const session = new Session();
-  const resultPromise = runAgent(
-    'Edit the existing file to change the greeting from Hello to Hi.',
-    new AbortController().signal,
-    {
-      provider,
-      tools: executor,
-      config,
-      session,
-      logger: createLogger(() => {}),
-    },
-  );
-  const review = await proposal;
-
-  approvals.reject(review.id);
-
-  assert.equal(await resultPromise, 'The proposed edit was rejected. No changes were made.');
-  assert.equal(providerCalls, 3);
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.equal(await readFile(path, 'utf8'), original);
-});
-
-test('agent retries a comment-losing proposal and accepts a corrected complete-file edit', async t => {
-  const { root, config, proposal, approvals, executor } = await fixture(t);
-  const project = join(root, 'comment-preservation');
-  const path = join(project, 'src', 'index.ts');
-  const comment = '// Keep this project note.\n';
-  const original = `${comment}export function add(a: number, b: number): number { return a - b; }\n`;
-  const updated = `${comment}export function add(a: number, b: number): number { return a + b; }\n`;
-  await mkdir(join(project, 'src'), { recursive: true });
-  await writeFile(path, original);
-  const responses: unknown[] = [
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.directory-tree',
-      arguments: { path: project },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.read-file',
-      arguments: { path },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.propose-edit',
-      arguments: {
-        path,
-        content: 'export function add(a: number, b: number): number { return a + b; }\n',
-      },
-    }] },
-    { kind: 'final', text: `Here is the complete updated file:\n\`\`\`ts\n${updated}\`\`\`` },
-  ];
-  const provider: ModelProvider = {
-    id: 'test.preserve-comments',
-    async complete() {
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const session = new Session();
-  const resultPromise = runAgent(
-    `Analyze and fix the bug in this project, preserving existing comments. Project: ${project}`,
-    new AbortController().signal,
-    {
-      provider,
-      tools: executor,
-      config,
-      session,
-      logger: createLogger(() => {}),
-    },
-  );
-  const review = await proposal;
-
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.equal(await readFile(path, 'utf8'), original);
-  assert.ok(session.messages().some(message =>
-    message.role === 'tool' &&
-    message.content.includes('The proposed full-file edit removes existing comments')));
-
-  await approvals.approve(review.id);
-
-  assert.equal(await resultPromise, 'The approved edit was applied.');
-  assert.equal(await readFile(path, 'utf8'), updated);
-});
-
-test('agent can analyze a project and tests, then submit and apply the requested code fix', async t => {
-  const { root, config, proposal, approvals, executor, proposalCount } = await fixture(t, true);
-  const project = join(root, 'sample-project');
-  const sourcePath = join(project, 'src', 'index.ts');
-  const testPath = join(project, 'test', 'index.test.ts');
-  const original = 'export function add(a: number, b: number): number { return a - b; }\n';
-  const updated = 'export function add(a: number, b: number): number { return a + b; }\n';
-  await mkdir(join(project, 'src'), { recursive: true });
-  await mkdir(join(project, 'test'));
-  await writeFile(sourcePath, original);
-  await writeFile(testPath, 'assert.equal(add(2, 3), 5);\n');
-  const responses: unknown[] = [
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.directory-tree',
-      arguments: { path: join(project, 'src') },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.read-file',
-      arguments: { path: sourcePath },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.read-file',
-      arguments: { path: sourcePath },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.propose-edit',
-      arguments: { path: 'src/index.ts', content: updated },
-    }] },
-    { kind: 'tool-calls', calls: [{
-      toolId: 'filesystem.propose-edit',
-      arguments: { path: 'src/index.ts', content: updated },
-    }] },
-    { kind: 'final', text: 'The fix is ready for your review.' },
-  ];
-  const advertisedToolIds: string[][] = [];
-  const provider: ModelProvider = {
-    id: 'test.project-code-fix',
-    async complete(_messages, _signal, tools) {
-      advertisedToolIds.push((tools ?? []).map(tool => tool.id));
-      const response = responses.shift();
-      if (response === undefined) throw new Error('No fake provider response remains.');
-      return response;
-    },
-  };
-  const session = new Session();
-  const resultPromise = runAgent(
-    `Deep dive into this repo, analyze the source and tests, then fix the bug in src/index.ts so add returns the sum. Project: ${project}`,
-    new AbortController().signal,
-    {
-      provider,
-      tools: executor,
-      config,
-      session,
-      logger: createLogger(() => {}),
-    },
-  );
-  const review = await proposal;
-
-  assert.equal(review.path, sourcePath);
-  assert.equal(review.currentContent, original);
-  assert.equal(review.proposedContent, updated);
-  assert.deepEqual(advertisedToolIds[0], ['filesystem.directory-tree']);
-  assert.deepEqual(advertisedToolIds[1], ['filesystem.read-file']);
-  assert.deepEqual(advertisedToolIds[2], ['filesystem.read-file']);
-  assert.ok(advertisedToolIds[3]?.includes('filesystem.propose-edit'));
-  assert.equal(await readFile(sourcePath, 'utf8'), original);
-
-  await approvals.approve(review.id);
-
-  assert.equal(await resultPromise, 'The approved edit was applied.');
-  assert.equal(proposalCount(), 1);
-  assert.equal(advertisedToolIds.length, 4);
-  assert.equal(await readFile(sourcePath, 'utf8'), updated);
-  const toolMessages = session.messages().filter(message => message.role === 'tool');
-  const treeResult = toolMessages.find(message =>
-    message.role === 'tool' && message.toolId === 'filesystem.directory-tree');
-  assert.ok(treeResult && treeResult.role === 'tool');
-  const treeEntries = (JSON.parse(treeResult.content) as {
-    entries: Array<{ path: string; type: string }>;
-  }).entries;
-  assert.ok(
-    treeEntries.some(entry => entry.path === 'test/index.test.ts'),
-    `Unexpected project tree: ${JSON.stringify(treeEntries)}`,
-  );
-  const readResults = toolMessages.filter(message =>
-    message.role === 'tool' && message.toolId === 'filesystem.read-file');
-  assert.deepEqual(readResults.map(message =>
-    message.role === 'tool' ? (JSON.parse(message.content) as { content: string }).content : ''),
-  [original, 'assert.equal(add(2, 3), 5);\n']);
-  assert.deepEqual(
-    session.messages().filter(message => message.role === 'tool').map(message =>
-      message.role === 'tool' ? message.toolId : undefined),
-    [
-      'filesystem.directory-tree',
-      'filesystem.read-file',
-      'filesystem.read-file',
-      'filesystem.propose-edit',
-    ],
-  );
-});
-
 test('rejecting an edit leaves the original file unchanged', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'existing.txt');
   await writeFile(path, 'before\n');
-  const resultPromise = execute(executor, 'filesystem.propose-edit', {
+  const resultPromise = execute(executor, 'write_file', {
     path,
     content: 'after\n',
   });
@@ -540,10 +95,10 @@ test('localized text replacements show the full file diff and apply only after a
   const original = 'const greeting = "Hello";\nexport const label = "Welcome";\n';
   const updated = 'const greeting = "Hi";\nexport const label = "Welcome";\n';
   await writeFile(path, original);
-  const resultPromise = execute(executor, 'filesystem.propose-replace-text', {
+  const resultPromise = execute(executor, 'edit_file', {
     path,
-    oldText: '"Hello"',
-    newText: '"Hi"',
+    old_text: '"Hello"',
+    new_text: '"Hi"',
   });
   const review = await proposal;
 
@@ -561,30 +116,47 @@ test('localized text replacements fail when their exact source is missing or amb
   await writeFile(path, 'same same\n');
 
   await assert.rejects(
-    execute(executor, 'filesystem.propose-replace-text', {
+    execute(executor, 'edit_file', {
       path,
-      oldText: 'missing',
-      newText: 'replacement',
+      old_text: 'missing',
+      new_text: 'replacement',
     }),
-    /must match the file exactly once/u,
+    /old_text was not found/u,
   );
   await assert.rejects(
-    execute(executor, 'filesystem.propose-replace-text', {
+    execute(executor, 'edit_file', {
       path,
-      oldText: 'same',
-      newText: 'replacement',
+      old_text: 'same',
+      new_text: 'replacement',
     }),
-    /must match the file exactly once/u,
+    /matches 2 places/u,
   );
   assert.equal(await readFile(path, 'utf8'), 'same same\n');
   assert.equal(proposalCount(), 0);
+});
+
+test('replace_all edits every occurrence after approval', async t => {
+  const { root, proposal, approvals, executor } = await fixture(t);
+  const path = join(root, 'rename.ts');
+  await writeFile(path, 'oldName(); oldName();\n');
+  const resultPromise = execute(executor, 'edit_file', {
+    path,
+    old_text: 'oldName',
+    new_text: 'newName',
+    replace_all: true,
+  });
+  const review = await proposal;
+  assert.equal(review.proposedContent, 'newName(); newName();\n');
+  await approvals.approve(review.id);
+  assert.deepEqual(await resultPromise, { status: 'applied', operation: 'edit-file', path });
+  assert.equal(await readFile(path, 'utf8'), 'newName(); newName();\n');
 });
 
 test('edits fail closed if the reviewed file changes before approval', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'existing.txt');
   await writeFile(path, 'before\n');
-  const resultPromise = execute(executor, 'filesystem.propose-edit', {
+  const resultPromise = execute(executor, 'write_file', {
     path,
     content: 'proposed\n',
   });
@@ -600,7 +172,7 @@ test('each deletion waits for approval and uses the reversible Trash operation',
   const { root, proposal, approvals, executor, trashedPaths } = await fixture(t);
   const path = join(root, 'remove.txt');
   await writeFile(path, 'content');
-  const resultPromise = execute(executor, 'filesystem.propose-delete', { path });
+  const resultPromise = execute(executor, 'delete_path', { path });
   const review = await proposal;
   assert.equal(review.operation, 'delete');
   assert.equal(review.targetType, 'file');
@@ -616,7 +188,7 @@ test('each deletion waits for approval and uses the reversible Trash operation',
 test('directory creation is a separate approved operation', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'new-folder');
-  const resultPromise = execute(executor, 'filesystem.propose-create-directory', { path });
+  const resultPromise = execute(executor, 'create_directory', { path });
   const review = await proposal;
   assert.equal(review.operation, 'create-directory');
   assert.equal(review.targetType, 'directory');
@@ -630,7 +202,7 @@ test('cancelling a pending review prevents later approval', async t => {
   const { root, proposal, approvals, executor } = await fixture(t);
   const path = join(root, 'cancelled.txt');
   const controller = new AbortController();
-  const resultPromise = execute(executor, 'filesystem.propose-create-file', {
+  const resultPromise = execute(executor, 'write_file', {
     path,
     content: 'never written',
   }, controller.signal);

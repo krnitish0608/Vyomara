@@ -34,7 +34,8 @@ const child = spawn(
   {
     cwd: projectRoot,
     env: {
-      ...process.env,
+      // Editors such as VS Code set ELECTRON_RUN_AS_NODE, which makes Electron reject app flags.
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'ELECTRON_RUN_AS_NODE')),
       VYOM_PROVIDER: 'placeholder',
       VYOM_DATA_DIR: join(temporaryRoot, 'app-data'),
     },

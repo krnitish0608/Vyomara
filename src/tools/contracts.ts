@@ -19,7 +19,7 @@ export class ToolFailure extends Error {
 }
 
 export interface ToolArgumentProperty {
-  readonly type: 'string' | 'integer';
+  readonly type: 'string' | 'integer' | 'boolean';
   readonly description?: string;
   readonly nullable?: true;
   readonly maxLength?: number;
@@ -46,6 +46,8 @@ export interface Tool<Input, Output> {
   readonly effect: ToolEffect;
   readonly description: string;
   readonly parameters: ToolArgumentSchema;
+  /** Optional lenient clean-up (drop nulls, coerce "12" → 12) applied before validation. */
+  readonly normalizeInput?: (value: unknown) => unknown;
   readonly validateInput: (value: unknown) => value is Input;
   readonly inputError?: (value: unknown) => string | undefined;
   readonly validateOutput: (value: unknown) => value is Output;
@@ -53,6 +55,9 @@ export interface Tool<Input, Output> {
 }
 
 export type RegisteredTool = Tool<unknown, unknown>;
+
+/** Tool IDs: lowercase words joined by underscores (preferred), dots, or hyphens. */
+export const TOOL_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 
 function validToolArgumentSchema(schema: ToolArgumentSchema): boolean {
   if (
@@ -76,13 +81,13 @@ function validToolArgumentSchema(schema: ToolArgumentSchema): boolean {
       property === null ||
       Object.keys(property).some(key =>
         !['type', 'description', 'nullable', 'maxLength', 'minimum', 'maximum', 'pattern'].includes(key)) ||
-      (property.type !== 'string' && property.type !== 'integer') ||
+      (property.type !== 'string' && property.type !== 'integer' && property.type !== 'boolean') ||
       (property.nullable !== undefined && property.nullable !== true) ||
       (property.nullable === true && (schema.required ?? []).includes(name)) ||
       (property.description !== undefined &&
-        (typeof property.description !== 'string' || property.description.length > 256)) ||
+        (typeof property.description !== 'string' || property.description.length > 512)) ||
       (property.maxLength !== undefined &&
-        (!Number.isSafeInteger(property.maxLength) || property.maxLength < 1 || property.maxLength > 16_384)) ||
+        (!Number.isSafeInteger(property.maxLength) || property.maxLength < 1 || property.maxLength > 1_048_576)) ||
       (property.minimum !== undefined && !Number.isSafeInteger(property.minimum)) ||
       (property.maximum !== undefined && !Number.isSafeInteger(property.maximum)) ||
       (property.minimum !== undefined && property.maximum !== undefined &&
@@ -105,15 +110,15 @@ export class ToolRegistry {
   readonly #tools = new Map<string, RegisteredTool>();
 
   register<Input, Output>(tool: Tool<Input, Output>): void {
-    if (!/^[a-z][a-z0-9.-]{0,63}$/.test(tool.id)) {
-      throw new Error('Tool ID must use lowercase letters, digits, dots, and hyphens.');
+    if (!TOOL_ID_PATTERN.test(tool.id)) {
+      throw new Error('Tool ID must use lowercase letters, digits, underscores, dots, and hyphens.');
     }
     if (
       typeof tool.description !== 'string' ||
       tool.description.trim() === '' ||
-      tool.description.length > 512
+      tool.description.length > 2048
     ) {
-      throw new Error('Tool description must contain between 1 and 512 characters.');
+      throw new Error('Tool description must contain between 1 and 2048 characters.');
     }
     if (!validToolArgumentSchema(tool.parameters)) {
       throw new Error('Tool argument schema is invalid.');
@@ -130,8 +135,6 @@ export class ToolRegistry {
 
   modelTools(): readonly ModelToolDefinition[] {
     return [...this.#tools.values()]
-      .filter(tool =>
-        tool.effect === 'read' || tool.effect === 'propose' || tool.effect === 'launch')
       .map(({ id, description, parameters }) => ({
         id,
         description,

@@ -11,7 +11,7 @@ import type {
   FileOperationRequest,
 } from '../desktop/contracts.ts';
 import { ToolFailure } from './contracts.ts';
-import type { Tool } from './contracts.ts';
+import type { Tool, ToolArgumentSchema } from './contracts.ts';
 import type { ToolRegistry } from './contracts.ts';
 import type { ToolFailureCode } from './contracts.ts';
 
@@ -43,15 +43,6 @@ interface SearchOutput {
   readonly truncated: boolean;
 }
 
-interface ContentInput extends PathInput {
-  readonly content: string;
-}
-
-interface ReplaceTextInput extends PathInput {
-  readonly oldText: string;
-  readonly newText: string;
-}
-
 interface OperationOutput {
   readonly status: 'applied' | 'rejected';
   readonly operation: FileOperationKind;
@@ -71,7 +62,21 @@ interface ListOutput {
 interface TreeEntry extends ListedEntry {
   readonly path: string;
   readonly depth: number;
+  /** Set for dependency/build folders (node_modules, .git, …) that are listed but not expanded. */
+  readonly collapsed?: true;
 }
+
+/**
+ * Generated, dependency, and VCS folders. They are listed but never expanded
+ * by the tree or traversed by searches, so results stay focused on source.
+ */
+export const SKIPPED_DIRECTORY_NAMES: ReadonlySet<string> = new Set([
+  '.git', '.hg', '.svn', 'node_modules', 'bower_components', '.pnpm-store',
+  'dist', 'build', 'out', '.next', '.nuxt', '.svelte-kit', '.turbo', '.cache',
+  '.parcel-cache', 'coverage', '.nyc_output', 'target', '.gradle', '.idea',
+  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.venv',
+  'venv', 'Pods', 'DerivedData', '.build', '.terraform', 'vendor',
+]);
 
 interface TreeOutput {
   readonly entries: readonly TreeEntry[];
@@ -156,39 +161,6 @@ function validPath(value: unknown): value is string {
     !value.split(sep).includes('..');
 }
 
-function boundedOptionalInteger(value: unknown, maximum: number): boolean {
-  return value === undefined ||
-    (Number.isSafeInteger(value) && typeof value === 'number' && value >= 1 && value <= maximum);
-}
-
-function inputError(
-  value: unknown,
-  allowedFields: readonly string[],
-  limits: Readonly<Record<string, number>>,
-): string {
-  if (!isRecord(value)) return 'Arguments must be an object containing an absolute path.';
-  if (!exactKeys(value, allowedFields)) {
-    return `Use only these arguments: ${allowedFields.join(', ')}.`;
-  }
-  if (!Object.hasOwn(value, 'path')) return 'The required path argument is missing.';
-  if (typeof value.path !== 'string') return 'Path must be a string.';
-  if (value.path.length === 0) return 'Path must not be empty.';
-  if (!validPath(value.path)) {
-    return 'Path must be an absolute path without parent-directory traversal.';
-  }
-  for (const [name, maximum] of Object.entries(limits)) {
-    const candidate = value[name];
-    if (candidate === undefined) continue;
-    if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)) {
-      return `${name} must be an integer number; omit it to use the configured default.`;
-    }
-    if (candidate < 1 || candidate > maximum) {
-      return `${name} must be between 1 and ${maximum}.`;
-    }
-  }
-  return 'Tool arguments did not match the filesystem tool schema.';
-}
-
 function isWithin(root: string, target: string): boolean {
   const normalizedRoot = resolve(root);
   const normalizedTarget = resolve(target);
@@ -242,6 +214,14 @@ export function isProtectedFilesystemPath(
   const normalized = resolve(path);
   return DEFAULT_PROTECTED_PATHS.some(protectedPath => isWithin(protectedPath, normalized)) ||
     additionalProtectedPaths.some(protectedPath => isWithin(resolve(protectedPath), normalized));
+}
+
+/** Convert a simple filename glob (`*`, `?`) to an anchored, case-insensitive RegExp. */
+export function globToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replaceAll('*', '.*')
+    .replaceAll('?', '.');
+  return new RegExp(`^${escaped}$`, 'iu');
 }
 
 function checkCancelled(signal: AbortSignal): void {
@@ -522,7 +502,9 @@ async function readFile(
   const roots = await canonicalRoots(config.filesystemAllowedRoots, signal);
   const target = await resolveAllowedPath(input.path, roots, 'file', signal, [config.dataDirectory]);
   if (target.stats.size > config.maxFileBytes) {
-    throw new FilesystemToolError('File exceeds the configured maximum size.');
+    throw new FilesystemToolError(
+      `File is ${target.stats.size} bytes, above the ${config.maxFileBytes}-byte readable limit. Use search_text to find the relevant lines instead.`,
+    );
   }
 
   let file;
@@ -559,11 +541,7 @@ async function readFile(
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(content)) {
       throw new FilesystemToolError('Binary files cannot be read as text.');
     }
-    const result = { content, bytes };
-    if (!outputFits(result, config.maxToolOutputChars)) {
-      throw new FilesystemToolError('File content exceeds the configured tool-output limit.');
-    }
-    return result;
+    return { content, bytes };
   } catch (error) {
     throw publicFilesystemError(error);
   } finally {
@@ -649,6 +627,10 @@ async function directoryTree(
       }
       entries.push(candidate);
       if (type !== 'directory') continue;
+      if (SKIPPED_DIRECTORY_NAMES.has(child.name)) {
+        entries[entries.length - 1] = { ...candidate, collapsed: true };
+        continue;
+      }
 
       let safeChild: ResolvedPath | undefined;
       try {
@@ -706,6 +688,11 @@ async function searchFilesystem(
   }
   const target = await resolveAllowedPath(targetPath, roots, 'directory', signal, [config.dataDirectory]);
   const query = input.query.toLocaleLowerCase();
+  const globPattern = /[*?]/.test(query) ? globToRegExp(query) : undefined;
+  const nameMatches = (name: string): boolean => {
+    const lower = name.toLocaleLowerCase();
+    return globPattern ? globPattern.test(lower) : lower.includes(query);
+  };
   const limit = input.maxEntries ?? config.maxDirectoryEntries;
   const directoryLimit = 10_000;
   const depthLimit = 32;
@@ -826,9 +813,9 @@ async function searchFilesystem(
         truncated = true;
         continue;
       }
-      if ((type === 'file' || type === 'directory') && child.name.toLocaleLowerCase().includes(query)) {
+      if ((type === 'file' || type === 'directory') && nameMatches(child.name)) {
         matches.push({ path: childPath, type });
-        if (child.name.toLocaleLowerCase() === query) {
+        if (!globPattern && child.name.toLocaleLowerCase() === query) {
           exactNameMatchFound = true;
           break;
         }
@@ -838,6 +825,7 @@ async function searchFilesystem(
         }
       }
       if (type !== 'directory') continue;
+      if (SKIPPED_DIRECTORY_NAMES.has(child.name) || child.name === '.Trash') continue;
       if (current.depth >= depthLimit) {
         truncated = true;
         continue;
@@ -886,6 +874,268 @@ async function searchFilesystem(
   return { matches, scannedDirectories, skippedDirectories, truncated };
 }
 
+// ---------------------------------------------------------------------------
+// Content search (search_text)
+// ---------------------------------------------------------------------------
+
+interface TextSearchInput {
+  readonly pattern: string;
+  readonly path: string;
+  readonly glob?: string;
+  readonly ignore_case?: boolean;
+  readonly max_results?: number;
+}
+
+interface TextSearchMatch {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+}
+
+interface TextSearchOutput {
+  readonly matches: readonly TextSearchMatch[];
+  readonly filesScanned: number;
+  readonly truncated: boolean;
+}
+
+const TEXT_SEARCH_MAX_FILE_BYTES = 1_048_576;
+const TEXT_SEARCH_MAX_FILES = 25_000;
+
+function searchExpression(pattern: string, ignoreCase: boolean): RegExp {
+  const flags = ignoreCase ? 'iu' : 'u';
+  try {
+    return new RegExp(pattern, flags);
+  } catch {
+    // Not a valid regular expression: search for the literal text instead.
+    return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), flags);
+  }
+}
+
+async function searchText(
+  input: TextSearchInput,
+  config: AppConfig,
+  signal: AbortSignal,
+  openDirectory: (path: string) => Promise<DirectoryHandle>,
+): Promise<TextSearchOutput> {
+  const roots = await canonicalRoots(config.filesystemAllowedRoots, signal);
+  const protectedExtra = [config.dataDirectory];
+  let start: SafeFilesystemPath;
+  try {
+    start = await resolveAllowedPath(input.path, roots, 'directory', signal, protectedExtra);
+  } catch (error) {
+    if (!(error instanceof FilesystemToolError) || error.code !== 'invalid-path') throw error;
+    start = await resolveAllowedPath(input.path, roots, 'file', signal, protectedExtra);
+  }
+  const expression = searchExpression(input.pattern, input.ignore_case ?? false);
+  const fileFilter = input.glob ? globToRegExp(input.glob) : undefined;
+  const limit = input.max_results ?? 100;
+  const matches: TextSearchMatch[] = [];
+  let filesScanned = 0;
+  let truncated = false;
+  let outputChars = 64;
+
+  const scanFile = async (path: string): Promise<boolean> => {
+    let file;
+    try {
+      file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      const stats = await file.stat();
+      if (!stats.isFile() || stats.size > TEXT_SEARCH_MAX_FILE_BYTES) return true;
+      const buffer = Buffer.alloc(stats.size);
+      let length = 0;
+      while (length < buffer.length) {
+        const result = await file.read(buffer, length, buffer.length - length, length);
+        if (result.bytesRead === 0) break;
+        length += result.bytesRead;
+      }
+      const bytes = buffer.subarray(0, length);
+      if (bytes.subarray(0, 8192).includes(0)) return true;
+      filesScanned += 1;
+      const lines = bytes.toString('utf8').split(/\r?\n/u);
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index] ?? '';
+        expression.lastIndex = 0;
+        if (!expression.test(line)) continue;
+        const text = line.length > 240 ? `${line.slice(0, 240)}…` : line;
+        const match = { path, line: index + 1, text };
+        outputChars += JSON.stringify(match).length + 1;
+        if (matches.length >= limit || outputChars > config.maxToolOutputChars - 256) {
+          truncated = true;
+          return false;
+        }
+        matches.push(match);
+      }
+      return true;
+    } catch {
+      return true;
+    } finally {
+      await file?.close().catch(() => undefined);
+    }
+  };
+
+  if (start.stats.isFile()) {
+    await scanFile(start.target);
+    return { matches, filesScanned, truncated };
+  }
+
+  const pending: string[] = [start.target];
+  while (pending.length > 0) {
+    checkCancelled(signal);
+    const directoryPath = pending.shift();
+    if (directoryPath === undefined) break;
+    const children: Dirent[] = [];
+    let directory;
+    try {
+      directory = await openDirectory(directoryPath);
+      while (true) {
+        const entry = await directory.read();
+        if (!entry) break;
+        children.push(entry);
+      }
+    } catch {
+      truncated = true;
+      continue;
+    } finally {
+      await directory?.close().catch(() => undefined);
+    }
+    children.sort((left, right) => compareText(left.name, right.name));
+    for (const child of children) {
+      checkCancelled(signal);
+      const childPath = resolve(directoryPath, child.name);
+      if (isProtectedFilesystemPath(childPath, roots, protectedExtra)) continue;
+      if (child.isDirectory()) {
+        if (!SKIPPED_DIRECTORY_NAMES.has(child.name)) pending.push(childPath);
+        continue;
+      }
+      if (!child.isFile()) continue;
+      if (fileFilter && !fileFilter.test(child.name)) continue;
+      if (filesScanned >= TEXT_SEARCH_MAX_FILES) {
+        return { matches, filesScanned, truncated: true };
+      }
+      if (!await scanFile(childPath)) return { matches, filesScanned, truncated: true };
+    }
+  }
+  return { matches, filesScanned, truncated };
+}
+
+// ---------------------------------------------------------------------------
+// Schema-driven argument validation
+// ---------------------------------------------------------------------------
+
+function argumentError(
+  value: unknown,
+  schema: ToolArgumentSchema,
+  pathKeys: readonly string[],
+): string | undefined {
+  if (!isRecord(value)) return 'Arguments must be a JSON object.';
+  const allowed = Object.keys(schema.properties);
+  const unknown = Object.keys(value).filter(key => !allowed.includes(key));
+  if (unknown.length > 0) {
+    return `Unknown argument(s): ${unknown.join(', ')}. Use only: ${allowed.join(', ')}.`;
+  }
+  for (const key of schema.required ?? []) {
+    if (value[key] === undefined || value[key] === null) return `The required argument "${key}" is missing.`;
+  }
+  for (const [key, property] of Object.entries(schema.properties)) {
+    const candidate = value[key];
+    if (candidate === undefined) continue;
+    if (property.type === 'string') {
+      if (typeof candidate !== 'string') return `"${key}" must be a string.`;
+      if (!validUnicode(candidate) || candidate.includes('\0')) return `"${key}" contains invalid characters.`;
+      if (property.maxLength !== undefined && candidate.length > property.maxLength) {
+        return `"${key}" is longer than ${property.maxLength} characters.`;
+      }
+      if (pathKeys.includes(key) && !validPath(candidate)) {
+        return `"${key}" must be an absolute path (starting with /) without "..".`;
+      }
+    } else if (property.type === 'integer') {
+      if (typeof candidate !== 'number' || !Number.isSafeInteger(candidate)) {
+        return `"${key}" must be an integer number.`;
+      }
+      if (property.minimum !== undefined && candidate < property.minimum) {
+        return `"${key}" must be at least ${property.minimum}.`;
+      }
+      if (property.maximum !== undefined && candidate > property.maximum) {
+        return `"${key}" must be at most ${property.maximum}.`;
+      }
+    } else if (typeof candidate !== 'boolean') {
+      return `"${key}" must be true or false.`;
+    }
+  }
+  return undefined;
+}
+
+/** Remove `null` optional arguments and coerce integer strings, as small models often send them. */
+function normalizeArguments(value: unknown, schema: ToolArgumentSchema): unknown {
+  if (!isRecord(value)) return value;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, candidate] of Object.entries(value)) {
+    const property = schema.properties[key];
+    if (candidate === null && !(schema.required ?? []).includes(key)) continue;
+    if (property?.type === 'integer' && typeof candidate === 'string' && /^-?\d+$/.test(candidate)) {
+      normalized[key] = Number(candidate);
+    } else if (property?.type === 'boolean' && (candidate === 'true' || candidate === 'false')) {
+      normalized[key] = candidate === 'true';
+    } else {
+      normalized[key] = candidate;
+    }
+  }
+  return normalized;
+}
+
+function defineTool<Input, Output>(
+  definition: Omit<Tool<Input, Output>, 'validateInput' | 'inputError' | 'normalizeInput'> & {
+    readonly pathKeys?: readonly string[];
+    readonly extraCheck?: (input: Input) => string | undefined;
+  },
+): Tool<Input, Output> {
+  const pathKeys = definition.pathKeys ?? ['path'];
+  const check = (value: unknown): string | undefined =>
+    argumentError(value, definition.parameters, pathKeys) ??
+    definition.extraCheck?.(value as Input);
+  return {
+    id: definition.id,
+    effect: definition.effect,
+    description: definition.description,
+    parameters: definition.parameters,
+    normalizeInput: value => normalizeArguments(value, definition.parameters),
+    validateInput: (value): value is Input => check(value) === undefined,
+    inputError: value => check(value),
+    validateOutput: definition.validateOutput,
+    run: definition.run,
+  };
+}
+
+const PATH_PROPERTY = {
+  type: 'string',
+  description: 'Absolute path, e.g. /Users/name/Projects/app/src/index.ts',
+  maxLength: 4096,
+} as const;
+
+const BINARY_CONTROL_CHARACTERS = /[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
+
+// ---------------------------------------------------------------------------
+// Output shapes and validators
+// ---------------------------------------------------------------------------
+
+interface ReadFileInput extends PathInput {
+  readonly offset?: number;
+  readonly limit?: number;
+}
+
+interface ReadFileOutput {
+  readonly content: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly totalLines: number;
+  readonly truncated: boolean;
+}
+
+interface EditFileInput extends PathInput {
+  readonly old_text: string;
+  readonly new_text: string;
+  readonly replace_all?: boolean;
+}
+
 function isListOutput(value: unknown): value is ListOutput {
   return isRecord(value) &&
     Array.isArray(value.entries) &&
@@ -906,18 +1156,22 @@ function isTreeOutput(value: unknown): value is TreeOutput {
       typeof entry.name === 'string' &&
       typeof entry.path === 'string' &&
       Number.isSafeInteger(entry.depth) &&
+      (entry.collapsed === undefined || entry.collapsed === true) &&
       ['file', 'directory', 'symlink', 'other'].includes(String(entry.type)) &&
-      exactKeys(entry, ['name', 'path', 'type', 'depth'])) &&
+      exactKeys(entry, ['name', 'path', 'type', 'depth', 'collapsed'])) &&
     typeof value.truncated === 'boolean' &&
     exactKeys(value, ['entries', 'truncated']);
 }
 
-function isReadOutput(value: unknown): value is ReadOutput {
+function isReadFileOutput(value: unknown): value is ReadFileOutput {
   return isRecord(value) &&
     typeof value.content === 'string' &&
     validUnicode(value.content) &&
-    Number.isSafeInteger(value.bytes) &&
-    exactKeys(value, ['content', 'bytes']);
+    Number.isSafeInteger(value.startLine) &&
+    Number.isSafeInteger(value.endLine) &&
+    Number.isSafeInteger(value.totalLines) &&
+    typeof value.truncated === 'boolean' &&
+    exactKeys(value, ['content', 'startLine', 'endLine', 'totalLines', 'truncated']);
 }
 
 function isSearchOutput(value: unknown): value is SearchOutput {
@@ -934,6 +1188,20 @@ function isSearchOutput(value: unknown): value is SearchOutput {
     exactKeys(value, ['matches', 'scannedDirectories', 'skippedDirectories', 'truncated']);
 }
 
+function isTextSearchOutput(value: unknown): value is TextSearchOutput {
+  return isRecord(value) &&
+    Array.isArray(value.matches) &&
+    value.matches.every(match =>
+      isRecord(match) &&
+      typeof match.path === 'string' &&
+      Number.isSafeInteger(match.line) &&
+      typeof match.text === 'string' &&
+      exactKeys(match, ['path', 'line', 'text'])) &&
+    Number.isSafeInteger(value.filesScanned) &&
+    typeof value.truncated === 'boolean' &&
+    exactKeys(value, ['matches', 'filesScanned', 'truncated']);
+}
+
 function isOperationOutput(value: unknown): value is OperationOutput {
   return isRecord(value) &&
     (value.status === 'applied' || value.status === 'rejected') &&
@@ -943,6 +1211,51 @@ function isOperationOutput(value: unknown): value is OperationOutput {
     exactKeys(value, ['status', 'operation', 'path']);
 }
 
+/** Select a window of lines that fits the tool-output budget. */
+export function readFileWindow(
+  content: string,
+  offset: number | undefined,
+  limit: number | undefined,
+  maxChars: number,
+): ReadFileOutput {
+  const lines = content.split('\n');
+  if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+  const totalLines = content === '' ? 0 : lines.length;
+  const startLine = Math.max(1, offset ?? 1);
+  if (totalLines > 0 && startLine > totalLines) {
+    throw new FilesystemToolError(
+      `offset ${startLine} is beyond the end of the file (${totalLines} lines).`,
+      'tool-failed',
+    );
+  }
+  const wanted = Math.min(limit ?? 800, 2_000);
+  // Leave room for the JSON envelope (keys, line numbers, flags).
+  const budget = Math.max(64, maxChars - 160);
+  const selected: string[] = [];
+  let used = 0;
+  for (let index = startLine - 1; index < totalLines && selected.length < wanted; index += 1) {
+    const line = lines[index] ?? '';
+    const cost = JSON.stringify(line).length + 1;
+    if (used + cost > budget && selected.length > 0) break;
+    selected.push(cost > budget ? `${line.slice(0, budget - 32)}… [line truncated]` : line);
+    used += cost;
+  }
+  const endLine = totalLines === 0 ? 0 : startLine + selected.length - 1;
+  return {
+    content: selected.length === 0
+      ? ''
+      : selected.join('\n') + (endLine < totalLines || content.endsWith('\n') ? '\n' : ''),
+    startLine: totalLines === 0 ? 0 : startLine,
+    endLine,
+    totalLines,
+    truncated: endLine < totalLines,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 export function registerFilesystemTools(
   registry: ToolRegistry,
   config: AppConfig,
@@ -951,298 +1264,207 @@ export function registerFilesystemTools(
 ): void {
   const openDirectory = operations.openDirectory ?? (path => opendir(path));
   const openFile = operations.openFile ?? ((path, flags) => open(path, flags));
-  const listDirectoryTool: Tool<ListInput, ListOutput> = {
-    id: 'filesystem.list-directory',
+
+  registry.register(defineTool<ListInput, ListOutput>({
+    id: 'list_directory',
     effect: 'read',
-    description: 'List direct children only (not recursively). Required path is the exact absolute path inside an allowed root; preserve it including spaces and Unicode. Optional maxEntries is a JSON integer; omit for the configured default. Never use tree-only arguments.',
+    description: 'List the direct children (files and folders) of one directory. Not recursive; use directory_tree for nested structure.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
-        maxEntries: {
-          type: 'integer',
-          description: 'Optional maximum returned entries; omit to use the configured default.',
-          nullable: true,
-          minimum: 1,
-          maximum: config.maxDirectoryEntries,
-        },
+        path: { ...PATH_PROPERTY, description: 'Absolute directory path.' },
+        maxEntries: { type: 'integer', description: 'Optional maximum entries.', minimum: 1, maximum: config.maxDirectoryEntries },
       },
       required: ['path'],
       additionalProperties: false,
-    },
-    validateInput(value): value is ListInput {
-      return isRecord(value) &&
-        exactKeys(value, ['path', 'maxEntries']) &&
-        validPath(value.path) &&
-        boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
-    },
-    inputError(value) {
-      return inputError(value, ['path', 'maxEntries'], {
-        maxEntries: config.maxDirectoryEntries,
-      });
     },
     validateOutput: isListOutput,
-    run(input, signal) {
-      return listDirectory(input, config, signal, openDirectory);
-    },
-  };
-  const readFileTool: Tool<PathInput, ReadOutput> = {
-    id: 'filesystem.read-file',
+    run: (input, signal) => listDirectory(input, config, signal, openDirectory),
+  }));
+
+  registry.register(defineTool<TreeInput, TreeOutput>({
+    id: 'directory_tree',
     effect: 'read',
-    description: 'Read one bounded UTF-8 text file. Required path is the exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.',
+    description: 'Show the recursive file/folder structure under a directory (e.g. a project root). Dependency and build folders such as node_modules, .git, and dist are listed but not expanded ("collapsed").',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
+        path: { ...PATH_PROPERTY, description: 'Absolute directory path.' },
+        maxDepth: { type: 'integer', description: `Optional depth (default ${config.maxTreeDepth}).`, minimum: 1, maximum: config.maxTreeDepth },
+        maxEntries: { type: 'integer', description: 'Optional maximum entries.', minimum: 1, maximum: config.maxDirectoryEntries },
       },
       required: ['path'],
       additionalProperties: false,
-    },
-    validateInput(value): value is PathInput {
-      return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
-    },
-    inputError(value) {
-      return inputError(value, ['path'], {});
-    },
-    validateOutput: isReadOutput,
-    run(input, signal) {
-      return readFile(input, config, signal, openFile);
-    },
-  };
-  const tree: Tool<TreeInput, TreeOutput> = {
-    id: 'filesystem.directory-tree',
-    effect: 'read',
-    description: 'Return a recursive tree (not a direct-child listing). Required path is the exact absolute path inside an allowed root; preserve spaces and Unicode. Optional maxDepth and maxEntries are JSON integers; omit either for its configured default. Does not follow symlinks.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Exact absolute path inside an allowed root; preserve spaces, punctuation, and Unicode.', maxLength: 4096, pattern: '^/' },
-        maxDepth: {
-          type: 'integer',
-          description: 'Optional maximum tree depth; omit to use the configured default.',
-          nullable: true,
-          minimum: 1,
-          maximum: config.maxTreeDepth,
-        },
-        maxEntries: {
-          type: 'integer',
-          description: 'Optional maximum total tree entries; omit to use the configured default.',
-          nullable: true,
-          minimum: 1,
-          maximum: config.maxDirectoryEntries,
-        },
-      },
-      required: ['path'],
-      additionalProperties: false,
-    },
-    validateInput(value): value is TreeInput {
-      return isRecord(value) &&
-        exactKeys(value, ['path', 'maxDepth', 'maxEntries']) &&
-        validPath(value.path) &&
-        boundedOptionalInteger(value.maxDepth, config.maxTreeDepth) &&
-        boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
-    },
-    inputError(value) {
-      return inputError(value, ['path', 'maxDepth', 'maxEntries'], {
-        maxDepth: config.maxTreeDepth,
-        maxEntries: config.maxDirectoryEntries,
-      });
     },
     validateOutput: isTreeOutput,
-    run(input, signal) {
-      return directoryTree(input, config, signal, openDirectory);
-    },
-  };
-  const search: Tool<SearchInput, SearchOutput> = {
-    id: 'filesystem.search',
+    run: (input, signal) => directoryTree(input, config, signal, openDirectory),
+  }));
+
+  registry.register(defineTool<ReadFileInput, ReadFileOutput>({
+    id: 'read_file',
     effect: 'read',
-    description: 'Search file and folder names by case-insensitive substring. If path is omitted, search starts at the configured filesystem root. Results are bounded, protected system and credential paths are skipped, and symlinks are never followed.',
+    description: 'Read a UTF-8 text file. Returns up to ~800 lines starting at `offset` (1-based line number) plus startLine, endLine, totalLines, and truncated. For long files, call again with offset = endLine + 1.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Non-empty case-insensitive filename or folder-name substring.', maxLength: 256 },
-        path: { type: 'string', description: 'Optional exact absolute directory path to search; omit to search from the configured root.', nullable: true, maxLength: 4096, pattern: '^/' },
-        maxEntries: {
-          type: 'integer',
-          description: 'Optional maximum number of matches; omit to use the configured default.',
-          nullable: true,
-          minimum: 1,
-          maximum: config.maxDirectoryEntries,
-        },
+        path: { ...PATH_PROPERTY, description: 'Absolute file path.' },
+        offset: { type: 'integer', description: 'Optional 1-based line number to start from.', minimum: 1 },
+        limit: { type: 'integer', description: 'Optional maximum number of lines (up to 2000).', minimum: 1, maximum: 2_000 },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    validateOutput: isReadFileOutput,
+    async run(input, signal) {
+      const file = await readFile(input, config, signal, openFile);
+      return readFileWindow(file.content, input.offset, input.limit, config.maxToolOutputChars);
+    },
+  }));
+
+  registry.register(defineTool<SearchInput, SearchOutput>({
+    id: 'find_files',
+    effect: 'read',
+    description: 'Find files or folders by name anywhere on this Mac. `query` is a case-insensitive name fragment ("vyomara") or a glob ("*.test.ts"). Give `path` to search inside one folder; omit it to search the whole machine (home and project folders first). Dependency folders like node_modules are skipped.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Name fragment or glob pattern.', maxLength: 256 },
+        path: { ...PATH_PROPERTY, description: 'Optional absolute folder to search in.' },
+        maxEntries: { type: 'integer', description: 'Optional maximum matches.', minimum: 1, maximum: config.maxDirectoryEntries },
       },
       required: ['query'],
       additionalProperties: false,
     },
-    validateInput(value): value is SearchInput {
-      return isRecord(value) &&
-        exactKeys(value, ['query', 'path', 'maxEntries']) &&
-        typeof value.query === 'string' &&
-        value.query.trim().length > 0 &&
-        value.query.length <= 256 &&
-        (value.path === undefined || validPath(value.path)) &&
-        boundedOptionalInteger(value.maxEntries, config.maxDirectoryEntries);
-    },
-    inputError(value) {
-      if (!isRecord(value) || !exactKeys(value, ['query', 'path', 'maxEntries'])) {
-        return 'Use only the query, optional path, and optional maxEntries arguments.';
-      }
-      if (typeof value.query !== 'string' || value.query.trim() === '' || value.query.length > 256) {
-        return 'Query must be a non-empty filename or folder-name substring of at most 256 characters.';
-      }
-      if (value.path !== undefined && !validPath(value.path)) {
-        return 'Path must be an absolute directory path without parent-directory traversal.';
-      }
-      return inputError({ path: value.path ?? '/' , maxEntries: value.maxEntries }, ['path', 'maxEntries'], {
-        maxEntries: config.maxDirectoryEntries,
-      });
-    },
+    extraCheck: input => input.query.trim() === '' ? 'query must not be empty.' : undefined,
     validateOutput: isSearchOutput,
-    run(input, signal) {
-      return searchFilesystem(input, config, signal, openDirectory);
+    run: (input, signal) => searchFilesystem({ ...input, query: input.query.trim() }, config, signal, openDirectory),
+  }));
+
+  registry.register(defineTool<TextSearchInput, TextSearchOutput>({
+    id: 'search_text',
+    effect: 'read',
+    description: 'Search file contents (like grep) under a folder or in one file. `pattern` is a regular expression (falls back to literal text). Optional `glob` filters file names, e.g. "*.ts". Returns matching lines with path and line number. Skips binary files and dependency folders.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regular expression or literal text to find.', maxLength: 1_000 },
+        path: { ...PATH_PROPERTY, description: 'Absolute folder (or file) to search.' },
+        glob: { type: 'string', description: 'Optional file-name glob, e.g. "*.tsx".', maxLength: 256 },
+        ignore_case: { type: 'boolean', description: 'Optional case-insensitive search.' },
+        max_results: { type: 'integer', description: 'Optional maximum matching lines (default 100).', minimum: 1, maximum: 500 },
+      },
+      required: ['pattern', 'path'],
+      additionalProperties: false,
     },
-  };
-  registry.register(listDirectoryTool);
-  registry.register(readFileTool);
-  registry.register(tree);
-  registry.register(search);
-  if (approval) {
-    const contentMaximum = Math.min(config.maxFileBytes, 16_384);
-    const contentOperation = (
-      id: string,
-      operation: 'create-file' | 'edit-file',
-    ): Tool<ContentInput, OperationOutput> => ({
-      id,
-      effect: 'propose',
-      description: `${operation === 'create-file' ? 'Propose creating' : 'Propose replacing'} one UTF-8 text file at an exact absolute path. Vyomara displays the full current/proposed contents and requires explicit user approval before any write.`,
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Exact absolute file path; preserve spaces and Unicode.', maxLength: 4096, pattern: '^/' },
-          content: { type: 'string', description: 'Complete replacement UTF-8 text content.', maxLength: contentMaximum },
+    extraCheck: input => input.pattern === '' ? 'pattern must not be empty.' : undefined,
+    validateOutput: isTextSearchOutput,
+    run: (input, signal) => searchText(input, config, signal, openDirectory),
+  }));
+
+  if (!approval) return;
+
+  const contentMaximum = Math.min(config.maxFileBytes, config.maxToolInputChars);
+  registry.register(defineTool<{ readonly path: string; readonly content: string }, OperationOutput>({
+    id: 'write_file',
+    effect: 'propose',
+    description: 'Create a new file, or completely replace an existing file, with `content`. Prefer edit_file for changes to existing files. The user reviews the change before it is written.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { ...PATH_PROPERTY, description: 'Absolute file path.' },
+        content: { type: 'string', description: 'The complete file content.', maxLength: contentMaximum },
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    },
+    extraCheck: input => BINARY_CONTROL_CHARACTERS.test(input.content)
+      ? 'content must be text without binary control characters.'
+      : undefined,
+    validateOutput: isOperationOutput,
+    async run(input, signal) {
+      let exists = false;
+      try {
+        await lstat(input.path);
+        exists = true;
+      } catch {
+        exists = false;
+      }
+      const operation: FileOperationKind = exists ? 'edit-file' : 'create-file';
+      const request: FileOperationRequest = { operation, path: input.path, content: input.content };
+      const result = await approval.request(request, signal);
+      return { ...result, operation, path: input.path };
+    },
+  }));
+
+  registry.register(defineTool<EditFileInput, OperationOutput>({
+    id: 'edit_file',
+    effect: 'propose',
+    description: 'Edit an existing file by replacing `old_text` with `new_text`. `old_text` must be copied exactly from the file (same whitespace and indentation) and must match exactly once unless `replace_all` is true; include a few surrounding lines to make it unique. Read the file first. The user reviews a diff before it is applied.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { ...PATH_PROPERTY, description: 'Absolute path of the existing file.' },
+        old_text: { type: 'string', description: 'Exact existing text to replace.', maxLength: contentMaximum },
+        new_text: { type: 'string', description: 'Replacement text.', maxLength: contentMaximum },
+        replace_all: { type: 'boolean', description: 'Optional: replace every occurrence.' },
+      },
+      required: ['path', 'old_text', 'new_text'],
+      additionalProperties: false,
+    },
+    extraCheck: input => input.old_text === ''
+      ? 'old_text must not be empty. Use write_file to create a file.'
+      : input.old_text === input.new_text
+        ? 'old_text and new_text are identical; there is nothing to change.'
+        : BINARY_CONTROL_CHARACTERS.test(input.new_text)
+          ? 'new_text must be text without binary control characters.'
+          : undefined,
+    validateOutput: isOperationOutput,
+    async run(input, signal) {
+      const request: FileOperationRequest = {
+        operation: 'edit-file',
+        path: input.path,
+        replacement: {
+          find: input.old_text,
+          replace: input.new_text,
+          ...(input.replace_all === true ? { all: true } : {}),
         },
-        required: ['path', 'content'],
-        additionalProperties: false,
-      },
-      validateInput(value): value is ContentInput {
-        return isRecord(value) &&
-          exactKeys(value, ['path', 'content']) &&
-          validPath(value.path) &&
-          typeof value.content === 'string' &&
-          Buffer.byteLength(value.content, 'utf8') <= contentMaximum &&
-          !/[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value.content);
-      },
-      inputError(value) {
-        if (!isRecord(value) || !exactKeys(value, ['path', 'content'])) {
-          return 'Use only the path and content arguments.';
-        }
-        if (!validPath(value.path)) return 'Path must be an absolute path without parent-directory traversal.';
-        return `Content must be UTF-8 text of at most ${contentMaximum} bytes without binary control characters.`;
-      },
-      validateOutput: isOperationOutput,
-      async run(input, signal) {
-        const request: FileOperationRequest = { operation, path: input.path, content: input.content };
-        const result = await approval.request(request, signal);
-        return { ...result, operation, path: input.path };
-      },
-    });
-    const createDirectory: Tool<PathInput, OperationOutput> = {
-      id: 'filesystem.propose-create-directory',
-      effect: 'propose',
-      description: 'Propose creating one empty directory under an existing parent directory. Vyomara requires explicit user approval.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Exact absolute destination directory path.', maxLength: 4096, pattern: '^/' },
-        },
-        required: ['path'],
-        additionalProperties: false,
-      },
-      validateInput(value): value is PathInput {
-        return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
-      },
-      inputError(value) {
-        return inputError(value, ['path'], {});
-      },
-      validateOutput: isOperationOutput,
-      async run(input, signal) {
-        const result = await approval.request({ operation: 'create-directory', path: input.path }, signal);
-        return { ...result, operation: 'create-directory', path: input.path };
-      },
-    };
-    const deletePath: Tool<PathInput, OperationOutput> = {
-      id: 'filesystem.propose-delete',
-      effect: 'propose',
-      description: 'Propose moving one exact file or directory to the system Trash. Vyomara requires a separate explicit confirmation for every item.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Exact absolute file or directory path to move to Trash.', maxLength: 4096, pattern: '^/' },
-        },
-        required: ['path'],
-        additionalProperties: false,
-      },
-      validateInput(value): value is PathInput {
-        return isRecord(value) && exactKeys(value, ['path']) && validPath(value.path);
-      },
-      inputError(value) {
-        return inputError(value, ['path'], {});
-      },
-      validateOutput: isOperationOutput,
-      async run(input, signal) {
-        const result = await approval.request({ operation: 'delete', path: input.path }, signal);
-        return { ...result, operation: 'delete', path: input.path };
-      },
-    };
-    registry.register(contentOperation('filesystem.propose-create-file', 'create-file'));
-    registry.register(contentOperation('filesystem.propose-edit', 'edit-file'));
-    const replaceText: Tool<ReplaceTextInput, OperationOutput> = {
-      id: 'filesystem.propose-replace-text',
-      effect: 'propose',
-      description: 'Propose replacing one exact, unique text snippet in an existing UTF-8 file. Use for localized edits after reading the file; the full change is reviewed before approval.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Exact absolute path to the existing file.', maxLength: 4096, pattern: '^/' },
-          oldText: { type: 'string', description: 'Exact existing text to replace; it must occur exactly once.', maxLength: contentMaximum },
-          newText: { type: 'string', description: 'Replacement text.', maxLength: contentMaximum },
-        },
-        required: ['path', 'oldText', 'newText'],
-        additionalProperties: false,
-      },
-      validateInput(value): value is ReplaceTextInput {
-        return isRecord(value) &&
-          exactKeys(value, ['path', 'oldText', 'newText']) &&
-          validPath(value.path) &&
-          typeof value.oldText === 'string' &&
-          value.oldText.length > 0 &&
-          Buffer.byteLength(value.oldText, 'utf8') <= contentMaximum &&
-          validUnicode(value.oldText) &&
-          !/[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value.oldText) &&
-          typeof value.newText === 'string' &&
-          Buffer.byteLength(value.newText, 'utf8') <= contentMaximum &&
-          validUnicode(value.newText) &&
-          !/[\u0000\u0007-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value.newText);
-      },
-      inputError(value) {
-        if (!isRecord(value) || !exactKeys(value, ['path', 'oldText', 'newText'])) {
-          return 'Use only the path, oldText, and newText arguments.';
-        }
-        if (!validPath(value.path)) return 'Path must be an absolute path without parent-directory traversal.';
-        return `oldText and newText must be UTF-8 text of at most ${contentMaximum} bytes without binary control characters; oldText cannot be empty.`;
-      },
-      validateOutput: isOperationOutput,
-      async run(input, signal) {
-        const request: FileOperationRequest = {
-          operation: 'edit-file',
-          path: input.path,
-          replacement: { find: input.oldText, replace: input.newText },
-        };
-        const result = await approval.request(request, signal);
-        return { ...result, operation: 'edit-file', path: input.path };
-      },
-    };
-    registry.register(replaceText);
-    registry.register(createDirectory);
-    registry.register(deletePath);
-  }
+      };
+      const result = await approval.request(request, signal);
+      return { ...result, operation: 'edit-file', path: input.path };
+    },
+  }));
+
+  registry.register(defineTool<PathInput, OperationOutput>({
+    id: 'create_directory',
+    effect: 'propose',
+    description: 'Create one new folder inside an existing parent folder. The user approves it first.',
+    parameters: {
+      type: 'object',
+      properties: { path: { ...PATH_PROPERTY, description: 'Absolute path of the new folder.' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    validateOutput: isOperationOutput,
+    async run(input, signal) {
+      const result = await approval.request({ operation: 'create-directory', path: input.path }, signal);
+      return { ...result, operation: 'create-directory', path: input.path };
+    },
+  }));
+
+  registry.register(defineTool<PathInput, OperationOutput>({
+    id: 'delete_path',
+    effect: 'propose',
+    description: 'Move one file or folder to the macOS Trash. The user must type DELETE to confirm each item.',
+    parameters: {
+      type: 'object',
+      properties: { path: { ...PATH_PROPERTY, description: 'Absolute path of the file or folder.' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    validateOutput: isOperationOutput,
+    async run(input, signal) {
+      const result = await approval.request({ operation: 'delete', path: input.path }, signal);
+      return { ...result, operation: 'delete', path: input.path };
+    },
+  }));
 }

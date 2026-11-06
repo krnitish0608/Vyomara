@@ -1,48 +1,41 @@
 import { spawn } from 'node:child_process';
 import { ToolFailure } from '../tools/contracts.ts';
-import type { ApplicationId, ApplicationLauncherPort } from '../tools/application-tools.ts';
+import type { LauncherPort } from '../tools/action-tools.ts';
 
-const macApplications: Readonly<Record<ApplicationId, string>> = {
-  calculator: 'Calculator',
-  calendar: 'Calendar',
-  finder: 'Finder',
-  notes: 'Notes',
-  safari: 'Safari',
-  'system-settings': 'System Settings',
-  terminal: 'Terminal',
-  'visual-studio-code': 'Visual Studio Code',
-};
+/** Opens applications, files, and web pages through macOS LaunchServices (`/usr/bin/open`). */
+export class MacApplicationLauncher implements LauncherPort {
+  openApplication(application: string, target: string | undefined, signal: AbortSignal): Promise<void> {
+    return this.#open(['-a', application, ...(target === undefined ? [] : [target])], signal,
+      `macOS could not open “${application}”. Check that the application is installed.`);
+  }
 
-export class MacApplicationLauncher implements ApplicationLauncherPort {
-  launch(application: ApplicationId, signal: AbortSignal): Promise<void> {
+  openUrl(url: string, application: string | undefined, signal: AbortSignal): Promise<void> {
+    return this.#open([...(application === undefined ? [] : ['-a', application]), url], signal,
+      application === undefined
+        ? 'macOS could not open the web page.'
+        : `macOS could not open the web page in “${application}”. Check that the browser is installed.`);
+  }
+
+  #open(args: readonly string[], signal: AbortSignal, failure: string): Promise<void> {
     if (signal.aborted) {
-      return Promise.reject(new ToolFailure('Application launch was cancelled.', 'tool-failed'));
+      return Promise.reject(new ToolFailure('Opening was cancelled.', 'tool-failed'));
     }
-
     return new Promise((resolve, reject) => {
-      const child = spawn('/usr/bin/open', ['-a', macApplications[application]], {
-        stdio: 'ignore',
-      });
+      // `--` is not supported by open(1); arguments are passed without a shell.
+      const child = spawn('/usr/bin/open', [...args], { stdio: 'ignore' });
       const onAbort = (): void => {
         child.kill('SIGTERM');
-        reject(new ToolFailure('Application launch was cancelled.', 'tool-failed'));
+        reject(new ToolFailure('Opening was cancelled.', 'tool-failed'));
       };
       signal.addEventListener('abort', onAbort, { once: true });
-
       child.once('error', () => {
         signal.removeEventListener('abort', onAbort);
-        reject(new ToolFailure('macOS could not start the application.', 'tool-failed'));
+        reject(new ToolFailure(failure, 'tool-failed'));
       });
       child.once('close', code => {
         signal.removeEventListener('abort', onAbort);
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new ToolFailure(
-            'The application could not be opened. Check whether it is installed.',
-            'not-found',
-          ));
-        }
+        if (code === 0) resolve();
+        else reject(new ToolFailure(failure, 'not-found'));
       });
     });
   }

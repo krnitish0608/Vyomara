@@ -1,0 +1,150 @@
+import type { RefObject } from 'react';
+import type { DesktopActionProposal, DesktopFileOperationProposal } from '../../../desktop/contracts.ts';
+import { diffHunks, diffStats } from '../../../shared/diff.ts';
+
+export function FileDiff({ before, after }: { readonly before: string; readonly after: string }) {
+  const hunks = diffHunks(before, after);
+  const stats = diffStats(before, after);
+  if (hunks.length === 0) return <p className="file-operation-warning">No textual changes.</p>;
+  return (
+    <div className="file-diff" aria-label={`${stats.added} lines added, ${stats.removed} lines removed`}>
+      <p className="file-diff-stats"><span className="diff-added">+{stats.added}</span> <span className="diff-removed">−{stats.removed}</span></p>
+      {hunks.map((hunk, hunkIndex) => (
+        <pre key={hunkIndex} className="file-diff-hunk">
+          <span className="diff-header">{hunk.header}{'\n'}</span>
+          {hunk.lines.map((line, lineIndex) => (
+            <span key={lineIndex} className={`diff-line diff-${line.type}`}>
+              {line.type === 'add' ? '+' : line.type === 'remove' ? '−' : ' '} {line.text}{'\n'}
+            </span>
+          ))}
+        </pre>
+      ))}
+    </div>
+  );
+}
+
+const FILE_OPERATION_LABELS: Readonly<Record<DesktopFileOperationProposal['operation'], string>> = {
+  'create-file': 'Create file',
+  'create-directory': 'Create folder',
+  'edit-file': 'Edit file',
+  delete: 'Move to Trash',
+};
+
+/** Review card for one proposed file change; deletions need DELETE typed. */
+export function FileOperationCard({
+  proposal,
+  confirmation,
+  busy,
+  anyBusy,
+  cardRef,
+  onConfirmationChange,
+  onApprove,
+  onReject,
+}: {
+  readonly proposal: DesktopFileOperationProposal;
+  readonly confirmation: string;
+  readonly busy: boolean;
+  readonly anyBusy: boolean;
+  readonly cardRef?: RefObject<HTMLElement | null> | undefined;
+  readonly onConfirmationChange: (value: string) => void;
+  readonly onApprove: () => void;
+  readonly onReject: () => void;
+}) {
+  const label = FILE_OPERATION_LABELS[proposal.operation];
+  const isDelete = proposal.operation === 'delete';
+  return (
+    <section className="file-operation-review" aria-label={`${label} approval`} ref={cardRef}>
+      <p className="eyebrow">YOUR REVIEW REQUIRED</p>
+      <h3>{label}</h3>
+      <code className="file-operation-path">{proposal.path}</code>
+      {isDelete ? (
+        <>
+          <p className="file-operation-warning">
+            This item will be moved to the system Trash, not permanently erased.
+            {proposal.targetType === 'directory' && ' The folder move includes its contents.'}
+          </p>
+          <label className="file-operation-confirm-label" htmlFor={`file-delete-${proposal.id}`}>
+            Type DELETE to confirm this item
+          </label>
+          <input
+            id={`file-delete-${proposal.id}`}
+            className="file-operation-confirm-input"
+            value={confirmation}
+            onChange={event => onConfirmationChange(event.target.value)}
+            autoComplete="off"
+            disabled={busy}
+          />
+        </>
+      ) : proposal.proposedContent !== undefined
+        ? <FileDiff before={proposal.currentContent ?? ''} after={proposal.proposedContent} />
+        : <p className="file-operation-warning">An empty folder will be created.</p>}
+      <div className="file-operation-actions">
+        <button
+          className={isDelete ? 'history-danger' : 'file-operation-approve'}
+          type="button"
+          onClick={onApprove}
+          disabled={busy || anyBusy || (isDelete && confirmation !== 'DELETE')}
+        >
+          {busy ? 'Applying…' : isDelete ? 'Move to Trash' : 'Approve and apply'}
+        </button>
+        <button className="file-operation-reject" type="button" onClick={onReject} disabled={busy || anyBusy}>
+          Reject
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/** Approval card for a shell command, application launch, or web page. */
+export function ActionApprovalCard({
+  proposal,
+  busy,
+  cardRef,
+  onDecide,
+}: {
+  readonly proposal: DesktopActionProposal;
+  readonly busy: boolean;
+  readonly cardRef?: RefObject<HTMLElement | null> | undefined;
+  readonly onDecide: (approve: boolean) => void;
+}) {
+  const title = proposal.kind === 'command'
+    ? 'Run this command?'
+    : proposal.kind === 'application'
+      ? `Open ${proposal.application}?`
+      : 'Open this web page?';
+  return (
+    <section className="file-operation-review action-review" aria-label={title} ref={cardRef}>
+      <p className="eyebrow">YOUR APPROVAL REQUIRED</p>
+      <h3>{title}</h3>
+      {proposal.kind === 'command' && (
+        <>
+          <pre className="action-command"><code>{proposal.command}</code></pre>
+          <p className="file-operation-warning">
+            Runs in <code>{proposal.cwd}</code> with your user permissions · stops after {proposal.timeoutSeconds}s.
+          </p>
+        </>
+      )}
+      {proposal.kind === 'application' && (
+        <p className="file-operation-warning">
+          {proposal.target ? <>Opens <code>{proposal.target}</code> in {proposal.application}.</> : `Launches ${proposal.application}.`}
+        </p>
+      )}
+      {proposal.kind === 'url' && (
+        <>
+          <code className="file-operation-path">{proposal.url}</code>
+          <p className="file-operation-warning">
+            Opens in {proposal.application ?? 'your default browser'}. The website ({new URL(proposal.url).hostname}) receives this address, including any search words.
+          </p>
+        </>
+      )}
+      <div className="file-operation-actions">
+        <button className="file-operation-approve" type="button" onClick={() => onDecide(true)} disabled={busy}>
+          {proposal.kind === 'command' ? 'Run' : 'Open'}
+        </button>
+        <button className="file-operation-reject" type="button" onClick={() => onDecide(false)} disabled={busy}>
+          Don’t allow
+        </button>
+      </div>
+    </section>
+  );
+}

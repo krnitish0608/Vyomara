@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
+  DesktopActionProposal,
   DesktopProviderStatus,
-  DesktopApplicationLaunchProposal,
   DesktopFileOperationProposal,
   DesktopSpeechSetupStatus,
   DesktopSessionHistory,
   DesktopSessionSummary,
+  DesktopToolActivity,
 } from '../../../desktop/contracts.ts';
-import type { ApplicationId } from '../../../tools/application-tools.ts';
+import { activityIcon, activityLabel } from './activity.ts';
+import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
+import { VoiceOrb, VyomaraMark } from './brand.tsx';
+import { MessageContent } from './markdown.tsx';
+import { ModelsPanel } from './models-panel.tsx';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
@@ -20,128 +24,17 @@ interface ChatMessage {
   readonly failed?: boolean;
 }
 
-const applicationLabels: Readonly<Record<ApplicationId, string>> = {
-  calculator: 'Calculator',
-  calendar: 'Calendar',
-  finder: 'Finder',
-  notes: 'Notes',
-  safari: 'Safari',
-  'system-settings': 'System Settings',
-  terminal: 'Terminal',
-  'visual-studio-code': 'Visual Studio Code',
-};
-
-function VyomaraMark({ tile = true }: { readonly tile?: boolean }) {
-  return (
-    <svg viewBox="0 0 64 64" aria-hidden="true">
-      {tile && <rect x="4" y="4" width="56" height="56" rx="18" fill="#101746" stroke="#315cff" strokeWidth="1.5" />}
-      <ellipse cx="32" cy="32" rx="25" ry="10" transform="rotate(-27 32 32)" fill="none" stroke="#27d9ff" strokeWidth="2.5" />
-      <ellipse cx="32" cy="32" rx="24" ry="9" transform="rotate(-27 32 32)" fill="none" stroke="#9c50ff" strokeWidth="1.5" strokeDasharray="28 100" />
-      <circle cx="32" cy="32" r="17" fill="#2426a8" stroke="#695bff" strokeWidth="1.5" />
-      <rect className="mark-wave-bar mark-wave-bar-1" x="21" y="29" width="3" height="6" rx="1.5" fill="#e9f4ff" />
-      <rect className="mark-wave-bar mark-wave-bar-2" x="26" y="24" width="3" height="16" rx="1.5" fill="#e9f4ff" />
-      <rect className="mark-wave-bar mark-wave-bar-3" x="31" y="20" width="3" height="24" rx="1.5" fill="#e9f4ff" />
-      <rect className="mark-wave-bar mark-wave-bar-4" x="36" y="25" width="3" height="14" rx="1.5" fill="#e9f4ff" />
-      <rect className="mark-wave-bar mark-wave-bar-5" x="41" y="28" width="3" height="8" rx="1.5" fill="#e9f4ff" />
-    </svg>
-  );
-}
-
-function VoiceWave({ side }: { readonly side: 'left' | 'right' }) {
-  return (
-    <span className={`voice-waveform voice-waveform-${side}`} aria-hidden="true">
-      {Array.from({ length: 9 }, (_, index) => <i key={index} />)}
-    </span>
-  );
-}
-
-function VoiceOrb({
-  listening,
-  pressed,
-  disabled,
-  label,
-  title,
-  compact = false,
-  onActivate,
-}: {
-  readonly listening: boolean;
-  readonly pressed: boolean;
-  readonly disabled: boolean;
-  readonly label: string;
-  readonly title: string;
-  readonly compact?: boolean;
-  readonly onActivate: () => void;
-}) {
-  return (
-    <div className={`voice-orbit${listening ? ' voice-orbit-listening' : ''}${compact ? ' voice-orbit-compact' : ''}`} aria-label="Offline voice input">
-      <VoiceWave side="left" />
-      <button
-        className="voice-orb-button"
-        type="button"
-        onClick={onActivate}
-        disabled={disabled}
-        aria-label={label}
-        aria-pressed={pressed}
-        title={title}
-      >
-        <span className="voice-orb-current" aria-hidden="true" />
-        <span className="voice-orb-meteor" aria-hidden="true" />
-        <span className="voice-orb-meteor voice-orb-meteor--two" aria-hidden="true" />
-        <span className="voice-orb-meteor voice-orb-meteor--three" aria-hidden="true" />
-        <span className="voice-orb-mark" aria-hidden="true">
-          <VyomaraMark tile={false} />
-        </span>
-      </button>
-      <VoiceWave side="right" />
-    </div>
-  );
-}
-
-function activityLabel(event: DiagnosticEvent): string | undefined {
-  switch (event.event) {
-    case 'task.created':
-      return 'Task accepted';
-    case 'task.state-changed':
-      if (['completed', 'failed', 'cancelled'].includes(event.to)) return undefined;
-      return `Task ${event.to.replaceAll('_', ' ')}`;
-    case 'task.completed':
-      return 'Task completed';
-    case 'task.needs-attention':
-      return 'Task needs attention';
-    case 'task.failed':
-    case 'request.failed':
-      return `Task failed (${event.code})`;
-    case 'task.cancelled':
-    case 'request.cancelled':
-      return 'Task cancelled';
-    case 'tool.requested':
-      return `Requested ${event.toolId}`;
-    case 'tool.invoked':
-      return `Invoking ${event.toolId}`;
-    case 'tool.execution-started':
-      return `Running ${event.toolId}`;
-    case 'tool.completed':
-      return `Completed ${event.toolId}`;
-    case 'tool.failed':
-      return `Failed ${event.toolId} (${event.code})`;
-    case 'tool.retry-scheduled':
-      return `Correcting ${event.toolId}`;
-    case 'tool.denied':
-      return `Denied ${event.toolId}`;
-    case 'request.completed':
-      return 'Response ready';
-  }
-}
-
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [fileOperationProposals, setFileOperationProposals] = useState<DesktopFileOperationProposal[]>([]);
-  const [applicationLaunchProposals, setApplicationLaunchProposals] = useState<DesktopApplicationLaunchProposal[]>([]);
+  const [actionProposals, setActionProposals] = useState<DesktopActionProposal[]>([]);
+  const [toolActivities, setToolActivities] = useState<DesktopToolActivity[]>([]);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
   const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
-  const [applicationLaunchActionPending, setApplicationLaunchActionPending] = useState<string>();
+  const [actionPendingId, setActionPendingId] = useState<string>();
   const [activity, setActivity] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>();
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -182,7 +75,9 @@ export function App() {
   const activityHeading = useRef<HTMLHeadingElement>(null);
   const historyHeading = useRef<HTMLHeadingElement>(null);
   const fileOperationReview = useRef<HTMLElement>(null);
-  const applicationLaunchReview = useRef<HTMLElement>(null);
+  const actionReview = useRef<HTMLElement>(null);
+  const modelsTrigger = useRef<HTMLButtonElement>(null);
+  const modelsHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -200,10 +95,20 @@ export function App() {
         current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
       requestAnimationFrame(() => fileOperationReview.current?.scrollIntoView({ block: 'nearest' }));
     });
-    const unsubscribeApplicationLaunches = window.vyomara.onApplicationLaunchProposal(proposal => {
-      setApplicationLaunchProposals(current =>
+    const unsubscribeActions = window.vyomara.onActionProposal(proposal => {
+      setActionProposals(current =>
         current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
-      requestAnimationFrame(() => applicationLaunchReview.current?.scrollIntoView({ block: 'nearest' }));
+      requestAnimationFrame(() => actionReview.current?.scrollIntoView({ block: 'nearest' }));
+    });
+    const unsubscribeToolActivity = window.vyomara.onToolActivity(activity => {
+      if (activeChatRequestId.current !== activity.requestId) return;
+      setToolActivities(current => {
+        const index = current.findIndex(item => item.id === activity.id);
+        if (index === -1) return [...current, activity].slice(-60);
+        const next = [...current];
+        next[index] = activity;
+        return next;
+      });
     });
     const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
       if (event.type === 'partial') {
@@ -265,7 +170,8 @@ export function App() {
       mounted = false;
       unsubscribe();
       unsubscribeFileOperations();
-      unsubscribeApplicationLaunches();
+      unsubscribeActions();
+      unsubscribeToolActivity();
       unsubscribeSpeech();
     };
   }, []);
@@ -371,17 +277,25 @@ export function App() {
   }, [historyOpen]);
 
   useEffect(() => {
+    if (modelsOpen) modelsHeading.current?.focus();
+  }, [modelsOpen]);
+
+  useEffect(() => {
     function handleEscape(event: KeyboardEvent): void {
       if (event.key !== 'Escape') return;
       if (historyOpen) {
         setHistoryOpen(false);
         historyTrigger.current?.focus();
       }
+      if (modelsOpen) {
+        setModelsOpen(false);
+        modelsTrigger.current?.focus();
+      }
     }
 
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [historyOpen]);
+  }, [historyOpen, modelsOpen]);
 
   async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
@@ -395,6 +309,7 @@ export function App() {
     }]);
 
     setRequestPending(true);
+    setToolActivities([]);
     const requestId = crypto.randomUUID();
     activeChatRequestId.current = requestId;
     try {
@@ -437,8 +352,8 @@ export function App() {
       setFileOperationConfirmations({});
     } finally {
       if (activeChatRequestId.current === requestId) activeChatRequestId.current = undefined;
-      setApplicationLaunchProposals([]);
-      setApplicationLaunchActionPending(undefined);
+      setActionProposals([]);
+      setActionPendingId(undefined);
       setRequestPending(false);
     }
 
@@ -534,9 +449,10 @@ export function App() {
     setActivity([]);
     setRequestError(undefined);
     setFileOperationProposals([]);
-    setApplicationLaunchProposals([]);
+    setActionProposals([]);
+    setToolActivities([]);
     setFileOperationConfirmations({});
-    setApplicationLaunchActionPending(undefined);
+    setActionPendingId(undefined);
     setHistoryOpen(false);
     setSelectedHistorySession(undefined);
     setHistoryDeleteConfirmation('');
@@ -586,33 +502,28 @@ export function App() {
     }
   }
 
-  async function approveApplicationLaunch(proposal: DesktopApplicationLaunchProposal): Promise<void> {
-    if (applicationLaunchActionPending) return;
-    setApplicationLaunchActionPending(proposal.id);
+  async function decideAction(proposal: DesktopActionProposal, approve: boolean): Promise<void> {
+    if (actionPendingId) return;
+    setActionPendingId(proposal.id);
     setRequestError(undefined);
     try {
-      await window.vyomara.approveApplicationLaunch(proposal.id);
-      setApplicationLaunchProposals(current => current.filter(item => item.id !== proposal.id));
+      if (approve) await window.vyomara.approveAction(proposal.id);
+      else await window.vyomara.rejectAction(proposal.id);
     } catch (error) {
-      setApplicationLaunchProposals(current => current.filter(item => item.id !== proposal.id));
-      setRequestError(error instanceof Error ? error.message : 'The application launch could not be approved.');
+      setRequestError(error instanceof Error ? error.message : 'The approval could not be recorded.');
     } finally {
-      setApplicationLaunchActionPending(undefined);
+      setActionProposals(current => current.filter(item => item.id !== proposal.id));
+      setActionPendingId(undefined);
     }
   }
 
-  async function rejectApplicationLaunch(proposal: DesktopApplicationLaunchProposal): Promise<void> {
-    if (applicationLaunchActionPending) return;
-    setApplicationLaunchActionPending(proposal.id);
-    try {
-      await window.vyomara.rejectApplicationLaunch(proposal.id);
-      setApplicationLaunchProposals(current => current.filter(item => item.id !== proposal.id));
-    } catch (error) {
-      setApplicationLaunchProposals(current => current.filter(item => item.id !== proposal.id));
-      setRequestError(error instanceof Error ? error.message : 'The application launch review could not be dismissed.');
-    } finally {
-      setApplicationLaunchActionPending(undefined);
+  async function toggleModels(): Promise<void> {
+    if (modelsOpen) {
+      setModelsOpen(false);
+      return;
     }
+    setHistoryOpen(false);
+    setModelsOpen(true);
   }
 
   async function toggleHistory(): Promise<void> {
@@ -621,6 +532,7 @@ export function App() {
       return;
     }
 
+    setModelsOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -715,21 +627,22 @@ export function App() {
     }
   }
 
- provider
-    ? provider.provider === 'ollama'
-      ? `Local Ollama · ${provider.model}`
-      : 'Deterministic placeholder'
-    : 'Loading provider…';
   const providerTitle = provider
     ? provider.provider === 'ollama'
       ? `Local Ollama · ${provider.model}`
       : 'Deterministic placeholder'
     : 'Loading provider…';
   const taskIsRunning = requestPending;
-  const currentTaskState = requestPending ? 'Vyom is working on your request' : 'No task running';
+  const runningActivity = [...toolActivities].reverse().find(item => item.status === 'running');
+  const currentTaskState = requestPending
+    ? actionProposals.length + fileOperationProposals.length > 0
+      ? 'Waiting for your approval'
+      : runningActivity?.label ?? 'Thinking…'
+    : 'No task running';
   const currentTaskDetail = taskIsRunning
-    ? 'Progress updates appear above. Stop is available for cancellable tasks.'
-    : 'When a task starts, its actual progress and results will appear here.';
+    ? `${toolActivities.length} step${toolActivities.length === 1 ? '' : 's'} so far. Stop cancels the task safely.`
+    : 'When a task starts, every step it takes appears here.';
+  const pendingApprovals = fileOperationProposals.length + actionProposals.length;
   const voiceOrbAction = speechSetup?.modelReady ? toggleVoiceListening : downloadVoiceModel;
   const voiceOrbLabel = voiceListening
     ? 'Turn voice listening off'
@@ -786,10 +699,20 @@ export function App() {
             />
           </div>
         )}
-        <div className="provider-status" title="Current assistant provider">
+        <button
+          ref={modelsTrigger}
+          className="provider-status provider-status-button"
+          type="button"
+          title="Choose the local model"
+          onClick={() => void toggleModels()}
+          disabled={requestPending}
+          aria-expanded={modelsOpen}
+          aria-controls={modelsOpen ? 'models-panel' : undefined}
+        >
           <span className={`status-dot ${providerError ? 'status-dot-error' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
-        </div>
+          <span aria-hidden="true">▾</span>
+        </button>
       </header>
 
       <div className="workspace">
@@ -804,26 +727,35 @@ export function App() {
               {requestPending && <span className="nav-indicator" aria-label="Task running">●</span>}
             </button>
             <button
-              className={`side-nav-item${fileOperationProposals.length + applicationLaunchProposals.length > 0 ? ' side-nav-item-review' : ''}`}
+              className={`side-nav-item${pendingApprovals > 0 ? ' side-nav-item-review' : ''}`}
               type="button"
               onClick={() => {
                 const review = fileOperationProposals.length > 0
                   ? fileOperationReview.current
-                  : applicationLaunchReview.current;
+                  : actionReview.current;
                 review?.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }}
-              disabled={fileOperationProposals.length + applicationLaunchProposals.length === 0}
-              aria-label={fileOperationProposals.length + applicationLaunchProposals.length > 0
-                ? `Review ${fileOperationProposals.length + applicationLaunchProposals.length} pending approval${fileOperationProposals.length + applicationLaunchProposals.length === 1 ? '' : 's'}`
+              disabled={pendingApprovals === 0}
+              aria-label={pendingApprovals > 0
+                ? `Review ${pendingApprovals} pending approval${pendingApprovals === 1 ? '' : 's'}`
                 : 'No pending approvals'}
             >
               <span aria-hidden="true">◇</span> Approvals
-              {fileOperationProposals.length + applicationLaunchProposals.length > 0 &&
-                <span className="nav-indicator" aria-label={`${fileOperationProposals.length + applicationLaunchProposals.length} pending`}>●</span>}
+              {pendingApprovals > 0 &&
+                <span className="nav-indicator" aria-label={`${pendingApprovals} pending`}>●</span>}
             </button>
           </div>
           <div className="side-nav-group">
             <p className="side-nav-label">YOUR DATA</p>
+            <button
+              className="side-nav-item"
+              type="button"
+              onClick={() => void toggleModels()}
+              disabled={requestPending}
+              aria-expanded={modelsOpen}
+            >
+              <span aria-hidden="true">◎</span> Models
+            </button>
             <button
               ref={historyTrigger}
               className="side-nav-item"
@@ -889,138 +821,43 @@ export function App() {
                   {message.role === 'user' ? 'Y' : 'V'}
                 </div>
                 <div className="message-content">
-                  <p className="message-text">{message.content}</p>
+                  {message.role === 'assistant' && !message.failed
+                    ? <MessageContent text={message.content} />
+                    : <p className="message-text">{message.content}</p>}
                 </div>
               </article>
             ))}
             {requestPending && (
               <div className="pending-state" role="status" aria-live="polite">
                 <span className="thinking-indicator" aria-hidden="true"><i /><i /><i /></span>
-                <span>{fileOperationProposals.length > 0
-                  ? 'Waiting for your file-operation review…'
-                  : applicationLaunchProposals.length > 0
-                    ? 'Waiting for your launch confirmation…'
-                    : 'Vyom is thinking…'}</span>
+                <span>{pendingApprovals > 0
+                  ? 'Waiting for your approval…'
+                  : runningActivity ? `${runningActivity.label}…` : 'Vyom is thinking…'}</span>
                 <button type="button" onClick={() => void cancel()}>Stop</button>
               </div>
             )}
-            {fileOperationProposals.map((proposal, index) => {
-              const label = proposal.operation === 'create-file'
-                ? 'Create file'
-                : proposal.operation === 'create-directory'
-                  ? 'Create folder'
-                  : proposal.operation === 'edit-file'
-                    ? 'Edit file'
-                    : 'Move to Trash';
-              const actionPending = fileOperationActionPending === proposal.id;
-              return (
-                <section
-                  className="file-operation-review"
-                  aria-label={`${label} approval`}
-                  key={proposal.id}
-                  ref={index === 0 ? fileOperationReview : undefined}
-                >
-                  <p className="eyebrow">YOUR REVIEW REQUIRED</p>
-                  <h3>{label}</h3>
-                  <code className="file-operation-path">{proposal.path}</code>
-                  {proposal.operation === 'delete' ? (
-                    <>
-                      <p className="file-operation-warning">
-                        This item will be moved to the system Trash, not permanently erased.
-                        {proposal.targetType === 'directory' && ' The folder move includes its contents.'}
-                      </p>
-                      <label className="file-operation-confirm-label" htmlFor={`file-delete-${proposal.id}`}>
-                        Type DELETE to confirm this item
-                      </label>
-                      <input
-                        id={`file-delete-${proposal.id}`}
-                        className="file-operation-confirm-input"
-                        value={fileOperationConfirmations[proposal.id] ?? ''}
-                        onChange={event => setFileOperationConfirmations(current => ({
-                          ...current,
-                          [proposal.id]: event.target.value,
-                        }))}
-                        autoComplete="off"
-                        disabled={actionPending}
-                      />
-                    </>
-                  ) : (
-                    <div className="file-operation-preview">
-                      {proposal.currentContent !== undefined && (
-                        <div>
-                          <h4>Current content</h4>
-                          <pre>{proposal.currentContent}</pre>
-                        </div>
-                      )}
-                      {proposal.proposedContent !== undefined && (
-                        <div>
-                          <h4>Proposed content</h4>
-                          <pre>{proposal.proposedContent}</pre>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <div className="file-operation-actions">
-                    <button
-                      className={proposal.operation === 'delete' ? 'history-danger' : 'file-operation-approve'}
-                      type="button"
-                      onClick={() => void approveFileOperation(proposal)}
-                      disabled={actionPending || fileOperationActionPending !== undefined ||
-                        (proposal.operation === 'delete' && fileOperationConfirmations[proposal.id] !== 'DELETE')}
-                    >
-                      {actionPending
-                        ? 'Applying…'
-                        : proposal.operation === 'delete'
-                          ? 'Move to Trash'
-                          : 'Approve and apply'}
-                    </button>
-                    <button
-                      className="file-operation-reject"
-                      type="button"
-                      onClick={() => void rejectFileOperation(proposal)}
-                      disabled={actionPending || fileOperationActionPending !== undefined}
-                    >
-                      Reject
-                    </button>
-                  </div>
-                </section>
-              );
-            })}
-            {applicationLaunchProposals.map(proposal => {
-              const actionPending = applicationLaunchActionPending === proposal.id;
-              return (
-                <section
-                  className="file-operation-review"
-                  aria-label={`${applicationLabels[proposal.application]} launch approval`}
-                  key={proposal.id}
-                  ref={applicationLaunchReview}
-                >
-                  <p className="eyebrow">YOUR CONFIRMATION REQUIRED</p>
-                  <h3>Open {applicationLabels[proposal.application]}?</h3>
-                  <p className="file-operation-warning">
-                    Vyomara will launch this app only if you approve. It will not run a command or open another app.
-                  </p>
-                  <div className="file-operation-actions">
-                    <button
-                      className="file-operation-approve"
-                      type="button"
-                      onClick={() => void approveApplicationLaunch(proposal)}
-                      disabled={actionPending || applicationLaunchActionPending !== undefined}
-                    >
-                      {actionPending ? 'Opening...' : `Open ${applicationLabels[proposal.application]}`}
-                    </button>
-                    <button
-                      className="file-operation-reject"
-                      type="button"
-                      onClick={() => void rejectApplicationLaunch(proposal)}
-                      disabled={actionPending || applicationLaunchActionPending !== undefined}
-                    >
-                      Do not open
-                    </button>
-                  </div>
-                </section>
-              );
-            })}
+            {fileOperationProposals.map((proposal, index) => (
+              <FileOperationCard
+                key={proposal.id}
+                proposal={proposal}
+                confirmation={fileOperationConfirmations[proposal.id] ?? ''}
+                busy={fileOperationActionPending === proposal.id}
+                anyBusy={fileOperationActionPending !== undefined}
+                cardRef={index === 0 ? fileOperationReview : undefined}
+                onConfirmationChange={value => setFileOperationConfirmations(current => ({ ...current, [proposal.id]: value }))}
+                onApprove={() => void approveFileOperation(proposal)}
+                onReject={() => void rejectFileOperation(proposal)}
+              />
+            ))}
+            {actionProposals.map((proposal, index) => (
+              <ActionApprovalCard
+                key={proposal.id}
+                proposal={proposal}
+                busy={actionPendingId !== undefined}
+                cardRef={index === 0 ? actionReview : undefined}
+                onDecide={approve => void decideAction(proposal, approve)}
+              />
+            ))}
             </div>
           </div>
           <form className="composer" onSubmit={event => void submit(event)}>
@@ -1034,7 +871,7 @@ export function App() {
               }}
               placeholder="Message Vyom…"
               rows={1}
-              maxLength={8000}
+              maxLength={32000}
               disabled={requestPending}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -1132,7 +969,14 @@ export function App() {
           </p>
         </section>
 
-        {historyOpen ? (
+        {modelsOpen ? (
+          <ModelsPanel
+            headingRef={modelsHeading}
+            disabled={requestPending}
+            onSelected={setProvider}
+            onClose={() => { setModelsOpen(false); modelsTrigger.current?.focus(); }}
+          />
+        ) : historyOpen ? (
         <aside id="history-panel" className="activity-panel history-panel" aria-label="Saved conversations">
           <div className="panel-heading">
             <div>
@@ -1241,14 +1085,23 @@ export function App() {
             </span>
           </div>
           <div className="activity-content" aria-live="polite">
-            {activity.length === 0 ? (
+            {activity.length === 0 && toolActivities.length === 0 ? (
               <div className="activity-empty">
                 <span aria-hidden="true">◷</span>
-                <p>Task updates appear here while Vyom works.</p>
+                <p>Every step Vyom takes appears here while it works.</p>
               </div>
             ) : (
               <ol className="activity-list">
-                {activity.map((item, index) => (
+                {toolActivities.map(item => (
+                  <li key={item.id} className={`tool-activity tool-activity-${item.status}`}>
+                    <span className="activity-check" aria-hidden="true">{activityIcon(item.status)}</span>
+                    <span>
+                      {item.label}
+                      {item.detail && item.status !== 'done' && <small>{item.detail}</small>}
+                    </span>
+                  </li>
+                ))}
+                {activity.slice(-4).map((item, index) => (
                   <li key={`${index}-${item}`}>
                     <span className="activity-check" aria-hidden="true">·</span>
                     <span>{item}</span>

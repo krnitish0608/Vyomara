@@ -21,9 +21,9 @@ test('desktop session history lists local chats and returns only user and final 
     role: 'assistant',
     kind: 'tool-call',
     content: '',
-    toolCalls: [{ toolId: 'filesystem.list-directory', arguments: { path: '/private' } }],
+    toolCalls: [{ toolId: 'list_directory', arguments: { path: '/private' } }],
   });
-  session.add({ role: 'tool', toolId: 'filesystem.list-directory', content: 'private tool output' });
+  session.add({ role: 'tool', toolId: 'list_directory', content: 'private tool output' });
   session.add({ role: 'assistant', content: 'The folder contains two items.' });
   store.saveSession(session);
   store.close();

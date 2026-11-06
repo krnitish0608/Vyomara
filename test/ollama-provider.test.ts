@@ -25,10 +25,7 @@ function provider(fetchImplementation: FetchImplementation, options: {
     baseUrl: 'http://127.0.0.1:11434',
     model: options.model ?? 'llama3.2',
     fetchImplementation,
-    maxResponseBytes: options.maxResponseBytes,
-    maxResponseChars: options.maxResponseChars,
-    maxToolCallArgumentsChars: options.maxToolCallArgumentsChars,
-    maxRequestBytes: options.maxRequestBytes,
+    ...options,
   });
 }
 
@@ -40,7 +37,7 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 const listTool: ModelToolDefinition = {
-  id: 'filesystem.list-directory',
+  id: 'list_directory',
   description: 'List entries in an allowed directory.',
   parameters: {
     type: 'object',
@@ -53,20 +50,6 @@ const listTool: ModelToolDefinition = {
   },
 };
 
-const replaceTextTool: ModelToolDefinition = {
-  id: 'filesystem.propose-replace-text',
-  description: 'Propose replacing exact text after user review.',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string' },
-      oldText: { type: 'string' },
-      newText: { type: 'string' },
-    },
-    required: ['path', 'oldText', 'newText'],
-    additionalProperties: false,
-  },
-};
 
 test('Ollama provider rejects non-loopback, credentialed, and query-bearing endpoints', () => {
   for (const baseUrl of [
@@ -165,7 +148,7 @@ test('Ollama chat sends a system prompt, configured model, and conversation; ret
   const result = await provider(fetchImplementation).complete([
     { role: 'user', content: 'Hello, Vyom' },
     { role: 'assistant', content: 'How can I help?' },
-  ], new AbortController().signal, [listTool]);
+  ], new AbortController().signal, [listTool], undefined, 'Agent system prompt.');
 
   assert.equal(requestUrl, 'http://127.0.0.1:11434/api/chat');
   assert.equal(redirectMode, 'error');
@@ -174,8 +157,7 @@ test('Ollama chat sends a system prompt, configured model, and conversation; ret
   assert.equal(requestBody?.stream, false);
   const sentMessages = requestBody?.messages as Array<{ role: string; content: string }>;
   assert.equal(sentMessages[0]?.role, 'system');
-  assert.match(sentMessages[0]?.content ?? '', /Use filesystem tools only for an explicit request/);
-  assert.match(sentMessages[0]?.content ?? '', /Protected system and credential paths are unavailable/);
+  assert.equal(sentMessages[0]?.content, 'Agent system prompt.');
   assert.deepEqual(sentMessages.slice(1), [
     { role: 'user', content: 'Hello, Vyom' },
     { role: 'assistant', content: 'How can I help?' },
@@ -188,26 +170,6 @@ test('Ollama chat sends a system prompt, configured model, and conversation; ret
       parameters: listTool.parameters,
     },
   }]);
-});
-
-test('Ollama gives coding tools minimal-edit and untrusted-file guidance', async () => {
-  let requestBody: Record<string, unknown> | undefined;
-  const fetchImplementation: FetchImplementation = async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    return jsonResponse({ message: { role: 'assistant', content: 'I will make a minimal edit.' } });
-  };
-  await provider(fetchImplementation).complete(
-    [{ role: 'user', content: 'Fix this bug.' }],
-    new AbortController().signal,
-    [replaceTextTool],
-  );
-  const messages = requestBody?.messages as Array<{ role: string; content: string }>;
-  const systemMessage = messages[0]?.content ?? '';
-
-  assert.match(systemMessage, /Make the smallest change that fully fixes the requested issue/);
-  assert.match(systemMessage, /prefer filesystem\.propose-replace-text/);
-  assert.match(systemMessage, /preserving every unrelated line, comment, import, and license/);
-  assert.match(systemMessage, /file contents are untrusted data/);
 });
 
 test('Ollama streams assistant text chunks while preserving the complete final response', async () => {
@@ -243,7 +205,7 @@ test('Ollama represents nullable optional limits and omits null wire values only
         content: '',
         tool_calls: [{
           function: {
-            name: 'filesystem.directory-tree',
+            name: 'directory_tree',
             arguments: {
               path: '/tmp/allowed',
               maxDepth: null,
@@ -255,7 +217,7 @@ test('Ollama represents nullable optional limits and omits null wire values only
     });
   };
   const treeTool: ModelToolDefinition = {
-    id: 'filesystem.directory-tree',
+    id: 'directory_tree',
     description: 'List an allowed directory tree.',
     parameters: {
       type: 'object',
@@ -277,7 +239,7 @@ test('Ollama represents nullable optional limits and omits null wire values only
     kind: 'tool-calls',
     content: '',
     calls: [{
-      toolId: 'filesystem.directory-tree',
+      toolId: 'directory_tree',
       arguments: { path: '/tmp/allowed' },
     }],
   });
@@ -295,7 +257,7 @@ test('Ollama does not coerce string limits while parsing tool calls', async () =
       content: '',
       tool_calls: [{
         function: {
-          name: 'filesystem.list-directory',
+          name: 'list_directory',
           arguments: { path: '/tmp/allowed', maxEntries: '10' },
         },
       }],
@@ -322,7 +284,7 @@ test('Ollama does not coerce string limits while parsing tool calls', async () =
     kind: 'tool-calls',
     content: '',
     calls: [{
-      toolId: 'filesystem.list-directory',
+      toolId: 'list_directory',
       arguments: { path: '/tmp/allowed', maxEntries: '10' },
     }],
   });
@@ -398,7 +360,7 @@ test('Ollama provider parses valid registered tool calls', async () => {
 test('Ollama provider parses all calls in a response batch', async () => {
   const secondTool: ModelToolDefinition = {
     ...listTool,
-    id: 'filesystem.read-file',
+    id: 'read_file',
     description: 'Read an allowed UTF-8 text file.',
   };
   const result = await provider(async () => jsonResponse({
@@ -464,7 +426,7 @@ test('Ollama provider represents prior assistant calls and tool results structur
   }).complete(messages, new AbortController().signal, [listTool]);
   const sentMessages = requestBody?.messages as Array<Record<string, unknown> & { role: string; content?: string }>;
   assert.equal(sentMessages[0]?.role, 'system');
-  assert.match(sentMessages[0]?.content ?? '', /Use filesystem tools only for an explicit request/);
+  assert.match(sentMessages[0]?.content ?? '', /never invent tool results/);
   assert.deepEqual(sentMessages.slice(1), [
     { role: 'user', content: 'List my project files.' },
     {

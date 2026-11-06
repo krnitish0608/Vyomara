@@ -1,38 +1,36 @@
 import type { ToolEffect } from './contracts.ts';
-import { normalizeApplicationId } from './application-tools.ts';
-import type { ApplicationId } from './application-tools.ts';
 
 export type PolicyDecision =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly reason: 'side-effects-disabled' };
 
 export interface PolicyGatewayOptions {
-  readonly authorizedApplication?: ApplicationId;
+  /**
+   * Effects that may execute. `read` and `propose` are always allowed:
+   * proposals never change anything until the user approves them in the
+   * approval port. `launch`, `shell`, and `network` tools also ask the user
+   * before acting, but they are only reachable when explicitly enabled here.
+   */
+  readonly allowedEffects?: readonly ToolEffect[];
 }
 
+const ALWAYS_ALLOWED: readonly ToolEffect[] = ['read', 'propose'];
+
 export class PolicyGateway {
-  private readonly options: PolicyGatewayOptions;
+  readonly #allowed: ReadonlySet<ToolEffect>;
 
   constructor(options: PolicyGatewayOptions = {}) {
-    this.options = options;
+    this.#allowed = new Set([...ALWAYS_ALLOWED, ...(options.allowedEffects ?? [])]);
   }
 
-  authorize(
-    effect: ToolEffect,
-    toolId?: string,
-    input?: unknown,
-  ): PolicyDecision {
-    if (effect === 'read' || effect === 'propose') return { allowed: true };
-    if (
-      effect === 'launch' &&
-      toolId === 'application.open' &&
-      typeof input === 'object' &&
-      input !== null &&
-      !Array.isArray(input) &&
-      'application' in input &&
-      normalizeApplicationId(input.application) === this.options.authorizedApplication &&
-      this.options.authorizedApplication !== undefined
-    ) return { allowed: true };
-    return { allowed: false, reason: 'side-effects-disabled' };
+  authorize(effect: ToolEffect, _toolId?: string, _input?: unknown): PolicyDecision {
+    // Direct write/delete effects are never allowed: every change goes through
+    // a reviewed `propose` tool instead.
+    if (effect === 'write' || effect === 'delete') {
+      return { allowed: false, reason: 'side-effects-disabled' };
+    }
+    return this.#allowed.has(effect)
+      ? { allowed: true }
+      : { allowed: false, reason: 'side-effects-disabled' };
   }
 }
