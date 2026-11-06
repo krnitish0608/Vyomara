@@ -167,16 +167,6 @@ export async function runRequest(
   }
 }
 
-/** The model chosen in the app (stored locally), if any. */
-export function readSelectedModel(config: AppConfig): string | undefined {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.getAppSetting(SELECTED_MODEL_SETTING);
-  } finally {
-    store.close();
-  }
-}
-
 export function saveSelectedModel(config: AppConfig, model: string): void {
   const store = new SqliteStore(config.dataDirectory);
   try {
@@ -187,3 +177,50 @@ export function saveSelectedModel(config: AppConfig, model: string): void {
 }
 
 const SELECTED_MODEL_SETTING = 'selected-model';
+const NUM_CTX_SETTING = 'ollama-num-ctx';
+const THINK_SETTING = 'ollama-think';
+
+/** Model settings chosen in the app; each field is present only if the user changed it. */
+export interface SavedModelSettings {
+  readonly model?: string;
+  readonly numCtx?: number;
+  readonly think?: boolean;
+}
+
+export function readModelSettings(config: AppConfig): SavedModelSettings {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    const model = store.getAppSetting(SELECTED_MODEL_SETTING);
+    const numCtx = Number(store.getAppSetting(NUM_CTX_SETTING));
+    const think = store.getAppSetting(THINK_SETTING);
+    return {
+      ...(model ? { model } : {}),
+      ...(Number.isSafeInteger(numCtx) && numCtx >= 2_048 && numCtx <= 262_144 ? { numCtx } : {}),
+      ...(think === 'true' || think === 'false' ? { think: think === 'true' } : {}),
+    };
+  } finally {
+    store.close();
+  }
+}
+
+export function saveModelSettings(config: AppConfig, settings: { readonly numCtx?: number; readonly think?: boolean }): void {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.setAppSettings({
+      ...(settings.numCtx === undefined ? {} : { [NUM_CTX_SETTING]: String(settings.numCtx) }),
+      ...(settings.think === undefined ? {} : { [THINK_SETTING]: String(settings.think) }),
+    });
+  } finally {
+    store.close();
+  }
+}
+
+/** Apply saved model settings on top of the environment configuration. */
+export function withSavedModelSettings(config: AppConfig, saved: SavedModelSettings): AppConfig {
+  return {
+    ...config,
+    ...(config.provider === 'ollama' && saved.model ? { ollamaModel: saved.model } : {}),
+    ...(saved.numCtx === undefined ? {} : { ollamaNumCtx: saved.numCtx }),
+    ...(saved.think === undefined ? {} : { ollamaThink: saved.think }),
+  };
+}

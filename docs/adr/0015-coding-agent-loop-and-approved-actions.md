@@ -67,6 +67,11 @@ The previous agent could not do this:
    **Models** panel lists installed Ollama models, switches between them
    (stored locally), and downloads new ones through Ollama. The CLI accepts
    `--model` and otherwise uses `VYOM_OLLAMA_MODEL` or the saved choice.
+   Later extension: the panel shows capability badges and each model's maximum
+   context. It saves the context window and thinking settings, removes models
+   after a typed `DELETE`, and can start Ollama. Models without tool support
+   run chat-only, and every reply carries a fixed notice that they could not
+   access files.
 8. **CLI parity.** The CLI uses the same tools and asks for approvals in the
    terminal (diff for edits, y/N for commands and apps). `VYOM_ALLOWED_ROOTS`
    now defaults to the whole machine minus protected paths; `[]` disables

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readSelectedModel, runRequest } from './app/application.ts';
+import { readModelSettings, runRequest, withSavedModelSettings } from './app/application.ts';
 import { AgentError } from './agent/agent.ts';
 import type { ToolActivity } from './agent/agent.ts';
 import type { PlanStep } from './tools/plan-tool.ts';
@@ -323,9 +323,14 @@ async function main(): Promise<void> {
     else modelOverride = value;
   }
   try {
-    const saved = process.env.VYOM_OLLAMA_MODEL ? undefined : readSelectedModel(config);
-    const model = modelOverride ?? saved;
-    if (model) config = { ...config, ollamaModel: validateOllamaModel(model) };
+    // Settings saved from the app apply unless the environment sets them explicitly.
+    const saved = readModelSettings(config);
+    config = withSavedModelSettings(config, {
+      ...(saved.model && !process.env.VYOM_OLLAMA_MODEL ? { model: validateOllamaModel(saved.model) } : {}),
+      ...(saved.numCtx !== undefined && !process.env.VYOM_OLLAMA_NUM_CTX ? { numCtx: saved.numCtx } : {}),
+      ...(saved.think !== undefined && !process.env.VYOM_OLLAMA_THINK ? { think: saved.think } : {}),
+    });
+    if (modelOverride) config = { ...config, ollamaModel: validateOllamaModel(modelOverride) };
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'The model name is invalid.');
     process.exitCode = 2;

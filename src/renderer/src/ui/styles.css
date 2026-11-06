@@ -527,3 +527,12 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .plan-step-done > span:first-child { color: var(--green); }
 .plan-step-in_progress { color: #ece6ff; font-weight: 600; }
 .plan-step-in_progress > span:first-child { color: var(--accent); }
+
+.model-row { display: grid; gap: 5px; }
+.model-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.model-badge { padding: 1px 6px; border: 1px solid rgba(103, 216, 173, .35); border-radius: 999px; color: #a5ecd0; font-size: 8px; letter-spacing: .03em; }
+.model-badge-warn { border-color: rgba(237, 198, 154, .45); color: #edc69a; }
+.model-section { display: grid; gap: 7px; margin-top: 14px; }
+.model-remove { display: grid; gap: 6px; }
+.model-toggle { display: flex; align-items: center; gap: 7px; color: #c6ccd6; font-size: 10px; }
+.models-panel select.history-confirm-input { width: 100%; }

@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell, systemPreferences 
 import type { SaveDialogOptions } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { AgentError } from '../agent/agent.ts';
 import {
@@ -9,10 +10,13 @@ import {
   exportDesktopSession,
   readDesktopSession,
   readDesktopSessions,
-  readSelectedModel,
+  readModelSettings,
+  saveModelSettings,
+  withSavedModelSettings,
   runRequest,
   saveSelectedModel,
 } from '../app/application.ts';
+import type { SavedModelSettings } from '../app/application.ts';
 import { loadConfig, validateOllamaModel } from '../config/config.ts';
 import { OllamaProvider } from '../providers/provider.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
@@ -206,12 +210,77 @@ ipcMain.handle('vyomara:provider-status', () => {
 
 ipcMain.handle('vyomara:models-list', async () => {
   if (!config) throw new Error('Application configuration is unavailable.');
+  const current = config;
+  const settings = { numCtx: current.ollamaNumCtx, think: current.ollamaThink };
+  const provider = ollamaProvider(current);
   try {
-    const models = await ollamaProvider(config).listModels();
-    return { current: config.ollamaModel, models };
+    const installed = await provider.listModels();
+    const models = await Promise.all(installed.map(async model => ({ ...model, ...await provider.showModel(model.name) })));
+    return { available: true, current: current.ollamaModel, models, settings };
+  } catch (error) {
+    if (error instanceof ProviderError && error.code === 'unavailable') {
+      return { available: false, current: current.ollamaModel, models: [], settings };
+    }
+    throw new Error(publicErrorMessage(error));
+  }
+});
+
+ipcMain.handle('vyomara:model-settings-set', (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest) throw new Error('Wait for the current task to finish before changing model settings.');
+  const request = typeof input === 'object' && input !== null && !Array.isArray(input)
+    ? input as { readonly numCtx?: unknown; readonly think?: unknown }
+    : {};
+  const numCtx = request.numCtx;
+  const think = request.think;
+  if (numCtx !== undefined && (typeof numCtx !== 'number' || !Number.isSafeInteger(numCtx) || numCtx < 2_048 || numCtx > 262_144)) {
+    throw new Error('Context window must be between 2,048 and 262,144 tokens.');
+  }
+  if (think !== undefined && typeof think !== 'boolean') throw new Error('Thinking must be on or off.');
+  const settings = {
+    ...(numCtx === undefined ? {} : { numCtx }),
+    ...(think === undefined ? {} : { think }),
+  };
+  saveModelSettings(config, settings);
+  config = withSavedModelSettings(config, settings);
+  return providerStatus(config);
+});
+
+ipcMain.handle('vyomara:model-delete', async (_event, input: unknown) => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (activeRequest) throw new Error('Wait for the current task to finish before removing a model.');
+  const request = typeof input === 'object' && input !== null && !Array.isArray(input)
+    ? input as { readonly name?: unknown; readonly confirmation?: unknown }
+    : {};
+  if (typeof request.name !== 'string' || request.confirmation !== 'DELETE') {
+    throw new Error('Type DELETE to confirm removing this model.');
+  }
+  const name = validateOllamaModel(request.name);
+  if (name === config.ollamaModel) throw new Error('Switch to another model before removing the one in use.');
+  try {
+    await ollamaProvider(config).deleteModel(name);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
+});
+
+ipcMain.handle('vyomara:ollama-start', async () => {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  if (process.platform !== 'darwin') throw new Error('Starting Ollama from Vyomara is supported on macOS only.');
+  const opened = spawnSync('/usr/bin/open', ['-a', 'Ollama'], { stdio: 'ignore' });
+  if (opened.status !== 0) {
+    throw new Error('Ollama is not installed. Download it from ollama.com, then try again.');
+  }
+  const provider = ollamaProvider(config);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      await provider.checkConnection();
+      return;
+    } catch {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 500));
+    }
+  }
+  throw new Error('Ollama was opened but is not responding yet. Try again in a moment.');
 });
 
 ipcMain.handle('vyomara:model-select', async (_event, input: unknown) => {
@@ -577,17 +646,15 @@ app.whenReady().then(async () => {
   });
   try {
     const loaded = loadConfig(process.env);
-    let selectedModel: string | undefined;
+    let saved: SavedModelSettings = {};
     try {
-      selectedModel = readSelectedModel(loaded);
+      saved = readModelSettings(loaded);
+      if (saved.model) validateOllamaModel(saved.model);
     } catch {
-      selectedModel = undefined;
+      saved = {};
     }
-    config = {
-      ...loaded,
-      filesystemAllowedRoots: ['/'],
-      ...(loaded.provider === 'ollama' && selectedModel ? { ollamaModel: validateOllamaModel(selectedModel) } : {}),
-    };
+    // Choices made in the app's Models panel take precedence over the environment.
+    config = { ...withSavedModelSettings(loaded, saved), filesystemAllowedRoots: ['/'] };
     voiceListeningEnabled = await readVoiceListeningPreference();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Configuration is invalid.';

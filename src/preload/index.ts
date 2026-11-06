@@ -71,6 +71,15 @@ const api: VyomaraDesktopApi = {
   pullModel(model: string) {
     return ipcRenderer.invoke('vyomara:model-pull', model);
   },
+  setModelSettings(settings) {
+    return ipcRenderer.invoke('vyomara:model-settings-set', settings);
+  },
+  deleteModel(model: string, confirmation: string) {
+    return ipcRenderer.invoke('vyomara:model-delete', { name: model, confirmation });
+  },
+  startOllama() {
+    return ipcRenderer.invoke('vyomara:ollama-start');
+  },
   onModelPullProgress(listener: (progress: DesktopModelPullProgress) => void) {
     return subscribe('vyomara:model-pull-progress', listener);
   },

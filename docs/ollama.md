@@ -18,19 +18,37 @@ instructions far better.
 | `qwen3:30b-a3b` | ~19 GB | Better quality; needs 32 GB+ RAM. |
 | `llama3.2` (3B) | ~2 GB | Answers simple questions; not recommended for coding. |
 
-Install a model in either of these ways:
-- In the desktop app, open **Models**, enter a name, and choose **Download with
-  Ollama**.
-- From a terminal:
+## Running any local model from the app
 
-  ```sh
-  ollama pull qwen3:14b
-  ```
+Everything below happens in the **Models** panel (sidebar, or the model name in
+the header). No code or configuration changes are needed.
 
-To switch models:
-- **Desktop:** select the model in **Models**. The choice is saved locally.
-- **CLI:** pass `--model <name>`. Without it, the CLI uses `VYOM_OLLAMA_MODEL`,
-  then the saved choice, then `qwen3:14b`.
+| Task | How |
+|---|---|
+| Use a new model | Type its name under **Download another model**. Use a name from [ollama.com/library](https://ollama.com/library) (for example `deepseek-r1:14b`), or a GGUF model from Hugging Face as `hf.co/<user>/<repo>:<quantization>`. Then click the model to use it. |
+| See what a model can do | Each model shows its size, its maximum context, and badges. **Tools** means it can read and edit code, run commands, and open apps. **Thinking** and **Vision** are optional extras. **Chat only** means no tools. |
+| Change memory and speed | Under **Settings for \<model\>**, choose a context window (capped at the model's maximum), and turn **thinking** on or off (only for models that support it). |
+| Free disk space | Click **Remove…** next to an unused model and type `DELETE`. |
+| Start Ollama | If Ollama is not running, the panel offers **Start Ollama**. |
+
+The model choice, context window, and thinking setting are saved locally and
+take precedence over the `VYOM_OLLAMA_*` environment variables. The CLI uses
+them too, unless an environment variable or `--model` is given.
+
+**Chat-only models** (no tool support) still work for conversation. Vyomara
+sends them no tools, tells them their limits, and adds a fixed notice under
+every reply, because small models often ignore instructions and claim to have
+read files they cannot access. If Ollama rejects tools at request time,
+Vyomara retries the request without tools and treats the model as chat-only.
+
+From a terminal, the same steps are:
+
+```sh
+ollama pull deepseek-r1:14b
+ollama show deepseek-r1:14b   # "tools" under Capabilities = full agent
+pnpm dev -- --model deepseek-r1:14b "your task"
+pnpm eval -- --model deepseek-r1:14b --runs 2   # compare quality with qwen3:14b
+```
 
 ## Context window and thinking
 

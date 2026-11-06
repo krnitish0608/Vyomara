@@ -691,3 +691,56 @@ test('open_application can jump to a line in a file and requires a path for it',
     /line needs a file path/,
   );
 });
+
+test('models without tool support run chat-only: no tools are offered and the prompt explains why', async t => {
+  const h = await harness(t);
+  let offeredTools = -1;
+  let system = '';
+  const provider: ModelProvider = {
+    id: 'chat-only',
+    async supportsTools() { return false; },
+    async complete(_messages, _signal, tools, _onText, prompt) {
+      offeredTools = tools?.length ?? 0;
+      system = prompt ?? '';
+      return { kind: 'final', text: 'I cannot read files with this model.' };
+    },
+  };
+  const response = await runAgent('fix my cart', new AbortController().signal, {
+    provider, tools: h.executor, config: h.config, session: new Session(), logger: createLogger(() => {}), environment,
+  });
+  assert.equal(offeredTools, 0);
+  assert.match(response, /Chat-only model:.*not based on them/s);
+  assert.match(system, /cannot use tools in Vyomara/);
+  assert.match(system, /Models panel/);
+});
+
+test('Ollama drops tools for models without the tools capability and retries when Ollama refuses them', async () => {
+  const sent: unknown[] = [];
+  const tool = { id: 'read_file', description: 'Read.', parameters: { type: 'object' as const, properties: {}, additionalProperties: false as const } };
+  const make = (capabilities: string[], refuseTools: boolean) => new OllamaProvider({
+    baseUrl: 'http://127.0.0.1:11434',
+    model: 'm',
+    fetchImplementation: async (input, init) => {
+      if (String(input).endsWith('/api/show')) {
+        return new Response(JSON.stringify({ capabilities, model_info: { 'gemma3.context_length': 131_072 } }));
+      }
+      const body = JSON.parse(String(init?.body)) as { tools: unknown[] };
+      sent.push(body.tools.length);
+      if (refuseTools && body.tools.length > 0) {
+        return new Response(JSON.stringify({ error: 'registry.ollama.ai/library/m does not support tools' }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ message: { role: 'assistant', content: 'hi' } }));
+    },
+  });
+
+  const declared = make(['completion'], false);
+  assert.equal(await declared.supportsTools(), false);
+  await declared.complete([], new AbortController().signal, [tool]);
+  assert.deepEqual(await declared.showModel(), { capabilities: ['completion'], contextLength: 131_072 });
+
+  const refusing = make([], true);
+  assert.equal(await refusing.supportsTools(), true, 'unknown capabilities count as tool-capable');
+  assert.deepEqual(await refusing.complete([], new AbortController().signal, [tool]), { kind: 'final', text: 'hi' });
+  assert.equal(await refusing.supportsTools(), false, 'after a refusal the model is treated as chat-only');
+  assert.deepEqual(sent, [0, 1, 0]);
+});

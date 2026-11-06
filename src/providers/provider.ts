@@ -21,6 +21,8 @@ export interface ModelProvider {
     onText?: (text: string) => void,
     system?: string,
   ): Promise<unknown>;
+  /** False when the model cannot call tools; the agent then runs chat-only. */
+  supportsTools?(): Promise<boolean>;
 }
 
 export interface InstalledModel {
@@ -28,6 +30,11 @@ export interface InstalledModel {
   readonly sizeBytes?: number;
   readonly parameterSize?: string;
   readonly family?: string;
+}
+
+export interface ModelDetails {
+  readonly capabilities: readonly string[];
+  readonly contextLength?: number;
 }
 
 export interface ModelPullProgress {
@@ -322,6 +329,7 @@ export class OllamaProvider implements ModelProvider {
   private readonly tagsEndpoint: URL;
   private readonly model: string;
   private capabilities: Promise<readonly string[]> | undefined;
+  private toolsRejected = false;
 
   constructor(options: OllamaProviderOptions) {
     const baseUrl = new URL(options.baseUrl);
@@ -480,27 +488,67 @@ export class OllamaProvider implements ModelProvider {
     return models;
   }
 
-  /** Capabilities reported by `/api/show` (e.g. "tools", "thinking"); empty if unknown. */
+  /** Capabilities ("tools", "thinking", "vision", …) and maximum context length of an installed model. */
+  async showModel(name: string = this.model): Promise<ModelDetails> {
+    try {
+      const response = await this.fetchImplementation(new URL(`${this.baseUrl}/api/show`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(5_000),
+        body: JSON.stringify({ model: name }),
+      });
+      if (!response.ok) return { capabilities: [] };
+      const payload: unknown = await response.json();
+      if (!isRecord(payload)) return { capabilities: [] };
+      const capabilities = Array.isArray(payload.capabilities)
+        ? payload.capabilities.filter((item): item is string => typeof item === 'string')
+        : [];
+      const info = isRecord(payload.model_info) ? payload.model_info : {};
+      const contextLength = Object.entries(info)
+        .find(([key, value]) => key.endsWith('.context_length') && typeof value === 'number')?.[1];
+      return {
+        capabilities,
+        ...(typeof contextLength === 'number' ? { contextLength } : {}),
+      };
+    } catch {
+      return { capabilities: [] };
+    }
+  }
+
+  /** Remove an installed model from Ollama to free disk space. */
+  async deleteModel(name: string): Promise<void> {
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(new URL(`${this.baseUrl}/api/delete`), {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ model: name }),
+      });
+    } catch {
+      throw new ProviderError('unavailable');
+    }
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 404) throw new ProviderError('model-not-found');
+    if (!response.ok) throw new ProviderError('http-error');
+  }
+
+  /** Capabilities of the configured model, fetched once; empty if unknown. */
   private modelCapabilities(): Promise<readonly string[]> {
-    this.capabilities ??= (async () => {
-      try {
-        const response = await this.fetchImplementation(new URL(`${this.baseUrl}/api/show`), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          redirect: 'error',
-          signal: AbortSignal.timeout(5_000),
-          body: JSON.stringify({ model: this.model }),
-        });
-        if (!response.ok) return [];
-        const payload: unknown = await response.json();
-        return isRecord(payload) && Array.isArray(payload.capabilities)
-          ? payload.capabilities.filter((item): item is string => typeof item === 'string')
-          : [];
-      } catch {
-        return [];
-      }
-    })();
+    this.capabilities ??= this.showModel().then(details => details.capabilities);
     return this.capabilities;
+  }
+
+  /**
+   * Whether the configured model can call tools. Unknown capabilities count as
+   * yes; a model Ollama reports without "tools" runs in chat-only mode.
+   */
+  async supportsTools(): Promise<boolean> {
+    if (this.toolsRejected) return false;
+    const capabilities = await this.modelCapabilities();
+    return capabilities.length === 0 || capabilities.includes('tools');
   }
 
   async complete(
@@ -511,8 +559,12 @@ export class OllamaProvider implements ModelProvider {
     system?: string,
   ): Promise<ProviderResponse> {
     if (signal.aborted) throw new ProviderError('cancelled');
-    const supportsThinking = this.think !== undefined &&
-      (await this.modelCapabilities()).includes('thinking');
+    const needsCapabilities = this.think !== undefined || tools.length > 0;
+    const capabilities = needsCapabilities ? await this.modelCapabilities() : [];
+    const supportsThinking = this.think !== undefined && capabilities.includes('thinking');
+    if (tools.length > 0 && (this.toolsRejected || (capabilities.length > 0 && !capabilities.includes('tools')))) {
+      tools = [];
+    }
 
     let requestBody: string;
     try {
@@ -563,6 +615,11 @@ export class OllamaProvider implements ModelProvider {
     if (!response.ok) {
       if (response.status === 404 && /model.+not found/i.test(body)) {
         throw new ProviderError('model-not-found');
+      }
+      if (response.status === 400 && tools.length > 0 && /does not support tools/i.test(body)) {
+        // Some models are tagged without tool support only at request time; retry as chat-only.
+        this.toolsRejected = true;
+        return this.complete(messages, signal, [], onText, system);
       }
       throw new ProviderError('http-error');
     }

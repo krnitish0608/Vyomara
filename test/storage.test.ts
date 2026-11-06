@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../src/config/config.ts';
 import { PersistenceError, SqliteStore } from '../src/storage/sqlite-store.ts';
+import { readModelSettings, saveModelSettings, saveSelectedModel, withSavedModelSettings } from '../src/app/application.ts';
 
 function temporaryDirectory(): string {
   return mkdtempSync(join(tmpdir(), 'vyomara-storage-'));
@@ -370,4 +371,20 @@ test('VYOM_DATA_DIR is absolute and defaults under macOS Application Support', (
     () => loadConfig({ VYOM_DATA_DIR: 'relative/path' }),
     /VYOM_DATA_DIR must be an absolute local directory path/,
   );
+});
+
+test('model settings chosen in the app are saved and applied over the environment', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'vyomara-settings-'));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = loadConfig({ VYOM_DATA_DIR: join(root, 'data') });
+  assert.deepEqual(readModelSettings(config), {});
+  saveSelectedModel(config, 'deepseek-r1:14b');
+  saveModelSettings(config, { numCtx: 16_384, think: true });
+  const saved = readModelSettings(config);
+  assert.deepEqual(saved, { model: 'deepseek-r1:14b', numCtx: 16_384, think: true });
+  const applied = withSavedModelSettings(config, saved);
+  assert.equal(applied.ollamaModel, 'deepseek-r1:14b');
+  assert.equal(applied.ollamaNumCtx, 16_384);
+  assert.equal(applied.ollamaThink, true);
 });

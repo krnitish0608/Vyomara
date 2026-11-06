@@ -64,11 +64,23 @@ export interface DesktopModelInfo {
   readonly sizeBytes?: number;
   readonly parameterSize?: string;
   readonly family?: string;
+  /** e.g. "completion", "tools", "thinking", "vision". */
+  readonly capabilities: readonly string[];
+  /** The model's maximum context window in tokens, when Ollama reports it. */
+  readonly contextLength?: number;
+}
+
+export interface DesktopModelSettings {
+  readonly numCtx: number;
+  readonly think: boolean;
 }
 
 export interface DesktopModelList {
+  /** False when the local Ollama service is not running. */
+  readonly available: boolean;
   readonly current: string;
   readonly models: readonly DesktopModelInfo[];
+  readonly settings: DesktopModelSettings;
 }
 
 export interface DesktopModelPullProgress {
@@ -147,6 +159,11 @@ export interface VyomaraDesktopApi {
   listModels(): Promise<DesktopModelList>;
   selectModel(model: string): Promise<DesktopProviderStatus>;
   pullModel(model: string): Promise<void>;
+  setModelSettings(settings: Partial<DesktopModelSettings>): Promise<DesktopProviderStatus>;
+  /** Removes an installed model; requires confirmation "DELETE". */
+  deleteModel(model: string, confirmation: string): Promise<void>;
+  /** Opens the Ollama app and waits until it responds. */
+  startOllama(): Promise<void>;
   onModelPullProgress(listener: (progress: DesktopModelPullProgress) => void): () => void;
   cancelRequest(): Promise<boolean>;
   listSessions(): Promise<readonly DesktopSessionSummary[]>;

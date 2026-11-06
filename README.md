@@ -45,8 +45,18 @@ results, so Vyom never claims work it did not do.
 ollama pull qwen3:14b
 ```
 
-You can also download and switch models from the app's **Models** panel. See
-[the Ollama guide](./docs/ollama.md) for model choices and tuning.
+Any local model can be run from the app's **Models** panel without changing
+code or configuration. In the panel you can:
+
+- download any model from the Ollama library, or GGUF models from Hugging Face
+  (`hf.co/…`);
+- see each model's capabilities (Tools / Thinking / Vision / Chat only);
+- switch the model in use;
+- set the context window and thinking;
+- remove models you no longer need;
+- start Ollama if it is not running.
+
+See [the Ollama guide](./docs/ollama.md#running-any-local-model-from-the-app).
 
 ## Desktop app
 

@@ -239,6 +239,19 @@ function parseProviderResponse(value: unknown, maxTextChars: number): ProviderRe
   throw new AgentError('The model returned an invalid response.', 'invalid-provider-response');
 }
 
+/** Ask the provider whether the model can use tools, bounded so a stuck service cannot hang the request. */
+async function checkToolSupport(provider: ModelProvider, config: AppConfig, signal: AbortSignal): Promise<boolean> {
+  if (!provider.supportsTools) return true;
+  try {
+    return await runBounded(() => provider.supportsTools?.() ?? Promise.resolve(true), Math.min(10_000, config.requestTimeoutMs), signal);
+  } catch (error) {
+    if (error instanceof OperationStoppedError && error.reason === 'cancelled') {
+      throw new AgentError('Operation cancelled.', 'cancelled');
+    }
+    return true;
+  }
+}
+
 export async function runAgent(
   prompt: string,
   signal: AbortSignal,
@@ -270,9 +283,11 @@ async function runAgentTask(
   const start = Date.now();
   task.transition('planning');
 
-  const modelTools = tools.modelTools();
+  // Models without tool support still chat; they are told what they cannot do.
+  const toolCapable = await checkToolSupport(options.provider, config, signal);
+  const modelTools = toolCapable ? tools.modelTools() : [];
   const environment = options.environment ?? detectEnvironment(session.messages());
-  const system = buildSystemPrompt(environment, modelTools);
+  const system = buildSystemPrompt(environment, modelTools, { chatOnly: !toolCapable });
   const fixedChars = system.length + JSON.stringify(modelTools).length;
   const budgetChars = Math.max(
     8_000,
@@ -291,7 +306,12 @@ async function runAgentTask(
   const onText = options.onText;
 
   const finish = (text: string, iterations: number, needsAttention = false): string => {
-    const response = `${text.trim() || 'Done.'}${actionsFooter(actions)}`;
+    // Small models often ignore the system prompt and pretend to have read files;
+    // the app states the limitation itself instead of trusting the model.
+    const chatOnlyNote = toolCapable
+      ? ''
+      : '\n\n---\n⚠️ **Chat-only model:** it cannot read your files, run commands, open apps, or read web pages in Vyomara. Anything it says about your files or projects is not based on them. Choose a model marked “Tools” in the Models panel for that.';
+    const response = `${text.trim() || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
     session.add({ role: 'assistant', content: response });
     if (needsAttention) task.needsAttention();
     logger.emit({
