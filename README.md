@@ -135,7 +135,9 @@ Using it:
 - Replies are spoken briefly, with a Hindi voice for Hindi and an Indian
   English voice otherwise.
 
-Recognition runs entirely on this Mac, and audio never leaves it. See
+Recognition runs entirely on this Mac, and audio never leaves it. A finished
+phrase becomes text in about one second, and the reply arrives about three
+seconds after you stop speaking. See
 [ADR-0018](./docs/adr/0018-voice-wake-phrase-spoken-approvals.md).
 
 ## Command line

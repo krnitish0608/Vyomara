@@ -46,6 +46,8 @@ export interface AgentOptions {
   readonly onToolActivity?: (activity: ToolActivity) => void;
   /** Receives the agent's checklist whenever it calls update_plan. */
   readonly onPlan?: (steps: readonly PlanStep[]) => void;
+  /** Spoken request: ask for a short reply (fewer tokens, faster, and pleasant to hear). */
+  readonly voice?: boolean;
   /** Overrides environment discovery (used by tests). */
   readonly environment?: AgentEnvironment;
 }
@@ -307,7 +309,10 @@ async function runAgentTask(
   const toolCapable = await checkToolSupport(options.provider, config, signal);
   const modelTools = toolCapable ? tools.modelTools() : [];
   const environment = options.environment ?? detectEnvironment(session.messages());
-  const system = buildSystemPrompt(environment, modelTools, { chatOnly: !toolCapable });
+  const system = buildSystemPrompt(environment, modelTools, {
+    chatOnly: !toolCapable,
+    ...(options.voice ? { voice: true } : {}),
+  });
   const fixedChars = system.length + JSON.stringify(modelTools).length;
   const budgetChars = Math.max(
     8_000,

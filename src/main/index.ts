@@ -45,6 +45,7 @@ import { ApprovalMemory, DEFAULT_BROWSER, grantId, parseGrantId } from '../tools
 import { MacSpeechError, MacSpeechRunner } from '../desktop/mac-speech.ts';
 import { LocalSpeechError, LocalWhisperRunner, resolveWhisperBinary, SPEECH_MODELS } from '../desktop/local-whisper.ts';
 import type { SpeechModelId } from '../desktop/local-whisper.ts';
+import { LocalWhisperServer, resolveWhisperServer } from '../desktop/whisper-server.ts';
 import type { LocalWhisperEvent } from '../desktop/local-whisper.ts';
 
 let mainWindow: BrowserWindow | undefined;
@@ -63,6 +64,8 @@ const shellCommandRunner = new ShellCommandRunner();
 /** Standing permissions (apps, browsers, web hosts) are loaded from disk at startup. */
 let approvalMemory = new ApprovalMemory();
 const macSpeechRunner = new MacSpeechRunner();
+/** Keeps the speech model loaded while listening is on. */
+const whisperServer = new LocalWhisperServer();
 const macApplicationLauncher = process.platform === 'darwin'
   ? new MacApplicationLauncher()
   : undefined;
@@ -142,7 +145,7 @@ async function speechStatus() {
   })));
   return {
     modelReady: await runner.modelAvailable(),
-    runtimeAvailable: resolveWhisperBinary() !== undefined,
+    runtimeAvailable: resolveWhisperServer() !== undefined,
     listeningEnabled: voiceListeningEnabled,
     model: speechModel,
     models,
@@ -619,6 +622,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
       createDesktopLogger(),
       {
         ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+        ...(request.voice ? { voice: true } : {}),
         onText: text => send('vyomara:chat-text', { requestId: request.requestId, text }),
         onToolActivity: activity => send('vyomara:tool-activity', { requestId: request.requestId, ...activity }),
         onPlan: steps => send('vyomara:plan', { requestId: request.requestId, steps }),
@@ -783,16 +787,17 @@ ipcMain.handle('vyomara:speech-setup-status', () => speechStatus());
 ipcMain.handle('vyomara:speech-model-select', async (_event, input: unknown) => {
   if (input !== 'fast' && input !== 'best') throw new Error('Choose a known speech model.');
   if (input === speechModel) return speechStatus();
-  const wasListening = voiceListeningEnabled;
-  if (localWhisperRunner?.isListening) await localWhisperRunner.stop({ silent: true });
   speechModel = input;
   localWhisperRunner = undefined;
   const runner = getLocalWhisperRunner();
-  if (wasListening && await runner.modelAvailable() && resolveWhisperBinary()) {
-    runner.start(emitSpeechEvent);
-  } else if (wasListening) {
-    voiceListeningEnabled = false;
-    emitSpeechEvent({ type: 'stopped' });
+  if (voiceListeningEnabled) {
+    if (await runner.modelAvailable()) {
+      await whisperServer.start(runner.modelPath, runner.model.language);
+    } else {
+      voiceListeningEnabled = false;
+      whisperServer.stop();
+      emitSpeechEvent({ type: 'stopped' });
+    }
   }
   await saveVoiceListeningPreference(voiceListeningEnabled);
   return speechStatus();
@@ -816,7 +821,7 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
   const runner = getLocalWhisperRunner();
   if (input) {
     if (!await runner.modelAvailable()) throw new LocalSpeechError('Download the selected speech model (Models panel → Voice) before turning listening on.');
-    if (!resolveWhisperBinary()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
+    if (!resolveWhisperServer()) throw new LocalSpeechError('Install the local whisper.cpp runtime with `brew install whisper.cpp`, then restart Vyomara.');
     try {
       const microphoneStatus = systemPreferences.getMediaAccessStatus('microphone');
       const microphoneGranted = microphoneStatus === 'granted' ||
@@ -828,17 +833,19 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
             : 'Microphone access was not granted. Allow it in the macOS prompt to use voice listening.',
         );
       }
-      runner.start(emitSpeechEvent);
+      // The renderer records phrases; the server keeps the model loaded to transcribe them.
+      await whisperServer.start(runner.modelPath, runner.model.language);
       voiceListeningEnabled = true;
       await saveVoiceListeningPreference(true);
+      emitSpeechEvent({ type: 'listening' });
     } catch (error) {
-      runner.stop();
+      whisperServer.stop();
       voiceListeningEnabled = false;
       throw new Error(publicErrorMessage(error));
     }
   } else {
     voiceListeningEnabled = false;
-    await runner.stop();
+    whisperServer.stop();
     macSpeechRunner.stop();
     await saveVoiceListeningPreference(false);
     emitSpeechEvent({ type: 'stopped' });
@@ -846,40 +853,23 @@ ipcMain.handle('vyomara:speech-listening-set', async (_event, input: unknown) =>
   return speechStatus();
 });
 
-ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
-  const runner = localWhisperRunner;
-  const resumeListening = voiceListeningEnabled && runner?.isListening === true;
-  let listeningPaused = false;
+ipcMain.handle('vyomara:speech-transcribe', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Speech request is invalid.');
+  if (!voiceListeningEnabled) throw new Error('Voice listening is off.');
+  if (!(input instanceof Uint8Array)) throw new Error('Recorded audio is invalid.');
   try {
-    if (resumeListening && runner) {
-      listeningPaused = await runner.stop({ silent: true });
-      if (!listeningPaused) {
-        throw new Error('The microphone could not be paused safely before Vyom speaks.');
-      }
-    }
+    return await whisperServer.transcribe(input);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'The phrase could not be transcribed.');
+  }
+});
+
+ipcMain.handle('vyomara:speech-speak', async (_event, input: unknown) => {
+  // The renderer stops recording while Vyom speaks, so the reply is not heard as a command.
+  try {
     return await macSpeechRunner.speak(input);
   } catch (error) {
     throw new Error(publicErrorMessage(error));
-  } finally {
-    if (listeningPaused && voiceListeningEnabled && runner && resolveWhisperBinary()) {
-      try {
-        runner.start(emitSpeechEvent);
-      } catch (error) {
-        voiceListeningEnabled = false;
-        try {
-          await saveVoiceListeningPreference(false);
-        } catch (preferenceError) {
-          console.error(JSON.stringify({
-            event: 'speech.listening-preference-save-failed',
-            message: publicErrorMessage(preferenceError),
-          }));
-        }
-        emitSpeechEvent({
-          type: 'error',
-          message: `Local listening could not resume after speech output: ${publicErrorMessage(error)}`,
-        });
-      }
-    }
   }
 });
 
@@ -958,6 +948,7 @@ app.on('before-quit', () => {
   activeRequest?.abort();
   activeModelPull?.abort();
   macSpeechRunner.stop();
+  whisperServer.stop();
   void localWhisperRunner?.stop();
 });
 

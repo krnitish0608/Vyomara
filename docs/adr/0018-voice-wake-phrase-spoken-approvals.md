@@ -66,6 +66,35 @@ voices Lekha and Rishi):
    voice (Lekha) and everything else with an Indian English voice (Rishi),
    when those voices are installed.
 
+## Later change: faster recognition
+
+Measurements showed most of the delay came before transcription:
+`whisper-stream` checks for silence only every 2 s, so a finished phrase
+waited 2–3 s before it was transcribed. The pipeline is now:
+
+1. **Recording in the app.** The renderer records the microphone and cuts
+   phrases with an adaptive energy detector (`src/shared/phrase-detector.ts`):
+   - it first spends 0.5 s measuring the room's background noise;
+   - a phrase ends after 0.65 s of silence;
+   - a phrase is at most 14 s long;
+   - 0.3 s of audio before speech starts is kept.
+
+   Recording is muted while Vyom speaks.
+2. **Transcription.** Each phrase is sent as a WAV to a loopback-only
+   `whisper-server` that keeps the model loaded (`-ac 768`).
+3. **Spoken requests** add a short final section to the prompt asking for one
+   or two spoken sentences. The section is placed last so that the cached
+   prompt prefix is reused.
+
+Measured with turbo on an M4 Pro:
+
+| Step | Before | After |
+|---|---|---|
+| End of speech → phrase detected | ~2–3 s | ~0.7 s |
+| Phrase → text | ~0.6–1 s | ~0.3 s |
+| Agent reply for "Calculator kholo…" | ~3.4 s | ~2.6 s |
+| End of speech → reply | ~6–8 s | ~3.5 s |
+
 ## Consequences
 
 - **Accuracy.** Spoken approvals use the same approval ports as clicks;

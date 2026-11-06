@@ -80,6 +80,8 @@ export interface RequestOptions {
   readonly onText?: (text: string) => void;
   readonly onToolActivity?: (activity: ToolActivity) => void;
   readonly onPlan?: (steps: readonly PlanStep[]) => void;
+  /** The request was spoken; replies should be short enough to read aloud. */
+  readonly voice?: boolean;
   readonly includeFilesystemTools?: boolean;
   readonly fileOperationApproval?: FileOperationApprovalPort;
   readonly actions?: ActionToolPorts;
@@ -136,6 +138,7 @@ export async function runRequest(
         ...(options.onText ? { onText: options.onText } : {}),
         ...(options.onToolActivity ? { onToolActivity: options.onToolActivity } : {}),
         ...(options.onPlan ? { onPlan: options.onPlan } : {}),
+        ...(options.voice ? { voice: true } : {}),
       });
     } catch (error) {
       requestError = error;

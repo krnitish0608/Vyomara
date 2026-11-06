@@ -20,6 +20,7 @@ import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft, resolveVoiceTranscriptAction } from './voice-dictation.ts';
 import { approvalQuestion, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
 interface ChatMessage {
@@ -75,6 +76,10 @@ export function App() {
   const handleVoiceCommand = useRef<((transcript: string) => void) | undefined>(undefined);
   const askByVoice = useRef<((question: string, kind: 'delete' | 'other') => void) | undefined>(undefined);
   const handlePipCommand = useRef<((command: DesktopPipCommand) => void) | undefined>(undefined);
+  /** Records phrases from the microphone while listening is on. */
+  const voiceCapture = useRef(new VoiceCapture());
+  const handleHeard = useRef<((transcript: string) => void) | undefined>(undefined);
+  const [voiceHearing, setVoiceHearing] = useState(false);
   const composerDictationRef = useRef(false);
   const composerDictationBase = useRef('');
   const currentRequestPending = useRef(requestPending);
@@ -155,6 +160,23 @@ export function App() {
       if (event.type === 'listening') {
         setVoiceStarting(false);
         setVoiceListening(true);
+        void voiceCapture.current.start({
+          onSpeech: setVoiceHearing,
+          onPhrase: wav => {
+            setVoiceTranscript('…');
+            window.vyomara.transcribeSpeech(wav)
+              .then(text => {
+                if (text) handleHeard.current?.(text);
+                else setVoiceTranscript('');
+              })
+              .catch(error => setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.'));
+          },
+          onError: message => setVoiceError(message),
+        });
+      }
+      if (event.type === 'stopped' || event.type === 'error') {
+        voiceCapture.current.stop();
+        setVoiceHearing(false);
       }
       if (event.type === 'stopped') {
         setVoiceStarting(false);
@@ -170,16 +192,7 @@ export function App() {
         setComposerDictation(false);
         setVoiceError(event.message);
       }
-      if (event.type === 'command') {
-        setVoiceTranscript(event.transcript);
-        const action = resolveVoiceTranscriptAction('command', composerDictationRef.current, event.transcript);
-        if (action.type === 'draft') {
-          composerDictationBase.current = appendVoiceDraft(composerDictationBase.current, action.transcript);
-          setPrompt(composerDictationBase.current);
-        } else {
-          handleVoiceCommand.current?.(event.transcript);
-        }
-      }
+      if (event.type === 'command') handleHeard.current?.(event.transcript);
     });
     void window.vyomara.getSpeechSetupStatus().then(status => {
       if (!mounted) return;
@@ -356,6 +369,7 @@ export function App() {
         prompt: trimmed,
         requestId,
         ...(sessionId ? { sessionId } : {}),
+        ...(speakResponse ? { voice: true } : {}),
       });
       setSessionId(result.sessionId);
       setMessages(current => current.some(message => message.id === requestId)
@@ -401,11 +415,25 @@ export function App() {
   pendingFileProposals.current = fileOperationProposals;
   pendingActionProposals.current = actionProposals;
 
+  handleHeard.current = transcript => {
+    setVoiceTranscript(transcript);
+    const action = resolveVoiceTranscriptAction('command', composerDictationRef.current, transcript);
+    if (action.type === 'draft') {
+      composerDictationBase.current = appendVoiceDraft(composerDictationBase.current, action.transcript);
+      setPrompt(composerDictationBase.current);
+    } else {
+      handleVoiceCommand.current?.(transcript);
+    }
+  };
+
   function speak(text: string): void {
     if (!text) return;
+    // Do not record Vyom's own voice as a command.
+    voiceCapture.current.setMuted(true);
     void window.vyomara.speakText(text)
       .then(() => voiceSession.current.extend())
-      .catch(error => setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.'));
+      .catch(error => setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.'))
+      .finally(() => setTimeout(() => voiceCapture.current.setMuted(false), 250));
   }
 
   askByVoice.current = (question, kind) => {
@@ -797,7 +825,9 @@ export function App() {
         ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
         : voiceStarting
           ? 'Starting microphone…'
-          : voiceListening
+          : voiceHearing
+            ? 'Hearing you…'
+            : voiceListening
             ? 'Say “Hello Vyomara …”'
             : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
     ...(voiceTranscript ? { heard: voiceTranscript } : {}),

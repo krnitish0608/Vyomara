@@ -136,7 +136,7 @@ export function detectEnvironment(messages: readonly SessionMessage[]): AgentEnv
 export function buildSystemPrompt(
   environment: AgentEnvironment,
   tools: readonly ModelToolDefinition[],
-  options: { readonly chatOnly?: boolean } = {},
+  options: { readonly chatOnly?: boolean; readonly voice?: boolean } = {},
 ): string {
   const has = (id: string): boolean => tools.some(tool => tool.id === id);
   const canEdit = has('edit_file');
@@ -215,6 +215,12 @@ ${projects}${environment.activeProject ? `\n- Project this conversation is worki
 - Protected system and credential locations (~/.ssh, keychains, cloud credentials, /System, …) are off limits.
 - When finished, reply with a short summary of what you found or changed (mention file paths). Use Markdown; put code in fenced blocks.
 - Reply in the user's language and script. If they write Hinglish (Hindi in Roman/Latin letters, e.g. "fix karo"), reply in Hinglish with Roman letters, not Devanagari. Keep code, paths, and technical terms in English.`);
+
+  if (options.voice) {
+    // Last section, so the stable prompt prefix above stays cached by Ollama.
+    sections.push(`# Spoken conversation
+- The user spoke this request and will hear your reply read aloud. Answer in one or two short, natural sentences (no lists, code, or Markdown) unless they ask for details. Work with tools exactly as usual; only the final answer is short.`);
+  }
 
   return sections.join('\n\n');
 }

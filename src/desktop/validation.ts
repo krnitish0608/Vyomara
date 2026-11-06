@@ -81,7 +81,8 @@ export function parseDesktopChatRequest(
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
   if (
-    keys.some(key => key !== 'prompt' && key !== 'sessionId' && key !== 'requestId') ||
+    keys.some(key => key !== 'prompt' && key !== 'sessionId' && key !== 'requestId' && key !== 'voice') ||
+    (record.voice !== undefined && typeof record.voice !== 'boolean') ||
     typeof record.prompt !== 'string' ||
     record.prompt.trim() === '' ||
     record.prompt.length > maxInputChars ||
@@ -97,5 +98,6 @@ export function parseDesktopChatRequest(
     prompt: record.prompt,
     requestId: record.requestId,
     ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+    ...(record.voice === true ? { voice: true } : {}),
   };
 }

@@ -5,6 +5,8 @@ export interface DesktopChatRequest {
   readonly prompt: string;
   readonly requestId: string;
   readonly sessionId?: string;
+  /** Spoken request: the reply will be read aloud, so keep it short. */
+  readonly voice?: boolean;
 }
 
 export interface DesktopChatTextChunk {
@@ -235,6 +237,8 @@ export interface VyomaraDesktopApi {
   downloadSpeechModel(): Promise<void>;
   selectSpeechModel(model: 'fast' | 'best'): Promise<DesktopSpeechSetupStatus>;
   setSpeechListening(enabled: boolean): Promise<DesktopSpeechSetupStatus>;
+  /** Transcribe one recorded phrase (16 kHz mono WAV) with the local model. */
+  transcribeSpeech(wav: Uint8Array): Promise<string>;
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;
