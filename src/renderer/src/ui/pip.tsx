@@ -72,8 +72,9 @@ export function PipView() {
 
   const approval = state?.approval;
   const listening = state?.listening === true;
+  const speaking = state?.speaking === true;
   const detail = approval?.question ?? (state?.heard ? `“${state.heard}”` : state?.reply);
-  const mood = approval ? 'approval' : recording ? 'recording' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
+  const mood = approval ? 'approval' : recording ? 'recording' : speaking ? 'speaking' : state?.busy ? 'busy' : listening ? 'listening' : 'idle';
   // Approvals take the middle area; a draft in progress is kept and comes back after.
   const showComposer = composing && !approval;
 
@@ -82,11 +83,13 @@ export function PipView() {
       <div className="pip-orb-slot">
         <VoiceOrb
           mini
-          listening={listening || recording || state?.busy === true}
+          listening={listening || recording || speaking || state?.busy === true}
           pressed={listening}
           disabled={!state?.voiceReady}
-          label={listening ? 'Turn listening off' : 'Turn listening on'}
-          title={state?.voiceReady ? 'Hands-free listening on/off (⌥Space)' : 'Set up voice in the Vyomara window'}
+          label={speaking && listening ? 'Interrupt Vyom' : listening ? 'End the conversation' : 'Talk to Vyom'}
+          title={state?.voiceReady
+            ? speaking && listening ? 'Interrupt Vyom' : listening ? 'End the conversation (⌥Space)' : 'Talk to Vyom (⌥Space)'
+            : 'Set up voice in the Vyomara window'}
           onActivate={() => send({ type: 'toggle-listening' })}
         />
       </div>
@@ -120,7 +123,7 @@ export function PipView() {
       ) : (
         <section className="pip-text" aria-live="polite">
           <p className="pip-status">
-            {listening && !approval && !state?.busy && <MiniWave />}
+            {(listening || speaking) && !approval && !state?.busy && <MiniWave />}
             {state?.busy && !approval && <span className="pip-dots" aria-hidden="true"><i /><i /><i /></span>}
             <span className="pip-status-text">{state ? state.status : 'Connecting…'}</span>
             {state?.plan ? <span className="pip-plan">{state.plan.done}/{state.plan.total}</span> : null}
@@ -146,7 +149,7 @@ export function PipView() {
               <button type="button" className="pip-no" onClick={() => send({ type: 'stop' })}>Stop</button>
             </div>
           )}
-          {!approval && !state?.busy && (
+          {!approval && !state?.busy && !listening && (
             <button type="button" className="pip-type-hint" onClick={startComposing}>Type or tap 🎙 to talk…</button>
           )}
         </section>

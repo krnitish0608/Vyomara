@@ -557,6 +557,7 @@ body.pip-body #root { height: 100vh; }
 .pip button { -webkit-app-region: no-drag; cursor: pointer; font: inherit; }
 .pip-listening { border-color: rgba(39, 217, 255, .55); box-shadow: inset 0 0 22px rgba(39, 217, 255, .08); }
 .pip-busy { border-color: rgba(189, 156, 255, .5); }
+.pip-speaking { border-color: rgba(120, 140, 255, .7); box-shadow: inset 0 0 24px rgba(120, 140, 255, .14); }
 .pip-approval { border-color: rgba(237, 198, 154, .75); box-shadow: inset 0 0 24px rgba(237, 198, 154, .1); }
 
 /* The live orbiter from the main window, scaled down. */

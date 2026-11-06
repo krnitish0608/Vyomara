@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyYesNo, confirmsDeletion, matchWakePhrase, speechText } from '../src/shared/voice-intents.ts';
+import { classifyYesNo, confirmsDeletion, isGoodbye, isLikelyNoise, matchWakePhrase, speechText, VoiceSession } from '../src/shared/voice-intents.ts';
 
 // Real whisper (base, --language en) transcripts of macOS-synthesized speech.
 test('wake phrase matches the ways whisper hears "Vyomara"', () => {
@@ -113,8 +113,7 @@ test('speech voice follows the script of the reply', async () => {
 });
 
 // Heard through the real microphone in the app: macOS saying "Hello Vyomara", and room noise.
-test('real-microphone transcripts: Devanagari greeting before the name, and noise hallucinations', async () => {
-  const { isLikelyNoise, matchWakePhrase } = await import('../src/shared/voice-intents.ts');
+test('real-microphone transcripts: Devanagari greeting before the name, and noise hallucinations', () => {
   assert.deepEqual(matchWakePhrase('आलो वायोमरा'), { command: '' });
   assert.deepEqual(matchWakePhrase('आलो वायोमरा, कैलकुलेटर खोलो'), { command: 'कैलकुलेटर खोलो' });
   assert.deepEqual(matchWakePhrase('ok Vyom open Chrome'), { command: 'open Chrome' });
@@ -125,4 +124,41 @@ test('real-microphone transcripts: Devanagari greeting before the name, and nois
   assert.equal(isLikelyNoise('Thank you.'), true);
   assert.equal(isLikelyNoise('हाँ, कर दो'), false);
   assert.equal(isLikelyNoise('Hello Vyomara, open Chrome'), false);
+});
+
+test('an open conversation needs no wake phrase and ends on a goodbye', () => {
+  const session = new VoiceSession(30_000, () => 0);
+  assert.deepEqual(session.decide('VS Code kholo', false), { type: 'ignore' });
+  session.setOpen(true);
+  assert.deepEqual(session.decide('VS Code kholo', false), { type: 'submit', text: 'VS Code kholo' });
+  assert.deepEqual(session.decide('Okay, bas.', false), { type: 'end' });
+  assert.deepEqual(session.decide('बस', false), { type: 'end' });
+  // Heard through the real microphone for "okay bas".
+  assert.deepEqual(session.decide('Okay, bass.', false), { type: 'end' });
+  assert.deepEqual(session.decide('Okay, bus. so', false), { type: 'end' });
+  // "bas" inside a request is not a goodbye, and a goodbye does not end a running task.
+  assert.deepEqual(session.decide('bas ek file aur bana do', false), { type: 'submit', text: 'bas ek file aur bana do' });
+  assert.deepEqual(session.decide('bye', true), { type: 'ignore' });
+  // While a task runs, room talk is not queued; "ruko" and a named request still work.
+  assert.deepEqual(session.decide('aur ek kaam karo', true), { type: 'ignore' });
+  assert.deepEqual(session.decide('ruko', true), { type: 'cancel' });
+  assert.deepEqual(session.decide('Vyom, Chrome bhi kholo', true), { type: 'queue', text: 'Chrome bhi kholo' });
+  session.setOpen(false);
+  assert.deepEqual(session.decide('Chrome kholo', false), { type: 'ignore' });
+});
+
+test('everyday words that sound like Vyom do not wake it', () => {
+  for (const phrase of ['bye', 'okay bye', 'why', 'boy']) assert.equal(matchWakePhrase(phrase), undefined, phrase);
+  assert.deepEqual(matchWakePhrase('Vyom, Chrome kholo'), { command: 'Chrome kholo' });
+});
+
+test('doubled noise words are dropped but doubled answers are kept', () => {
+  assert.equal(isLikelyNoise('झाल झाल'), true);
+  assert.equal(isLikelyNoise('haan haan'), false);
+  assert.equal(isLikelyNoise('nahi nahi'), false);
+});
+
+test('goodbyes are recognised in the spellings whisper uses', () => {
+  for (const phrase of ['bas', 'Okay, boss.', 'Oke, bas.', 'Okay, bus.', 'theek hai bas karo', 'बस']) assert.equal(isGoodbye(phrase), true, phrase);
+  for (const phrase of ['bas ek file aur bana do', 'bus stand kahan hai', 'Chrome kholo']) assert.equal(isGoodbye(phrase), false, phrase);
 });

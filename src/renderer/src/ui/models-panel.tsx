@@ -287,7 +287,7 @@ export function ModelsPanel({
             )}
             <p className="history-privacy">
               Speech is recognised on this Mac with whisper.cpp; audio never leaves it. “Best” understands Hindi, English, and Hinglish far better.
-              Say “Hello Vyomara …” to start; for 30 seconds after Vyom speaks you can just keep talking. Answer approvals with “haan” or “nahi”.
+              Press the orb (or ⌥Space) and just talk: Vyom waits until you finish, answers on screen and aloud, then listens again. Answer approvals with “haan” or “nahi”; say “bas” or press the orb to end.
             </p>
           </section>
         )}

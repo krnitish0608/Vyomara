@@ -19,7 +19,9 @@ import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft } from './voice-dictation.ts';
-import { approvalQuestion, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { approvalQuestion, isGoodbye, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { TurnCollector } from '../../../shared/turn-taking.ts';
+import { playEarcon } from './earcon.ts';
 import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
@@ -84,6 +86,12 @@ export function App() {
   const startCapture = useRef<(() => Promise<void>) | undefined>(undefined);
   const releaseCapture = useRef<(() => void) | undefined>(undefined);
   const [voiceHearing, setVoiceHearing] = useState(false);
+  /** Vyom is speaking a reply aloud. */
+  const [vyomSpeaking, setVyomSpeaking] = useState(false);
+  const speakingRef = useRef(false);
+  const handleTurn = useRef<((text: string) => void) | undefined>(undefined);
+  /** Joins the phrases of one spoken request and waits until the speaker has finished. */
+  const turn = useRef(new TurnCollector(text => handleTurn.current?.(text)));
   const dictationRef = useRef<'main' | 'pip' | undefined>(undefined);
   const pendingTranscriptions = useRef(new Set<Promise<unknown>>());
   /** Whether the request in progress was spoken (only spoken requests get spoken replies). */
@@ -163,11 +171,19 @@ export function App() {
         setVoiceStarting(false);
         setVoiceListening(true);
         voiceListeningRef.current = true;
-        void startCapture.current?.();
+        // Pressing the orb opens a conversation: everything said is for Vyom.
+        voiceSession.current.setOpen(true);
+        turn.current.reset();
+        void playEarcon('start').then(() => startCapture.current?.());
       }
       if (event.type === 'stopped' || event.type === 'error') {
+        const wasListening = voiceListeningRef.current;
         voiceListeningRef.current = false;
+        voiceSession.current.setOpen(false);
+        turn.current.reset();
+        setVoiceTranscript('');
         releaseCapture.current?.();
+        if (wasListening) void playEarcon('end');
       }
       if (event.type === 'stopped') {
         setVoiceStarting(false);
@@ -275,6 +291,16 @@ export function App() {
       window.removeEventListener('resize', updateGeometry);
     };
   }, [messages.length]);
+
+  // An open conversation ends by itself after two quiet minutes, so the
+  // microphone is not left hearing everything in the room.
+  useEffect(() => {
+    if (!voiceListening || voiceHearing || vyomSpeaking || requestPending) return;
+    const timer = setTimeout(() => {
+      if (voiceListeningRef.current && !speakingRef.current && !turn.current.active) void toggleVoiceListening();
+    }, 120_000);
+    return () => clearTimeout(timer);
+  }, [voiceListening, voiceHearing, vyomSpeaking, requestPending, voiceTranscript]);
 
   useEffect(() => {
     if (
@@ -411,24 +437,49 @@ export function App() {
   /** Send a recorded phrase to the dictation box in use, or treat it as a hands-free command. */
   function routePhrase(wav: Uint8Array): void {
     const target = dictationRef.current;
-    if (!target) setVoiceTranscript('…');
+    // In conversation, phrases are collected into one turn (see handleTurn).
+    const fillTurn = target ? undefined : turn.current.addPhrase();
+    if (!target && !turn.current.text) setVoiceTranscript('…');
     const job = window.vyomara.transcribeSpeech(wav)
       .then(text => {
-        if (!text || isLikelyNoise(text)) {
-          if (!target) setVoiceTranscript('');
+        const heard = text && !isLikelyNoise(text) ? text : undefined;
+        // "bas" ends the conversation at once, even if room noise follows it.
+        if (fillTurn && heard && voiceSession.current.open && !voiceSession.current.awaitingApproval &&
+          !currentRequestPending.current && isGoodbye(heard)) {
+          turn.current.reset();
+          handleHeard.current?.(heard);
           return;
         }
-        if (target === 'main') setPrompt(current => appendVoiceDraft(current.trimEnd(), text));
-        else if (target === 'pip') setPipDraft(current => ({ text: appendVoiceDraft(current.text, text), seq: current.seq + 1 }));
-        else handleHeard.current?.(text);
+        if (fillTurn) {
+          fillTurn(heard);
+          setVoiceTranscript(turn.current.text);
+          return;
+        }
+        if (!heard) return;
+        if (target === 'main') setPrompt(current => appendVoiceDraft(current.trimEnd(), heard));
+        else if (target === 'pip') setPipDraft(current => ({ text: appendVoiceDraft(current.text, heard), seq: current.seq + 1 }));
       })
-      .catch(error => setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.'))
+      .catch(error => {
+        fillTurn?.(undefined);
+        setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.');
+      })
       .finally(() => pendingTranscriptions.current.delete(job));
     pendingTranscriptions.current.add(job);
   }
 
+  /** The speaker finished a turn in conversation: decide what it means. */
+  handleTurn.current = text => {
+    setVoiceTranscript(text);
+    handleHeard.current?.(text);
+  };
+
   startCapture.current = () => voiceCapture.current.start({
-    onSpeech: setVoiceHearing,
+    onSpeech: speaking => {
+      setVoiceHearing(speaking);
+      if (dictationRef.current) return;
+      if (speaking) turn.current.speechStarted();
+      else turn.current.speechEnded();
+    },
     onPhrase: routePhrase,
     onError: message => setVoiceError(message),
   });
@@ -479,14 +530,44 @@ export function App() {
     if (!voiceListeningRef.current) promptInput.current?.focus();
   }
 
-  function speak(text: string): void {
-    if (!text) return;
+  function speak(text: string): Promise<void> {
+    if (!text) return Promise.resolve();
     // Do not record Vyom's own voice as a command.
     voiceCapture.current.setMuted(true);
-    void window.vyomara.speakText(text)
+    turn.current.reset();
+    setVoiceHearing(false);
+    speakingRef.current = true;
+    setVyomSpeaking(true);
+    return window.vyomara.speakText(text)
       .then(() => voiceSession.current.extend())
-      .catch(error => setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.'))
-      .finally(() => setTimeout(() => voiceCapture.current.setMuted(false), 250));
+      .catch(error => {
+        // Interrupted on purpose (orb pressed) is not an error.
+        if (speakingRef.current) setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
+      })
+      .finally(() => {
+        speakingRef.current = false;
+        setVyomSpeaking(false);
+        setVoiceTranscript('');
+        setTimeout(() => {
+          if (!speakingRef.current) voiceCapture.current.setMuted(false);
+        }, 250);
+      });
+  }
+
+  /** Stop Vyom mid-sentence and listen again (the orb was pressed while it spoke). */
+  function interruptSpeaking(): void {
+    speakingRef.current = false;
+    setVyomSpeaking(false);
+    void window.vyomara.stopSpeaking().catch(() => undefined);
+    voiceCapture.current.setMuted(false);
+  }
+
+  /** A quiet tone; the microphone ignores it so it is not taken as speech. */
+  function cue(kind: 'sent'): void {
+    voiceCapture.current.setMuted(true);
+    void playEarcon(kind).then(() => {
+      if (!speakingRef.current) voiceCapture.current.setMuted(false);
+    });
   }
 
   askByVoice.current = (question, kind) => {
@@ -521,10 +602,17 @@ export function App() {
         speak('Haan, boliye.');
         break;
       case 'submit':
+        cue('sent');
         void submitPrompt(decision.text, true);
         break;
       case 'queue':
+        cue('sent');
         queuedVoiceCommands.current.push(decision.text);
+        break;
+      case 'end':
+        void speak('Theek hai. Jab zarurat ho, orb dabaiye.').then(() => {
+          if (voiceListeningRef.current) void toggleVoiceListening();
+        });
         break;
       case 'cancel':
         void cancel();
@@ -574,6 +662,11 @@ export function App() {
   }
 
   async function toggleVoiceListening(): Promise<void> {
+    // While Vyom is talking, the orb means "stop talking, I want to speak".
+    if (speakingRef.current && voiceListeningRef.current) {
+      interruptSpeaking();
+      return;
+    }
     if (!speechSetup || voiceStarting) return;
     setVoiceError(undefined);
     setVoiceTranscript('');
@@ -866,8 +959,11 @@ export function App() {
     listening: voiceListening,
     voiceReady: speechSetup?.modelReady === true && speechSetup.runtimeAvailable,
     busy: requestPending,
+    speaking: vyomSpeaking,
     status: pipFile || pipAction
       ? 'Waiting for your answer'
+      : vyomSpeaking
+        ? 'Vyom is speaking · tap the orb to interrupt'
       : requestPending
         ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
         : dictation === 'pip'
@@ -875,9 +971,9 @@ export function App() {
         : voiceStarting
           ? 'Starting microphone…'
           : voiceHearing
-            ? 'Hearing you…'
+            ? 'Listening…'
             : voiceListening
-            ? 'Say “Hello Vyomara …”'
+            ? 'Boliye, main sun raha hoon'
             : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
     dictation: { recording: dictation === 'pip', text: pipDraft.text, seq: pipDraft.seq },
     ...(voiceTranscript && dictation !== 'pip' ? { heard: voiceTranscript } : {}),
@@ -893,10 +989,12 @@ export function App() {
   useEffect(() => {
     window.vyomara.publishPipState(JSON.parse(pipStateJson) as DesktopPipState);
   }, [pipStateJson]);
-  const voiceOrbLabel = voiceListening
-    ? 'Turn voice listening off'
+  const voiceOrbLabel = vyomSpeaking && voiceListening
+    ? 'Interrupt Vyom'
+    : voiceListening
+    ? 'End the conversation'
     : speechSetup?.modelReady
-      ? 'Start offline voice listening'
+      ? 'Talk to Vyom'
       : 'Download offline voice model and start listening';
   const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
   const voiceOrbTitle = speechSetup?.runtimeAvailable === false
@@ -938,7 +1036,7 @@ export function App() {
         {messages.length > 0 && (
           <div className="topbar-orbit">
             <VoiceOrb
-              listening={voiceListening}
+              listening={voiceListening || vyomSpeaking}
               pressed={voiceListening || voiceStarting}
               disabled={voiceOrbDisabled}
               label={voiceOrbLabel}
@@ -1046,7 +1144,7 @@ export function App() {
                   <p className="welcome-brand-line">AI Twins. One Orbit. Your Control.</p>
                 </div>
                 <VoiceOrb
-                  listening={voiceListening}
+                  listening={voiceListening || vyomSpeaking}
                   pressed={voiceListening || voiceStarting}
                   disabled={voiceOrbDisabled}
                   label={voiceOrbLabel}
@@ -1065,7 +1163,9 @@ export function App() {
                       : voiceStarting
                         ? 'Starting local microphone…'
                         : voiceListening
-                          ? voiceTranscript || 'Listening · say “Hello Vyomara …”'
+                          ? vyomSpeaking
+                            ? 'Vyom is speaking · tap the orb to interrupt'
+                            : voiceTranscript || 'Boliye, main sun raha hoon · say “bas” to end'
                           : speechSetup?.runtimeAvailable === false
                             ? 'Offline voice unavailable—type below.'
                             : ''}
@@ -1192,7 +1292,9 @@ export function App() {
                       : dictation === 'main'
                         ? voiceHearing ? 'Recording… tap ■ to stop' : 'Recording… speak, then tap ■ to stop'
                         : voiceListening
-                          ? voiceTranscript || 'Listening · say “Hello Vyomara …”'
+                          ? vyomSpeaking
+                            ? 'Vyom is speaking · tap the orb to interrupt'
+                            : voiceTranscript || 'Boliye, main sun raha hoon · say “bas” to end'
                           : ''}
               </p>
             )}
@@ -1384,8 +1486,8 @@ export function App() {
           <div className="voice-status-card" aria-label="Voice status">
             <span aria-hidden="true">♩</span>
             <div>
-              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'Listening for “Hello Vyomara”' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
-              <small>{voiceListening ? 'Microphone active · Listening Off disables it' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? 'In conversation with Vyom' : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <small>{voiceListening ? 'Microphone active · press the orb or say “bas” to end' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
               {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
             </div>
           </div>

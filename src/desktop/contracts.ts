@@ -171,6 +171,8 @@ export interface DesktopPipState {
   readonly listening: boolean;
   readonly voiceReady: boolean;
   readonly busy: boolean;
+  /** Vyom is speaking a reply; pressing the orb interrupts it. */
+  readonly speaking: boolean;
   /** One line: what Vyom is doing or waiting for. */
   readonly status: string;
   /** The last phrase heard by the microphone. */

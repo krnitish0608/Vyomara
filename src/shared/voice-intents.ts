@@ -85,8 +85,11 @@ function soundKey(word: string): string {
     .replace(/(.)\1+/gu, '$1');
 }
 
+/** Everyday words one sound away from "Vyom" that must not wake it. */
+const NOT_NAMES = new Set(['bye', 'buy', 'boy', 'bay', 'via', 'way', 'why', 'view', 'bio', 'bow', 'wow', 'bhai', 'baa', 'bom']);
+
 function soundsLikeName(candidate: string, joinedWords: boolean): boolean {
-  if (candidate.length < 3) return false;
+  if (candidate.length < 3 || NOT_NAMES.has(candidate)) return false;
   const key = soundKey(candidate);
   // The name starts with a v/w/b sound; this rejects "how are" → "howare".
   if (!key.startsWith('v')) return false;
@@ -203,7 +206,19 @@ export type VoiceDecision =
   /** The answer was unclear; ask the approval question again. */
   | { readonly type: 'reask' }
   /** "ruko"/"stop" while a task is running. */
-  | { readonly type: 'cancel' };
+  | { readonly type: 'cancel' }
+  /** "bas", "bye": end the open conversation. */
+  | { readonly type: 'end' };
+
+/** Whole-utterance goodbyes that end an open conversation. */
+const END_CONVERSATION = /^(?:(?:ok(?:ay)?|oke|theek\s+hai|chalo|achha)\s+)?(?:(?:bas|bass|bus|boss)(?:\s+karo)?|bye(?:\s+bye)?|good\s*bye|that'?s\s+all|band\s+karo|baad\s+mein\s+baat\s+karte(?:\s+hain)?|shukriya\s+bas)$|^(?:(?:ओके|ठीक\s+है)\s+)?(?:बस|बास|बाय|बंद\s+करो)$/u;
+
+/** A goodbye, allowing one stray trailing word whisper sometimes adds ("okay bus so"). */
+export function isGoodbye(transcript: string): boolean {
+  const words = speechWords(transcript).join(' ');
+  const list = words.split(' ');
+  return END_CONVERSATION.test(words) || (list.length >= 2 && list.length <= 4 && END_CONVERSATION.test(list.slice(0, -1).join(' ')));
+}
 
 const STOP_COMMAND = /^(?:stop|ruko|ruk\s+jao|bas|cancel|band\s+karo|rok\s+do|wait)\b|^(?:रुको|रुक\s+जाओ|बस|रोको|बंद\s+करो|स्टॉप)/u;
 
@@ -218,6 +233,7 @@ export class VoiceSession {
   readonly #now: () => number;
   #conversationUntil = 0;
   #approval: 'delete' | 'other' | undefined;
+  #open = false;
 
   constructor(followUpMs = 30_000, now: () => number = Date.now) {
     this.#followUpMs = followUpMs;
@@ -234,7 +250,23 @@ export class VoiceSession {
   }
 
   get inConversation(): boolean {
-    return this.#now() < this.#conversationUntil;
+    return this.#open || this.#now() < this.#conversationUntil;
+  }
+
+  /**
+   * An open conversation (the user pressed the orb): everything said is for
+   * Vyom, no wake phrase needed, until it is closed.
+   */
+  setOpen(open: boolean): void {
+    this.#open = open;
+    if (!open) {
+      this.#approval = undefined;
+      this.#conversationUntil = 0;
+    }
+  }
+
+  get open(): boolean {
+    return this.#open;
   }
 
   awaitApproval(kind: 'delete' | 'other'): void {
@@ -272,6 +304,10 @@ export class VoiceSession {
       this.extend();
       return { type: 'cancel' };
     }
+    if (this.#open && !requestPending && isGoodbye(words)) return { type: 'end' };
+    // While Vyom works, an open microphone hears the room; only "stop" (above)
+    // or a request that names Vyom is taken.
+    if (this.#open && requestPending && !wake) return { type: 'ignore' };
     // Without the wake phrase, a lone word is usually noise that whisper turned
     // into text ("झाल"); real follow-up requests have several words.
     if (!wake && words.split(' ').length < 2) return { type: 'ignore' };
@@ -319,6 +355,8 @@ const HALLUCINATIONS = [
   /^subtitles? by/iu,
   /^you$/iu,
   /^bye[.!]?$/iu,
+  /^so[.!?]?$/iu,
+  /^झाल[.!?]?$/u,
 ];
 
 /**
@@ -331,5 +369,7 @@ export function isLikelyNoise(transcript: string): boolean {
   if (HALLUCINATIONS.some(pattern => pattern.test(text))) return true;
   const words = speechWords(text);
   if (words.length === 0) return true;
-  return words.length >= 3 && new Set(words).size === 1;
+  if (new Set(words).size !== 1 || words.length < 2) return false;
+  // "haan haan" is a real answer; other doubled words ("झाल झाल") are noise.
+  return words.length >= 3 || classifyYesNo(text) === 'unclear';
 }

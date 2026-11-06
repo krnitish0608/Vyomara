@@ -131,14 +131,21 @@ There are two ways to talk:
   3. Edit them if you like, then send.
 
   Typed or dictated messages are answered on screen only, without speech.
-- **Hands-free:** use the orb or ⌥Space to turn listening on, then say
-  “Hello Vyomara …”. Hands-free requests are answered aloud.
+- **Conversation:** press the orb (or ⌥Space) and just talk, as you would
+  to a person. Vyom answers on screen and aloud.
 
-Using hands-free:
+In a conversation:
 
-- Start each request with **“Hello Vyomara …”** (or “Vyom …”, “नमस्ते
-  व्योमारा …”). Other talk is ignored. After Vyom answers, you can keep
-  talking for 30 seconds without the wake phrase.
+- No wake phrase is needed. Vyom waits until you have finished speaking
+  (about 1.5 seconds of quiet), so short pauses mid-sentence are fine.
+- After answering, Vyom listens again by itself. A soft tone marks when it
+  starts listening, takes your request, and stops.
+- Press the orb while Vyom is talking to interrupt it and speak.
+- While Vyom works, only “ruko / stop” (or a request that starts with
+  “Vyom …”) is taken, so room noise does not become a new request.
+- Say **“bas”** (or “okay bye”, “band karo”) or press the orb to end. The
+  conversation also ends after two quiet minutes and never resumes by itself
+  when Vyomara starts.
 - When Vyom needs approval, it asks aloud, for example “cart.js mein badlaav
   ready hai… Apply karun?”. Answer **“haan / kar do / yes”** or **“nahi /
   rehne do”**.

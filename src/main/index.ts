@@ -957,7 +957,9 @@ app.whenReady().then(async () => {
     }
     // Choices made in the app's Models panel take precedence over the environment.
     config = { ...withSavedModelSettings(loaded, saved), filesystemAllowedRoots: ['/'] };
-    voiceListeningEnabled = await readVoiceListeningPreference();
+    // Restores the chosen speech model. Listening itself never resumes on launch:
+    // an open conversation hears everything, so it starts only when the user presses the orb.
+    await readVoiceListeningPreference();
     approvalMemory = new ApprovalMemory({
       grants: await readStandingGrants(),
       onGrantsChanged: grants => {

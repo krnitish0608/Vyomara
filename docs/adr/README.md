@@ -29,6 +29,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0017](./0017-standing-permissions.md) | Standing permissions for apps, browsers, and websites (Permissions panel) | Accepted |
 | [0018](./0018-voice-wake-phrase-spoken-approvals.md) | Wake phrase, spoken approvals, Hindi/English/Hinglish speech models | Accepted |
 | [0019](./0019-mini-controller-window.md) | Mini controller window (PiP), ⌥Space, model warm-up | Accepted |
+| [0020](./0020-orb-conversation-mode.md) | Orb conversation mode and turn-taking | Accepted |
 
 ## Open decisions
 
