@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const electronApp = resolve(root, 'node_modules/electron/dist/Electron.app');
 const appBundle = resolve(root, 'out/Vyomara.app');
 const plist = resolve(appBundle, 'Contents/Info.plist');
+const { version } = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 const iconSource = resolve(root, 'src/renderer/src/ui/assets/vyomara-app-icon.svg');
 
 function run(command, args) {
@@ -52,6 +53,8 @@ run('/usr/libexec/PlistBuddy', [
   '-c', 'Set :CFBundleIdentifier app.vyomara.desktop',
   '-c', 'Set :CFBundleName Vyomara',
   '-c', 'Set :CFBundleDisplayName Vyomara',
+  '-c', `Set :CFBundleShortVersionString ${version}`,
+  '-c', `Set :CFBundleVersion ${version}`,
   '-c', 'Set :CFBundleIconFile vyomara.icns',
   '-c', 'Set :NSMicrophoneUsageDescription Vyomara uses the microphone only while local voice listening is enabled.',
   plist,

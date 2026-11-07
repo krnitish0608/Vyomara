@@ -1,6 +1,6 @@
 {
   "name": "vyomara",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Vyomara \u2014 a local-first personal AI assistant",
   "packageManager": "pnpm@12.16.1",

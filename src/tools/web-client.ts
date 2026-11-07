@@ -3,7 +3,7 @@ import { ToolFailure } from './contracts.ts';
 import { isPrivateHost } from './action-tools.ts';
 import type { WebClientPort, WebPage, WebSearchResult } from './action-tools.ts';
 
-const USER_AGENT = 'Vyomara/0.1 (local personal assistant; +https://github.com/krnitish0608/Vyomara)';
+const USER_AGENT = 'Vyomara/1.0 (local personal assistant; +https://github.com/krnitish0608/Vyomara)';
 const MAX_BYTES = 3_000_000;
 const MAX_REDIRECTS = 5;
 const TIMEOUT_MS = 20_000;
