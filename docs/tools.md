@@ -123,8 +123,13 @@ protection.
 
 ## Finding things on the web
 
-When the user wants information, the agent finds it and answers in the chat
-with linked sources. It opens a page only when the user asks to see one.
+When the user wants information, the agent finds it in the background and
+answers in the chat with linked sources.
+
+`browser` and `open_url` are offered to the model only when the user's message
+asks to open, show, play, or use something in the browser, or to read, scroll,
+or click what is open (`asksForBrowser`). A plain question never touches the
+user's browser.
 
 | Tool | What it does | Approval |
 |---|---|---|

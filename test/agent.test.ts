@@ -928,3 +928,13 @@ test('announcing a change ("Now, I will add …") counts as stopping early', asy
   assert.equal(announcesNextStep("Next, I'll create the test file."), true);
   assert.equal(announcesNextStep('Added formatPrice and its test; all tests pass.'), false);
 });
+
+test('the browser is offered only when the user asks to open, show, or use it', async () => {
+  const { asksForBrowser } = await import('../src/agent/agent.ts');
+  for (const prompt of ['youtube kholo', 'Chrome mein trending songs dekho', 'jo khula hai wo padho', 'neeche scroll karo', 'open github.com', 'show me the React docs', 'gaana chalao']) {
+    assert.equal(asksForBrowser(prompt), true, prompt);
+  }
+  for (const prompt of ['acha youtube p abhi sabse trending bhojpuri song kya h', 'aaj ki news batao', 'what is the capital of France?', 'best laptop under 50k']) {
+    assert.equal(asksForBrowser(prompt), false, prompt);
+  }
+});

@@ -241,6 +241,23 @@ export function forbidsChanges(prompt: string): boolean {
     /\bmat\s+(?:badlo|badalna|chhedo|chhuo|chhuna|chhona|karo\s+change|change\s+karo|edit\s+karo|fix\s+karo)\b|\b(?:change|edit|fix)\s+mat\s+karo\b|\b(?:sirf|bas|bus)\s+batao\b/u.test(text);
 }
 
+/** Tools that open or drive the user's browser; offered only when the user asks for that. */
+const BROWSER_TOOLS = new Set(['browser', 'open_url']);
+
+/**
+ * Whether the user asked to use, open, show, or act in the browser ("Chrome
+ * mein dekho", "YouTube kholo", "jo khula hai padho", "scroll karo"). A plain
+ * question ("trending song kya hai?") is answered in the background instead,
+ * without touching the user's browser.
+ */
+export function asksForBrowser(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /\b(?:chrome|browser|safari|tab|tabs|website|site)\b/u.test(text) ||
+    /\b(?:open|show me|show|visit|go to|navigate|play|scroll|click)\b/u.test(text) ||
+    /\b(?:kholo|khol do|kholiye|kholna|dikhao|dikha do|dikhaiye|chalao|chala do|bajao|baja do|scroll|click|khula|khuli|khule)\b/u.test(text) ||
+    /(?:खोलो|खोल दो|दिखाओ|चलाओ|बजाओ|खुला|खुली)/u.test(text);
+}
+
 /** Whether the request asks for code to be changed (English or Hinglish). */
 export function asksForCodeChange(prompt: string): boolean {
   return /\b(?:fix|bug|implement|change|update|add|refactor|rename|remove|replace|edit|modify|write|create|make)\b|\b(?:karo|kar do|kardo|banao|bana do|likho|likh do|sudhaaro|sudharo|hatao|badlo|badal do|thik karo|theek karo)\b/iu.test(prompt);
@@ -369,8 +386,11 @@ async function runAgentTask(
   // Models without tool support still chat; they are told what they cannot do.
   const toolCapable = await checkToolSupport(options.provider, config, signal);
   const readOnlyRequest = forbidsChanges(prompt);
+  const browserAllowed = asksForBrowser(prompt);
   const modelTools = (toolCapable ? tools.modelTools() : [])
-    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id));
+    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id))
+    // The user's browser is touched only when they ask for it.
+    .filter(tool => browserAllowed || !BROWSER_TOOLS.has(tool.id));
   const detected = options.environment ?? detectEnvironment(session.messages());
   const memories = options.memory?.relevant(detected.activeProject) ?? [];
   const environment = memories.length > 0
@@ -528,6 +548,15 @@ async function runAgentTask(
             ok: false,
             error: 'You already made this exact call. Use the earlier result above, or try a different approach.',
           }),
+        });
+        continue;
+      }
+
+      if (!browserAllowed && BROWSER_TOOLS.has(call.toolId)) {
+        session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({ ok: false, error: 'The user did not ask to open or use the browser. Find the answer with web_search, fetch_url, or news_headlines and reply in the chat; if that is not enough, say so and offer to look in Chrome.' }),
         });
         continue;
       }
