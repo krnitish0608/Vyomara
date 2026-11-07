@@ -25,6 +25,23 @@ function isCurrent(model: DesktopModelInfo, current: string): boolean {
   return model.name === current || model.name === `${current}:latest`;
 }
 
+/** "huihui_ai/qwen3-abliterated:14b" → "qwen3-abliterated:14b"; the source goes in the meta line. */
+function shortName(name: string): string {
+  return name.split('/').at(-1) ?? name;
+}
+
+/** Where a model comes from, when it is not an official library model ("huihui_ai", "hf.co/Youssofal"). */
+function modelSource(name: string): string | undefined {
+  const parts = name.split('/');
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : undefined;
+}
+
+/** "huihui_ai · 14.8B · 9.0 GB · 40K max" */
+function modelMeta(model: DesktopModelInfo): string {
+  return [modelSource(model.name), model.parameterSize, formatBytes(model.sizeBytes), model.contextLength ? `${formatTokens(model.contextLength)} max` : undefined]
+    .filter(Boolean).join(' · ');
+}
+
 function CapabilityBadges({ model }: { readonly model: DesktopModelInfo }) {
   const tools = model.capabilities.includes('tools');
   const known = model.capabilities.length > 0;
@@ -183,7 +200,7 @@ export function ModelsPanel({
         </div>
         <button className="history-close" type="button" onClick={onClose}>Close</button>
       </div>
-      <div className="history-content" aria-live="polite">
+      <div className="history-content models-content" aria-live="polite">
         {loading ? (
           <p className="history-message" role="status">Loading installed models…</p>
         ) : modelList && !modelList.available ? (
@@ -194,136 +211,146 @@ export function ModelsPanel({
             </button>
           </div>
         ) : modelList && modelList.models.length > 0 ? (
-          <ol className="history-list">
-            {modelList.models.map(model => {
-              const inUse = isCurrent(model, modelList.current);
-              return (
-                <li key={model.name} className="model-row">
-                  <button
-                    className={`history-item${inUse ? ' history-item-current' : ''}`}
-                    type="button"
-                    onClick={() => void choose(model)}
-                    disabled={inUse || locked}
-                    aria-pressed={inUse}
-                  >
-                    <span>{model.name}{inUse ? ' · in use' : ''}</span>
-                    <span>
-                      {[model.parameterSize, formatBytes(model.sizeBytes), model.contextLength ? `${formatTokens(model.contextLength)} context max` : undefined]
-                        .filter(Boolean).join(' · ')}
-                    </span>
+          <>
+            {current && (
+              <section className="model-current" aria-label="Model in use">
+                <div className="model-card-head">
+                  <span className="model-name" title={current.name}>{shortName(current.name)}</span>
+                  <span className="model-in-use">In use</span>
+                </div>
+                <span className="model-meta">{modelMeta(current)}</span>
+                <CapabilityBadges model={current} />
+                <div className="model-settings">
+                  <label className="model-setting" title="How much of your files and conversation the model can keep in mind. Larger uses more RAM and is slower; 32K suits coding on a 24 GB Mac.">
+                    <span>Context</span>
+                    <select
+                      id="model-context"
+                      className="model-select"
+                      value={contextOptions.includes(modelList.settings.numCtx) ? modelList.settings.numCtx : ''}
+                      onChange={event => void updateSettings({ numCtx: Number(event.target.value) })}
+                      disabled={locked}
+                    >
+                      {!contextOptions.includes(modelList.settings.numCtx) && <option value="">{formatTokens(modelList.settings.numCtx)}</option>}
+                      {contextOptions.map(option => <option key={option} value={option}>{formatTokens(option)}</option>)}
+                    </select>
+                  </label>
+                  <label className="model-setting" title={supportsThinking ? 'Thinks before answering: better on hard problems, slower.' : 'This model cannot think step by step.'}>
+                    <input
+                      type="checkbox"
+                      checked={supportsThinking && modelList.settings.think}
+                      onChange={event => void updateSettings({ think: event.target.checked })}
+                      disabled={locked || !supportsThinking}
+                    />
+                    <span>Think first</span>
+                  </label>
+                </div>
+              </section>
+            )}
+
+            <p className="model-group-title">Installed</p>
+            <ul className="model-list">
+              {modelList.models.filter(model => !isCurrent(model, modelList.current)).map(model => (
+                <li key={model.name} className="model-item">
+                  <div className="model-item-info">
+                    <span className="model-name" title={model.name}>{shortName(model.name)}</span>
+                    <span className="model-meta">{modelMeta(model)}</span>
                     <CapabilityBadges model={model} />
-                  </button>
-                  {!inUse && (removing === model.name ? (
+                  </div>
+                  {removing === model.name ? (
                     <div className="model-remove">
-                      <label className="history-confirm-label" htmlFor={`remove-${model.name}`}>Type DELETE to remove {model.name}</label>
                       <input
                         id={`remove-${model.name}`}
-                        className="history-confirm-input"
+                        className="model-confirm"
                         value={removeConfirmation}
                         onChange={event => setRemoveConfirmation(event.target.value)}
+                        placeholder="Type DELETE"
+                        aria-label={`Type DELETE to remove ${model.name}`}
                         autoComplete="off"
                       />
-                      <div className="file-operation-actions">
-                        <button className="history-danger" type="button" disabled={removeConfirmation !== 'DELETE' || locked} onClick={() => void remove(model.name)}>Remove</button>
-                        <button className="file-operation-reject" type="button" onClick={() => { setRemoving(undefined); setRemoveConfirmation(''); }}>Cancel</button>
-                      </div>
+                      <button className="history-danger" type="button" disabled={removeConfirmation !== 'DELETE' || locked} onClick={() => void remove(model.name)}>Remove</button>
+                      <button className="model-icon-button" type="button" onClick={() => { setRemoving(undefined); setRemoveConfirmation(''); }} aria-label="Cancel">✕</button>
                     </div>
                   ) : (
-                    <button className="history-delete" type="button" disabled={locked} onClick={() => { setRemoving(model.name); setRemoveConfirmation(''); }}>
-                      Remove…
-                    </button>
-                  ))}
+                    <div className="model-item-actions">
+                      <button className="model-use" type="button" onClick={() => void choose(model)} disabled={locked}>Use</button>
+                      <button
+                        className="model-icon-button"
+                        type="button"
+                        disabled={locked}
+                        onClick={() => { setRemoving(model.name); setRemoveConfirmation(''); }}
+                        aria-label={`Remove ${model.name}`}
+                        title={`Remove ${model.name} (frees ${formatBytes(model.sizeBytes)})`}
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5" /></svg>
+                      </button>
+                    </div>
+                  )}
                 </li>
-              );
-            })}
-          </ol>
+              ))}
+            </ul>
+          </>
         ) : !error ? (
           <p className="history-message">No models are installed in Ollama yet. Download one below.</p>
         ) : null}
-
-        {modelList?.available && current && (
-          <section className="model-section" aria-label="Settings for the model in use">
-            <p className="history-review-title">Settings for {current.name}</p>
-            <label className="history-confirm-label" htmlFor="model-context">Context window (memory for files and conversation)</label>
-            <select
-              id="model-context"
-              className="history-confirm-input"
-              value={contextOptions.includes(modelList.settings.numCtx) ? modelList.settings.numCtx : ''}
-              onChange={event => void updateSettings({ numCtx: Number(event.target.value) })}
-              disabled={locked}
-            >
-              {!contextOptions.includes(modelList.settings.numCtx) && <option value="">{formatTokens(modelList.settings.numCtx)} tokens (custom)</option>}
-              {contextOptions.map(option => <option key={option} value={option}>{formatTokens(option)} tokens</option>)}
-            </select>
-            <p className="history-privacy">Larger windows remember more but use more RAM and run slower. 32K suits coding on a 24 GB Mac.</p>
-            <label className="model-toggle">
-              <input
-                type="checkbox"
-                checked={supportsThinking && modelList.settings.think}
-                onChange={event => void updateSettings({ think: event.target.checked })}
-                disabled={locked || !supportsThinking}
-              />
-              Let the model think before answering {supportsThinking ? '(slower)' : '(not supported by this model)'}
-            </label>
-          </section>
-        )}
-
-        {speech && (
-          <section className="model-section" aria-label="Voice recognition">
-            <p className="history-review-title">Voice: how {assistantName} hears you</p>
-            {speech.models.map(model => (
-              <label key={model.id} className="model-toggle">
-                <input
-                  type="radio"
-                  name="speech-model"
-                  checked={speech.model === model.id}
-                  onChange={() => void chooseSpeech(model.id)}
-                  disabled={locked || speechProgress !== undefined}
-                />
-                {model.label} · {model.approxMegabytes} MB{model.ready ? ' · ready' : ' · not downloaded'}
-              </label>
-            ))}
-            {!speech.models.find(model => model.id === speech.model)?.ready && (
-              <button className="history-action" type="button" onClick={() => void downloadSpeech()} disabled={locked || speech.listeningEnabled}>
-                {speechProgress !== undefined ? `Downloading… ${speechProgress}%` : 'Download selected voice model'}
-              </button>
-            )}
-            <p className="history-privacy">
-              Speech is recognised on this Mac with whisper.cpp; audio never leaves it. “Best” understands Hindi, English, and Hinglish far better.
-              Press the orb (or ⌥Space) and just talk: {assistantName} waits until you finish, answers on screen and aloud, then listens again. Answer approvals with “haan” or “nahi”; say “bas” or press the orb to end.
-            </p>
-          </section>
-        )}
 
         {error && <p className="history-message history-error" role="alert">{error}</p>}
         {notice && <p className="history-notice" role="status">{notice}</p>}
 
         {modelList?.available !== false && (
           <form className="model-pull" onSubmit={event => { event.preventDefault(); void download(); }}>
-            <label className="history-confirm-label" htmlFor="model-pull-name">Download another model</label>
-            <input
-              id="model-pull-name"
-              className="history-confirm-input"
-              value={modelToPull}
-              onChange={event => setModelToPull(event.target.value)}
-              placeholder="e.g. deepseek-r1:14b or hf.co/user/repo:Q4_K_M"
-              autoComplete="off"
-              disabled={pulling}
-            />
-            <button className="history-action" type="submit" disabled={!modelToPull.trim() || pulling}>
-              {pulling ? 'Downloading…' : 'Download with Ollama'}
-            </button>
+            <p className="model-group-title">Add a model</p>
+            <div className="model-pull-row">
+              <input
+                id="model-pull-name"
+                className="model-confirm"
+                value={modelToPull}
+                onChange={event => setModelToPull(event.target.value)}
+                placeholder="qwen3:14b or hf.co/user/repo:Q4_K_M"
+                aria-label="Model to download"
+                title="Any name from ollama.com/library, or a Hugging Face GGUF as hf.co/<user>/<repo>:<quantization>. For coding pick one with Tools; 24 GB of RAM fits about 14B (27B in Q3)."
+                autoComplete="off"
+                disabled={pulling}
+              />
+              <button className="model-use" type="submit" disabled={!modelToPull.trim() || pulling}>
+                {pulling ? '…' : 'Download'}
+              </button>
+            </div>
             {pull && (
-              <p className="history-notice" role="status">
-                {pull.model}: {pull.status}
-                {pull.total ? ` · ${Math.round(((pull.completed ?? 0) / pull.total) * 100)}%` : ''}
-              </p>
+              <div className="model-progress" role="status">
+                <span>{pull.model}: {pull.status}{pull.total ? ` · ${Math.round(((pull.completed ?? 0) / pull.total) * 100)}%` : ''}</span>
+                {pull.total ? <progress value={pull.completed ?? 0} max={pull.total} /> : null}
+              </div>
             )}
-            <p className="history-privacy">
-              Use any name from ollama.com/library, or a GGUF model from Hugging Face as hf.co/&lt;user&gt;/&lt;repo&gt;:&lt;quantization&gt;.
-              For coding, pick a model marked “Tools”; 24 GB of RAM fits models up to about 14B.
-            </p>
           </form>
+        )}
+
+        {speech && (
+          <section className="model-voice" aria-label="Voice recognition">
+            <p className="model-group-title" title={`Speech is recognised on this Mac with whisper.cpp; audio never leaves it. Press the orb (or ⌥Space) and talk: ${assistantName} answers on screen and aloud. Say “bas” to end.`}>
+              Voice recognition
+            </p>
+            <div className="model-segmented" role="radiogroup" aria-label="Voice model">
+              {speech.models.map(model => (
+                <button
+                  key={model.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={speech.model === model.id}
+                  className={speech.model === model.id ? 'model-segment-active' : ''}
+                  onClick={() => void chooseSpeech(model.id)}
+                  disabled={locked || speechProgress !== undefined}
+                  title={`${model.label} · ${model.approxMegabytes} MB${model.ready ? '' : ' · not downloaded'}`}
+                >
+                  {model.id === 'best' ? 'Best · Hindi + English' : 'Fast · English'}
+                </button>
+              ))}
+            </div>
+            {!speech.models.find(model => model.id === speech.model)?.ready && (
+              <button className="history-action" type="button" onClick={() => void downloadSpeech()} disabled={locked || speech.listeningEnabled}>
+                {speechProgress !== undefined ? `Downloading… ${speechProgress}%` : 'Download this voice model'}
+              </button>
+            )}
+          </section>
         )}
       </div>
     </aside>

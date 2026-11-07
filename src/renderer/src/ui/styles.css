@@ -692,3 +692,39 @@ body.pip-body #root { height: 100vh; }
 .undo-button:disabled { opacity: .5; cursor: progress; }
 .undo-button > span { font-size: 14px; }
 .undo-button small { color: #7f8fb3; font-size: 9.5px; }
+
+/* Models panel: the model in use with its settings, compact installed rows, one-line add and voice. */
+.models-content { display: grid; gap: 10px; align-content: start; }
+.model-current { display: grid; gap: 5px; padding: 11px 12px; border: 1px solid rgba(80, 140, 255, .45); border-radius: 12px; background: linear-gradient(160deg, rgba(36, 70, 160, .28), rgba(20, 28, 60, .5)); }
+.model-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.model-name { min-width: 0; overflow: hidden; color: #eef2ff; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.model-in-use { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: rgba(80, 140, 255, .25); color: #cfe0ff; font-size: 8.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.model-meta { color: #8090b2; font-size: 9.5px; }
+.model-settings { display: flex; align-items: center; gap: 14px; margin-top: 4px; padding-top: 8px; border-top: 1px solid rgba(120, 150, 230, .16); }
+.model-setting { display: inline-flex; align-items: center; gap: 6px; color: #b8c4e0; font-size: 10px; cursor: default; }
+.model-setting input { margin: 0; }
+.model-select { padding: 3px 6px; border: 1px solid rgba(120, 150, 230, .3); border-radius: 6px; background: rgba(8, 14, 34, .8); color: #e7ecf7; font-size: 10px; }
+.model-group-title { margin: 4px 0 0; color: #6f80a6; font-size: 8.5px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.model-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.model-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid rgba(90, 116, 190, .18); border-radius: 10px; background: rgba(255, 255, 255, .02); }
+.model-item:hover { border-color: rgba(120, 150, 230, .35); background: rgba(59, 83, 150, .1); }
+.model-item-info { min-width: 0; display: grid; gap: 3px; }
+.model-item-actions, .model-remove { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; }
+.model-use { padding: 4px 10px; border: 1px solid rgba(80, 140, 255, .45); border-radius: 7px; background: rgba(40, 80, 180, .25); color: #d5e2ff; font-size: 10px; cursor: pointer; }
+.model-use:hover:not(:disabled) { background: rgba(50, 100, 220, .4); color: #fff; }
+.model-use:disabled { opacity: .5; cursor: not-allowed; }
+.model-icon-button { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #7d8aa8; cursor: pointer; }
+.model-icon-button:hover:not(:disabled) { border-color: rgba(240, 120, 130, .4); background: rgba(150, 40, 60, .2); color: #ffc0c8; }
+.model-icon-button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.model-confirm { min-width: 0; width: 100%; padding: 5px 8px; border: 1px solid rgba(120, 150, 230, .3); border-radius: 7px; background: rgba(8, 14, 34, .8); color: #e7ecf7; font-size: 10px; }
+.model-remove .model-confirm { width: 86px; }
+.model-remove .history-danger { padding: 4px 8px; font-size: 10px; }
+.model-pull { display: grid; gap: 6px; }
+.model-pull-row { display: flex; gap: 6px; }
+.model-progress { display: grid; gap: 4px; color: #9fb0d4; font-size: 9.5px; }
+.model-progress progress { width: 100%; height: 4px; accent-color: #4d7cff; }
+.model-voice { display: grid; gap: 6px; }
+.model-segmented { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border: 1px solid rgba(90, 116, 190, .25); border-radius: 9px; background: rgba(8, 14, 34, .6); }
+.model-segmented button { padding: 5px 6px; border: 0; border-radius: 7px; background: transparent; color: #8e9bbb; font-size: 10px; cursor: pointer; }
+.model-segmented .model-segment-active { background: rgba(60, 100, 220, .45); color: #fff; }
+.model-segmented button:disabled { cursor: not-allowed; }
