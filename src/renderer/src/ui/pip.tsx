@@ -91,6 +91,7 @@ export function PipView() {
           title={state?.voiceReady
             ? speaking && listening ? `Interrupt ${name}` : listening ? 'End the conversation (⌥Space)' : `Talk to ${name} (⌥Space)`
             : 'Set up voice in the Vyomara window'}
+          twin={name === 'Vyomara' ? 'vyomara' : 'vyom'}
           onActivate={() => send({ type: 'toggle-listening' })}
         />
       </div>

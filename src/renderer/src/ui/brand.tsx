@@ -35,7 +35,7 @@ function OrbitMarkParts({ coreFill }: { readonly coreFill: string }) {
         </g>
       </g>
       <g transform="rotate(33 32 32)">
-        <ellipse cx="32" cy="32" rx="24" ry="9" fill="none" stroke="#a368ff" strokeWidth="1.3" opacity=".5" strokeDasharray="30 8" />
+        <ellipse className="orbit-violet" cx="32" cy="32" rx="24" ry="9" fill="none" stroke="#b47cff" strokeWidth="1.8" strokeDasharray="30 8" />
         <g transform="translate(32 32) scale(1 .375)">
           <g className="orbit-satellite orbit-satellite-reverse">
             <circle cx="24" cy="0" r="3" fill="#dcb4ff" />
@@ -78,7 +78,7 @@ export function ThinkingMark() {
  * (working or listening) speeds the satellites up, so the logo shows the
  * assistant is busy.
  */
-export function BrandMark({ active = false }: { readonly active?: boolean }) {
+export function BrandMark({ active = false, tile = true }: { readonly active?: boolean; readonly tile?: boolean }) {
   const id = useId().replace(/:/gu, '');
   return (
     <svg className={`orbit-mark brand-live${active ? ' brand-live-active' : ''}`} viewBox="0 0 64 64" aria-hidden="true">
@@ -94,7 +94,7 @@ export function BrandMark({ active = false }: { readonly active?: boolean }) {
           <stop offset="100%" stopColor="#0a0f33" />
         </radialGradient>
       </defs>
-      <rect className="brand-live-tile" x="3" y="3" width="58" height="58" rx="18" fill={`url(#tile-${id})`} stroke={`url(#edge-${id})`} strokeWidth="1.8" />
+      {tile && <rect className="brand-live-tile" x="3" y="3" width="58" height="58" rx="18" fill={`url(#tile-${id})`} stroke={`url(#edge-${id})`} strokeWidth="1.8" />}
       <g transform="translate(32 32) scale(.97) translate(-32 -32)">
         <OrbitMarkParts coreFill={`core-${id}`} />
       </g>
@@ -110,6 +110,63 @@ function VoiceWave({ side }: { readonly side: 'left' | 'right' }) {
   );
 }
 
+/** Whether the orb's centre mark sits in the header logo's tile. */
+const ORB_MARK_TILE = false;
+
+/** Tiny stars around the orb: [x, y, radius, twinkle delay in s]. Kept clear of the sphere (r ≈ 56). */
+const ORB_STARS: readonly (readonly [number, number, number, number])[] = [
+  [-86, -38, 1.1, 0], [-70, 52, 0.9, 1.3], [-92, 18, 0.7, 2.1], [78, -50, 1, 0.6], [90, 30, 0.8, 1.8],
+  [62, 70, 0.9, 2.6], [-30, -82, 0.8, 1], [36, -86, 1.1, 2.3], [-48, 80, 0.7, 0.4], [14, 92, 0.8, 1.6],
+];
+
+/** One tilted orbit (pathLength 100) the twins travel; the back half dims behind the orb. */
+const TWIN_PATH = 'M 74 0 A 74 21 0 1 1 -74 0 A 74 21 0 1 1 74 0';
+
+/**
+ * "AI Twins. One Orbit.": Vyom (cyan) and Vyomara (violet) as small lit
+ * planets on one orbit, each with a comet trail, among twinkling stars. The
+ * selected assistant's planet is larger and wears a ring.
+ */
+function OrbScene({ twin }: { readonly twin: 'vyom' | 'vyomara' }) {
+  const id = useId().replace(/:/gu, '');
+  const planet = (name: 'vyom' | 'vyomara') => (
+    <g className={`twin twin-${name}${twin === name ? ' twin-active' : ''}`} style={{ offsetPath: `path('${TWIN_PATH}')` }}>
+      <circle className="twin-glow" r="8.5" />
+      <circle className="twin-body" r="5.4" fill={`url(#${name}-${id})`} />
+      {twin === name && <ellipse className="twin-ring" rx="10.5" ry="2.8" transform="rotate(-18)" />}
+    </g>
+  );
+  return (
+    <svg className="orb-scene" viewBox="-100 -100 200 200" aria-hidden="true">
+      <defs>
+        <radialGradient id={`vyom-${id}`} cx="34%" cy="30%" r="75%">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="35%" stopColor="#8ff3ff" />
+          <stop offset="100%" stopColor="#127fb0" />
+        </radialGradient>
+        <radialGradient id={`vyomara-${id}`} cx="34%" cy="30%" r="75%">
+          <stop offset="0%" stopColor="#ffffff" />
+          <stop offset="35%" stopColor="#d4a8ff" />
+          <stop offset="100%" stopColor="#5f2bc0" />
+        </radialGradient>
+      </defs>
+      <g className="orb-stars">
+        {ORB_STARS.map(([x, y, r, delay], index) => (
+          <circle key={index} className="orb-star" cx={x} cy={y} r={r} style={{ animationDelay: `${delay}s` }} />
+        ))}
+      </g>
+      <g transform="rotate(-16)">
+        <path className="twin-orbit twin-orbit-back" d="M 74 0 A 74 21 0 0 0 -74 0" />
+        <path className="twin-orbit twin-orbit-front" d="M -74 0 A 74 21 0 0 0 74 0" />
+        <path className="twin-trail twin-trail-vyom" d={TWIN_PATH} pathLength={100} />
+        <path className="twin-trail twin-trail-vyomara" d={TWIN_PATH} pathLength={100} />
+        {planet('vyom')}
+        {planet('vyomara')}
+      </g>
+    </svg>
+  );
+}
+
 export function VoiceOrb({
   listening,
   pressed,
@@ -118,6 +175,7 @@ export function VoiceOrb({
   title,
   compact = false,
   mini = false,
+  twin = 'vyom',
   onActivate,
 }: {
   readonly listening: boolean;
@@ -128,6 +186,8 @@ export function VoiceOrb({
   readonly compact?: boolean;
   /** The small orb used in the mini controller window. */
   readonly mini?: boolean;
+  /** The selected assistant: its twin satellite is brighter. */
+  readonly twin?: 'vyom' | 'vyomara';
   readonly onActivate: () => void;
 }) {
   return (
@@ -142,13 +202,16 @@ export function VoiceOrb({
         aria-pressed={pressed}
         title={title}
       >
+        <span className="voice-orb-nebula" aria-hidden="true" />
         <span className="voice-orb-current" aria-hidden="true" />
-        <span className="voice-orb-meteor" aria-hidden="true" />
-        <span className="voice-orb-meteor voice-orb-meteor--two" aria-hidden="true" />
-        <span className="voice-orb-meteor voice-orb-meteor--three" aria-hidden="true" />
+        <span className="voice-orb-glass" aria-hidden="true" />
         <span className="voice-orb-mark" aria-hidden="true">
-          <VyomaraMark tile={false} />
+          {/* The same live mark as the header logo; quicker while listening. */}
+          <BrandMark tile={ORB_MARK_TILE} active={listening} />
         </span>
+        <span className="voice-orb-halo" aria-hidden="true" />
+        <span className="voice-orb-halo voice-orb-halo--two" aria-hidden="true" />
+        <OrbScene twin={twin} />
       </button>
       <VoiceWave side="right" />
     </div>

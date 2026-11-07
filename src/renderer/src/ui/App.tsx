@@ -1241,6 +1241,7 @@ export function App() {
               label={voiceOrbLabel}
               title={voiceOrbTitle}
               compact
+              twin={persona}
               onActivate={() => void voiceOrbAction()}
             />
           </div>
@@ -1402,7 +1403,8 @@ export function App() {
                   disabled={voiceOrbDisabled}
                   label={voiceOrbLabel}
                   title={voiceOrbTitle}
-                  onActivate={() => void voiceOrbAction()}
+                  twin={persona}
+              onActivate={() => void voiceOrbAction()}
                 />
                 {/* Voice state is shown in the message box; this stays for screen readers. */}
                 <p className="visually-hidden voice-orbit-status" role="status" aria-live="polite">

@@ -205,23 +205,23 @@ try {
       const orb = document.querySelector('.welcome-card .voice-orb-button');
       const orbMark = orb?.querySelector('.voice-orb-mark svg');
       const current = orb?.querySelector('.voice-orb-current');
-      const meteors = [...(orb?.querySelectorAll('.voice-orb-meteor') ?? [])];
+      const twins = [...(orb?.querySelectorAll('.orb-scene .twin') ?? [])];
       const logoWave = document.querySelector('.topbar .brand-mark .mark-wave-bar');
-      const orbit = getComputedStyle(orb, '::after');
       return Boolean(logoWave && orbMark?.querySelector('.mark-wave-bar') &&
         current &&
-        meteors.length === 3 &&
-        meteors.every(meteor => getComputedStyle(meteor).animationName === 'meteor-orbit-spin') &&
-        getComputedStyle(meteors[1]).animationDelay !== getComputedStyle(meteors[2]).animationDelay &&
+        getComputedStyle(orb, '::after').display === 'none' &&
+        twins.length === 2 &&
+        twins.every(twin => getComputedStyle(twin).animationName.startsWith('twin-path')) &&
+        getComputedStyle(twins[0]).animationDelay !== getComputedStyle(twins[1]).animationDelay &&
+        orb.querySelectorAll('.twin-active').length === 1 &&
+        orb.querySelectorAll('.twin-trail').length === 2 &&
         !orbMark.querySelector('rect[rx="18"]') &&
         !orb?.querySelector('.voice-orb-mic') &&
         getComputedStyle(logoWave).animationName === 'mark-wave' &&
         getComputedStyle(orbMark.querySelector('.mark-wave-bar')).animationName === 'mark-wave' &&
-        getComputedStyle(current).animationName === 'inner-current-spin' &&
-        orbit.animationName === 'orbital-spin' &&
-        orbit.animationDuration === '6s');
+        getComputedStyle(current).animationName === 'inner-current-spin');
     })()`),
-    'the center orb reuses the animated mark without a tile and gives its thin orbit a 3D spin',
+    'the center orb carries the twin planets (Vyom, Vyomara) with trails on one orbit, the chosen one ringed',
   );
   const firstCurrentTransform = await evaluate(
     `getComputedStyle(document.querySelector('.welcome-card .voice-orb-current')).transform`,
@@ -233,15 +233,14 @@ try {
     ),
     'a thin luminous current moves in a separate loop inside the larger orb',
   );
-  const firstMeteorTransforms = await evaluate(
-    `JSON.stringify([...document.querySelectorAll('.welcome-card .voice-orb-meteor')].map(meteor => getComputedStyle(meteor).transform))`,
+  const twinPositions = () => evaluate(
+    `JSON.stringify([...document.querySelectorAll('.welcome-card .orb-scene .twin')].map(twin => getComputedStyle(twin).offsetDistance))`,
   );
+  const firstTwinPositions = await twinPositions();
   await delay(350);
   assert(
-    await evaluate(
-      `JSON.stringify([...document.querySelectorAll('.welcome-card .voice-orb-meteor')].map(meteor => getComputedStyle(meteor).transform)) !== ${JSON.stringify(firstMeteorTransforms)}`,
-    ),
-    'three glowing meteors move at spaced intervals between the colored orb and its thin orbital line',
+    await twinPositions() !== firstTwinPositions,
+    'the twin satellites travel their shared orbit around the orb',
   );
   // The assistant introduces itself aloud on launch (the waveform moves while it
   // speaks); stop it, then the waveform must rest.
@@ -279,15 +278,11 @@ try {
     'both side waveforms visibly move while listening',
   );
   await evaluate(`document.querySelector('.welcome-card .voice-orbit').classList.remove('voice-orbit-listening')`);
-  const firstOrbitTransform = await evaluate(
-    `getComputedStyle(document.querySelector('.welcome-card .voice-orb-button'), '::after').transform`,
-  );
+  const idleTwins = await twinPositions();
   await delay(350);
   assert(
-    await evaluate(
-      `getComputedStyle(document.querySelector('.welcome-card .voice-orb-button'), '::after').transform !== ${JSON.stringify(firstOrbitTransform)}`,
-    ),
-    'the thin orbital ring visibly moves instead of remaining a static oval',
+    await twinPositions() !== idleTwins,
+    'the twin planets keep travelling their orbit when not listening',
   );
   assert(
     await evaluate(`document.documentElement.scrollHeight <= document.documentElement.clientHeight &&
