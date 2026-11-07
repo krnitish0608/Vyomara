@@ -210,7 +210,7 @@ export function detectEnvironment(messages: readonly SessionMessage[]): AgentEnv
 export function buildSystemPrompt(
   environment: AgentEnvironment,
   tools: readonly ModelToolDefinition[],
-  options: { readonly chatOnly?: boolean; readonly voice?: boolean; readonly persona?: PersonaId } = {},
+  options: { readonly chatOnly?: boolean; readonly persona?: PersonaId } = {},
 ): string {
   const persona = personaFor(options.persona);
   const has = (id: string): boolean => tools.some(tool => tool.id === id);
@@ -317,14 +317,18 @@ ${environment.memories.map(entry => `- ${entry.text}${entry.project ? ` (project
 - When pointing to code, give the path and line (\`src/cart.js:9\`).
 - Reply in the language of the user's latest message (see the top).`);
 
-  if (options.voice) {
-    // Last section, so the stable prompt prefix above stays cached by Ollama.
-    sections.push(`# Spoken conversation
-- The user spoke this request and will hear your reply read aloud. Answer in one or two short, natural sentences (no lists, code, or Markdown) unless they ask for details. Work with tools exactly as usual; only the final answer is short.
+  return sections.join('\n\n');
+}
+
+/**
+ * Added to a spoken request's message, not to the system prompt: the system
+ * prompt and tool list then stay identical for typed and spoken requests, so
+ * Ollama can reuse the copy it already read (see primeAgent).
+ */
+export function spokenRequestNote(personaId?: PersonaId): string {
+  const persona = personaFor(personaId);
+  return `(Spoken request: I said this aloud and will hear your reply read aloud. Answer in one or two short, natural sentences (no lists, code, or Markdown) unless I ask for details. Work with tools exactly as usual; only the final answer is short.
 ${persona.gender === 'male'
     ? '- Write the reply in English or Roman-letter Hinglish, never Devanagari: your voice can only read Roman letters.\n'
-    : ''}- The text comes from speech recognition and words may be misheard or oddly spelled, often in Devanagari (e.g. "क्यालकुलेट अकॉलो" = "Calculator kholo", "वियेस कोड" = "VS Code", "क्रोम" = "Chrome"). Work out what was most likely meant from how it sounds and act on it; ask only if it is really unclear.`);
-  }
-
-  return sections.join('\n\n');
+    : ''}- The text comes from speech recognition and words may be misheard or oddly spelled, often in Devanagari (e.g. "क्यालकुलेट अकॉलो" = "Calculator kholo", "वियेस कोड" = "VS Code", "क्रोम" = "Chrome"). Work out what was most likely meant from how it sounds and act on it; ask only if it is really unclear.)`;
 }

@@ -880,14 +880,15 @@ test('project discovery lists projects nested inside grouping folders', async t 
 test('the system prompt names the chosen assistant and its grammatical gender', async () => {
   const { buildSystemPrompt } = await import('../src/agent/system-prompt.ts');
   const environment = { date: '2026-11-06', osRelease: 'test', home: '/Users/test', projectFolders: [] } as unknown as Parameters<typeof buildSystemPrompt>[0];
-  const female = buildSystemPrompt(environment, [], { persona: 'vyomara', voice: true });
+  const { spokenRequestNote } = await import('../src/agent/system-prompt.ts');
+  const female = buildSystemPrompt(environment, [], { persona: 'vyomara' });
   assert.match(female, /You are Vyomara, the female AI assistant/);
   assert.match(female, /main kar rahi hoon/);
-  assert.doesNotMatch(female, /your voice can only read Roman letters/);
-  const male = buildSystemPrompt(environment, [], { voice: true });
+  assert.doesNotMatch(spokenRequestNote('vyomara'), /your voice can only read Roman letters/);
+  const male = buildSystemPrompt(environment, []);
   assert.match(male, /You are Vyom, the male AI assistant/);
   assert.match(male, /main kar raha hoon/);
-  assert.match(male, /your voice can only read Roman letters/);
+  assert.match(spokenRequestNote(), /your voice can only read Roman letters/);
 });
 
 test('the active project comes from the user\'s message, and its agent notes are loaded', async t => {
@@ -954,4 +955,32 @@ test('a reply that says it cannot reach the internet is recognised', async () =>
 test('"I cannot access your browser tabs" counts as giving up on the web', async () => {
   const { claimsNoWebAccess } = await import('../src/agent/agent.ts');
   assert.equal(claimsNoWebAccess('I cannot directly access or check the content of your browser tabs or pages.'), true);
+});
+
+test('priming reads exactly the system prompt and tools of a new chat, typed or spoken', async t => {
+  const { primeAgent } = await import('../src/agent/agent.ts');
+  const h = await harness(t);
+  const primed: { system: string; tools: string }[] = [];
+  const asked: { system: string; tools: string; last: string }[] = [];
+  const provider: ModelProvider = {
+    id: 'recording',
+    async prime(system, tools) { primed.push({ system, tools: JSON.stringify(tools) }); },
+    async complete(messages, _signal, tools = [], _onText, system = '') {
+      asked.push({ system, tools: JSON.stringify(tools), last: messages.at(-1)?.content ?? '' });
+      return { kind: 'final', text: 'Hello!' };
+    },
+  };
+  await primeAgent(AbortSignal.timeout(5_000), { provider, tools: h.executor, config: h.config, session: new Session(), environment });
+  for (const voice of [false, true]) {
+    await runAgent('hi vyom', AbortSignal.timeout(5_000), {
+      provider, tools: h.executor, config: h.config, session: new Session(), logger: createLogger(() => {}), environment, ...(voice ? { voice } : {}),
+    });
+  }
+  assert.equal(primed.length, 1);
+  for (const request of asked) {
+    assert.equal(request.system, primed[0]?.system);
+    assert.equal(request.tools, primed[0]?.tools);
+  }
+  assert.doesNotMatch(asked[0]?.last ?? '', /Spoken request/);
+  assert.match(asked[1]?.last ?? '', /^hi vyom\n\n\(Spoken request:/);
 });

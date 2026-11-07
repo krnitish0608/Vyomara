@@ -575,6 +575,12 @@ body.pip-body #root { height: 100vh; }
 
 /* The live orbiter from the main window, scaled down. */
 .pip-orb-slot { display: grid; place-items: center; width: 92px; height: 100%; }
+/* The mini orb moves only while it listens, records, or speaks. Over other
+   apps an always-moving orb costs GPU time the local model needs; while the
+   model works, the small dots show progress instead. */
+:is(.pip-idle, .pip-busy, .pip-approval) .pip-orb-slot *,
+:is(.pip-idle, .pip-busy, .pip-approval) .pip-orb-slot *::before,
+:is(.pip-idle, .pip-busy, .pip-approval) .pip-orb-slot *::after { animation-play-state: paused !important; }
 .voice-orbit-mini { min-height: 0; margin: 0; gap: 0; }
 .voice-orbit-mini .voice-waveform { display: none; }
 .voice-orbit-mini .voice-orb-button { width: 58px; height: 58px; -webkit-app-region: no-drag; box-shadow: 0 0 0 3px rgba(42, 91, 245, .16), 0 0 18px rgba(56, 83, 255, .45), inset 0 0 12px rgba(148, 127, 255, .62); }

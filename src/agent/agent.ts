@@ -9,8 +9,9 @@ import { Session } from '../session/session.ts';
 import { TaskRun } from '../tasks/task-run.ts';
 import { ToolExecutionError, ToolExecutor } from '../tools/executor.ts';
 import { TOOL_ID_PATTERN } from '../tools/contracts.ts';
+import type { ModelToolDefinition } from '../tools/contracts.ts';
 import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
-import { buildSystemPrompt, detectEnvironment } from './system-prompt.ts';
+import { buildSystemPrompt, detectEnvironment, spokenRequestNote } from './system-prompt.ts';
 import type { PersonaId } from '../shared/persona.ts';
 import type { MemoryStore } from '../storage/memory-store.ts';
 import { urlsIn, verifyLinks } from '../shared/link-check.ts';
@@ -388,6 +389,46 @@ export async function runAgent(
   }
 }
 
+/** The system prompt and tools a request gets. primeAgent must build exactly the same for a new chat. */
+async function prepareTurn(
+  prompt: string,
+  signal: AbortSignal,
+  options: Pick<AgentOptions, 'provider' | 'tools' | 'config' | 'session' | 'persona' | 'memory' | 'environment'>,
+): Promise<{ readonly toolCapable: boolean; readonly modelTools: readonly ModelToolDefinition[]; readonly system: string }> {
+  // Models without tool support still chat; they are told what they cannot do.
+  const toolCapable = await checkToolSupport(options.provider, options.config, signal);
+  const readOnlyRequest = forbidsChanges(prompt);
+  const browserAllowed = asksForBrowser(prompt);
+  const modelTools = (toolCapable ? options.tools.modelTools() : [])
+    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id))
+    // The user's browser is touched only when they ask for it.
+    .filter(tool => browserAllowed || !BROWSER_TOOLS.has(tool.id));
+  const detected = options.environment ?? detectEnvironment(options.session.messages());
+  const memories = options.memory?.relevant(detected.activeProject) ?? [];
+  const environment = memories.length > 0
+    ? { ...detected, memories: memories.map(entry => ({ text: entry.text, ...(entry.project ? { project: entry.project } : {}) })) }
+    : detected;
+  const system = buildSystemPrompt(environment, modelTools, {
+    chatOnly: !toolCapable,
+    ...(options.persona ? { persona: options.persona } : {}),
+  });
+  return { toolCapable, modelTools, system };
+}
+
+/**
+ * Have the model read the system prompt and tool list of a new chat ahead of
+ * time. That part is ~4,000 tokens and takes ~25 s on a 14B model; Ollama
+ * keeps what it read, so the user's first message then starts at once.
+ */
+export async function primeAgent(
+  signal: AbortSignal,
+  options: Pick<AgentOptions, 'provider' | 'tools' | 'config' | 'session' | 'persona' | 'memory' | 'environment'>,
+): Promise<void> {
+  if (!options.provider.prime) return;
+  const { modelTools, system } = await prepareTurn('', signal, options);
+  await options.provider.prime(system, modelTools, signal);
+}
+
 async function runAgentTask(
   prompt: string,
   signal: AbortSignal,
@@ -403,24 +444,9 @@ async function runAgentTask(
   const start = Date.now();
   task.transition('planning');
 
-  // Models without tool support still chat; they are told what they cannot do.
-  const toolCapable = await checkToolSupport(options.provider, config, signal);
+  const { toolCapable, modelTools, system } = await prepareTurn(prompt, signal, options);
   const readOnlyRequest = forbidsChanges(prompt);
   const browserAllowed = asksForBrowser(prompt);
-  const modelTools = (toolCapable ? tools.modelTools() : [])
-    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id))
-    // The user's browser is touched only when they ask for it.
-    .filter(tool => browserAllowed || !BROWSER_TOOLS.has(tool.id));
-  const detected = options.environment ?? detectEnvironment(session.messages());
-  const memories = options.memory?.relevant(detected.activeProject) ?? [];
-  const environment = memories.length > 0
-    ? { ...detected, memories: memories.map(entry => ({ text: entry.text, ...(entry.project ? { project: entry.project } : {}) })) }
-    : detected;
-  const system = buildSystemPrompt(environment, modelTools, {
-    chatOnly: !toolCapable,
-    ...(options.voice ? { voice: true } : {}),
-    ...(options.persona ? { persona: options.persona } : {}),
-  });
   const fixedChars = system.length + JSON.stringify(modelTools).length;
   const budgetChars = Math.max(
     8_000,
@@ -469,9 +495,20 @@ async function runAgentTask(
         ? { ...message, content: links.shorten(stripAppFooters(message.content)) }
         // The model sees long URLs as short aliases it can copy without mistakes.
         : message.role === 'tool' ? { ...message, content: links.shorten(message.content) } : message);
+    // A spoken request carries its note in the message, keeping the system prompt cacheable.
+    let spokenIndex = -1;
+    if (options.voice) {
+      for (let index = fitted.length - 1; index >= 0; index -= 1) {
+        const message = fitted[index];
+        if (message?.role === 'user' && message.content === prompt) { spokenIndex = index; break; }
+      }
+    }
+    const withNote = spokenIndex < 0
+      ? fitted
+      : fitted.map((message, index) => index === spokenIndex ? { ...message, content: `${message.content}\n\n${spokenRequestNote(options.persona)}` } : message);
     const messages = pendingNudge
-      ? [...fitted, { role: 'user' as const, content: pendingNudge }]
-      : fitted;
+      ? [...withNote, { role: 'user' as const, content: pendingNudge }]
+      : withNote;
     pendingNudge = undefined;
     const toolsForTurn = toolCalls < config.maxToolCalls ? modelTools : [];
     let firstChunk = true;

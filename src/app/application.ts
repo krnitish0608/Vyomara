@@ -2,8 +2,9 @@ import type { AppConfig } from '../config/config.ts';
 import { MemoryStore } from '../storage/memory-store.ts';
 import type { PersonaId } from '../shared/persona.ts';
 import type { Logger } from '../types.ts';
+import { Session } from '../session/session.ts';
 import type { SessionMessage } from '../session/session.ts';
-import { runAgent } from '../agent/agent.ts';
+import { primeAgent, runAgent } from '../agent/agent.ts';
 import type { ToolActivity } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
 import type { ModelProvider } from '../providers/provider.ts';
@@ -103,6 +104,39 @@ export function createProvider(config: AppConfig): ModelProvider {
     : new PlaceholderProvider();
 }
 
+function createTools(config: AppConfig, logger: Logger, memory: MemoryStore, options: RequestOptions): ToolExecutor {
+  return new ToolExecutor({
+    registry: createDefaultToolRegistry(config, {
+      ...(options.includeFilesystemTools === undefined ? {} : { includeFilesystemTools: options.includeFilesystemTools }),
+      ...(options.fileOperationApproval ? { fileOperationApproval: options.fileOperationApproval } : {}),
+      ...(options.actions ? { actions: options.actions } : {}),
+      memory,
+    }),
+    policy: new PolicyGateway({
+      allowedEffects: options.actions ? ['launch', 'shell', 'network'] : [],
+    }),
+    config,
+    logger,
+  });
+}
+
+/**
+ * Let the model read a new chat's system prompt and tools in the background
+ * (see primeAgent). Pass the same options as the requests that follow.
+ */
+export async function primeModel(config: AppConfig, logger: Logger, signal: AbortSignal, options: RequestOptions = {}): Promise<void> {
+  if (config.provider !== 'ollama') return;
+  const memory = new MemoryStore(config.dataDirectory);
+  await primeAgent(signal, {
+    provider: createProvider(config),
+    tools: createTools(config, logger, memory, options),
+    config,
+    session: new Session(),
+    ...(options.persona ? { persona: options.persona } : {}),
+    memory,
+  });
+}
+
 export async function runRequest(
   prompt: string,
   signal: AbortSignal,
@@ -117,19 +151,7 @@ export async function runRequest(
       : store.getSession(options.sessionId);
     const taskLogger = withPersistentAudit(logger, store);
     const memory = new MemoryStore(config.dataDirectory);
-    const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config, {
-        ...(options.includeFilesystemTools === undefined ? {} : { includeFilesystemTools: options.includeFilesystemTools }),
-        ...(options.fileOperationApproval ? { fileOperationApproval: options.fileOperationApproval } : {}),
-        ...(options.actions ? { actions: options.actions } : {}),
-        memory,
-      }),
-      policy: new PolicyGateway({
-        allowedEffects: options.actions ? ['launch', 'shell', 'network'] : [],
-      }),
-      config,
-      logger: taskLogger,
-    });
+    const tools = createTools(config, taskLogger, memory, options);
 
     let response: string | undefined;
     let requestError: unknown;

@@ -19,10 +19,11 @@ import {
   readModelSettings,
   saveModelSettings,
   withSavedModelSettings,
+  primeModel,
   runRequest,
   saveSelectedModel,
 } from '../app/application.ts';
-import type { SavedModelSettings } from '../app/application.ts';
+import type { RequestOptions, SavedModelSettings } from '../app/application.ts';
 import type { DesktopFileOperationProposal, DesktopUndoResult, DesktopUndoStatus } from '../desktop/contracts.ts';
 import { loadConfig, validateOllamaModel } from '../config/config.ts';
 import { OllamaProvider } from '../providers/provider.ts';
@@ -302,6 +303,11 @@ function createWindow(): BrowserWindow {
   window.on('show', () => hidePipIfMainActive());
   window.on('restore', () => hidePipIfMainActive());
   window.on('focus', () => hidePipIfMainActive());
+  // While the user is in another app, only the thinking mark keeps moving.
+  const decorate = (): void => pauseAnimations(window, !window.isFocused() || !window.isVisible() || window.isMinimized(), true);
+  for (const name of ['hide', 'minimize', 'blur', 'show', 'restore', 'focus'] as const) window.on(name as 'hide', decorate);
+  // A reload drops inserted CSS.
+  window.webContents.on('did-finish-load', () => { pausedAnimations.delete(window); decorate(); });
   window.webContents.on('preload-error', () => {
     console.error(JSON.stringify({ event: 'desktop.preload-failed', code: 'secure-bridge-unavailable' }));
     dialog.showErrorBox(
@@ -357,6 +363,26 @@ async function readPipPosition(): Promise<{ x: number; y: number } | undefined> 
   return undefined;
 }
 
+/**
+ * Pause CSS animations in a window nobody is looking at. Every animated
+ * frame redraws the window on the GPU, and measured on an M4 Pro that made
+ * the local model ~8% slower to read and ~10% slower to write.
+ */
+const pausedAnimations = new WeakMap<BrowserWindow, Promise<string>>();
+const PAUSE_ALL = '*, *::before, *::after { animation-play-state: paused !important; }';
+const PAUSE_DECORATION = '*:not(.thinking-mark, .thinking-mark *), *::before, *::after { animation-play-state: paused !important; }';
+
+function pauseAnimations(window: BrowserWindow, paused: boolean, keepThinking = false): void {
+  if (window.isDestroyed()) return;
+  const key = pausedAnimations.get(window);
+  if (paused && key === undefined) {
+    pausedAnimations.set(window, window.webContents.insertCSS(keepThinking ? PAUSE_DECORATION : PAUSE_ALL));
+  } else if (!paused && key !== undefined) {
+    pausedAnimations.delete(window);
+    void key.then(css => window.isDestroyed() ? undefined : window.webContents.removeInsertedCSS(css)).catch(() => undefined);
+  }
+}
+
 async function createPipWindow(): Promise<BrowserWindow> {
   const area = screen.getPrimaryDisplay().workArea;
   const position = await readPipPosition() ??
@@ -402,6 +428,10 @@ async function createPipWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     if (pipWindow === window) pipWindow = undefined;
   });
+  // A hidden mini window would otherwise keep animating and take GPU time from the model.
+  window.on('show', () => pauseAnimations(window, false));
+  window.on('hide', () => pauseAnimations(window, true));
+  window.webContents.on('did-finish-load', () => { pausedAnimations.delete(window); pauseAnimations(window, !window.isVisible()); });
   await loadRenderer(window, 'pip');
   return window;
 }
@@ -522,14 +552,61 @@ function ollamaProvider(current: AppConfig): OllamaProvider {
   return new OllamaProvider({ baseUrl: current.ollamaBaseUrl, model: current.ollamaModel });
 }
 
-/** Load the chosen model in the background so the first request does not wait for it. */
+/** Chat requests get the whole Mac, not only the configured roots. */
+function desktopConfigFor(current: AppConfig): AppConfig {
+  return { ...current, filesystemAllowedRoots: ['/'] };
+}
+
+/** Tools of a desktop chat request; priming must use the same ones, or the cached prompt does not match. */
+function desktopToolOptions(
+  desktopConfig: AppConfig,
+  approvals: FileOperationApprovalManager,
+  actionApprovals: ActionApprovalManager,
+): Pick<RequestOptions, 'includeFilesystemTools' | 'fileOperationApproval' | 'actions'> {
+  return {
+    includeFilesystemTools: true,
+    fileOperationApproval: approvals,
+    actions: {
+      approval: actionApprovals,
+      approvalMemory: approvalMemory,
+      commandRunner: shellCommandRunner,
+      ...(macApplicationLauncher ? { launcher: macApplicationLauncher } : {}),
+      web: new HttpWebClient(desktopConfig.searxngUrl === undefined ? {} : { searxngUrl: desktopConfig.searxngUrl }),
+      ...(chromeBrowser ? { browser: chromeBrowser } : {}),
+    },
+  };
+}
+
+let activePrime: AbortController | undefined;
+
+/**
+ * Load the chosen model in the background, then let it read a new chat's
+ * system prompt and tools (~4,000 tokens, ~25 s on a 14B model), so the
+ * first message does not wait for either. Runs again when the model,
+ * context size, or assistant changes, since those change the prompt.
+ */
 function warmUpModel(current: AppConfig | undefined): void {
   if (!current || current.provider !== 'ollama') return;
+  activePrime?.abort();
+  const controller = new AbortController();
+  activePrime = controller;
+  const desktopConfig = desktopConfigFor(current);
+  const refuse = (): never => { throw new Error('Priming never runs tools.'); };
   void new OllamaProvider({
     baseUrl: current.ollamaBaseUrl,
     model: current.ollamaModel,
     numCtx: current.ollamaNumCtx,
-  }).warmUp();
+  }).warmUp(AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)]))
+    .then(() => controller.signal.aborted ? undefined : primeModel(desktopConfig, createDesktopLogger(), AbortSignal.any([controller.signal, AbortSignal.timeout(180_000)]), {
+      persona,
+      ...desktopToolOptions(
+        desktopConfig,
+        new FileOperationApprovalManager({ config: desktopConfig, onProposal: refuse, moveToTrash: refuse }),
+        new ActionApprovalManager({ onProposal: refuse }),
+      ),
+    }))
+    .catch(() => undefined)
+    .finally(() => { if (activePrime === controller) activePrime = undefined; });
 }
 
 ipcMain.handle('vyomara:provider-status', () => {
@@ -679,10 +756,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
 
   const controller = new AbortController();
   activeRequest = controller;
-  const desktopConfig: AppConfig = {
-    ...config,
-    filesystemAllowedRoots: ['/'],
-  };
+  const desktopConfig = desktopConfigFor(config);
   const approvals = new FileOperationApprovalManager({
     config: desktopConfig,
     onProposal(proposal) {
@@ -732,16 +806,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
         onText: text => send('vyomara:chat-text', { requestId: request.requestId, text }),
         onToolActivity: activity => send('vyomara:tool-activity', { requestId: request.requestId, ...activity }),
         onPlan: steps => send('vyomara:plan', { requestId: request.requestId, steps }),
-        includeFilesystemTools: true,
-        fileOperationApproval: approvals,
-        actions: {
-          approval: actionApprovals,
-          approvalMemory: approvalMemory,
-          commandRunner: shellCommandRunner,
-          ...(macApplicationLauncher ? { launcher: macApplicationLauncher } : {}),
-          web: new HttpWebClient(desktopConfig.searxngUrl === undefined ? {} : { searxngUrl: desktopConfig.searxngUrl }),
-          ...(chromeBrowser ? { browser: chromeBrowser } : {}),
-        },
+        ...desktopToolOptions(desktopConfig, approvals, actionApprovals),
       },
     );
     changeJournal.setSession(request.requestId, result.sessionId);
@@ -1107,6 +1172,8 @@ ipcMain.handle('vyomara:persona-set', async (event, input: unknown) => {
   persona = input;
   if (pipWindow && !pipWindow.isDestroyed()) pipWindow.setTitle(personaFor(persona).name);
   await savePersona(input);
+  // The assistant's name is in the system prompt: read the new one ahead of time.
+  warmUpModel(config);
   return persona;
 });
 
@@ -1199,6 +1266,7 @@ app.on('before-quit', () => {
   pipWindow?.destroy();
   activeRequest?.abort();
   activeModelPull?.abort();
+  activePrime?.abort();
   macSpeechRunner.stop();
   whisperServer.stop();
   void localWhisperRunner?.stop();

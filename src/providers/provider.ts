@@ -23,6 +23,8 @@ export interface ModelProvider {
   ): Promise<unknown>;
   /** False when the model cannot call tools; the agent then runs chat-only. */
   supportsTools?(): Promise<boolean>;
+  /** Read this system prompt and tool list ahead of the first request (prompt caching). Best effort. */
+  prime?(system: string, tools: readonly ModelToolDefinition[], signal: AbortSignal): Promise<void>;
 }
 
 export interface InstalledModel {
@@ -537,6 +539,38 @@ export class OllamaProvider implements ModelProvider {
       await response.body?.cancel().catch(() => undefined);
     } catch {
       // Best effort: the first real request will load the model instead.
+    }
+  }
+
+  /**
+   * Process a new chat's system prompt and tools without answering
+   * (num_predict 1). Ollama keeps the result in its prompt cache, so the
+   * first real request only reads the user's message. Must send the same
+   * think and context settings as complete(), or the cache is not reused.
+   */
+  async prime(system: string, tools: readonly ModelToolDefinition[], signal: AbortSignal): Promise<void> {
+    try {
+      const capabilities = this.think !== undefined || tools.length > 0 ? await this.modelCapabilities() : [];
+      const supportsThinking = this.think !== undefined && capabilities.includes('thinking');
+      if (this.toolsRejected || (capabilities.length > 0 && !capabilities.includes('tools'))) tools = [];
+      const response = await this.fetchImplementation(this.endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        redirect: 'error',
+        signal,
+        body: JSON.stringify({
+          model: this.model,
+          stream: false,
+          messages: [{ role: 'system', content: system }, { role: 'user', content: '' }],
+          tools: ollamaTools(tools),
+          ...(supportsThinking ? { think: this.think } : {}),
+          options: { ...(this.numCtx === undefined ? {} : { num_ctx: this.numCtx }), num_predict: 1 },
+          keep_alive: '30m',
+        }),
+      });
+      await response.body?.cancel().catch(() => undefined);
+    } catch {
+      // Best effort: the first real request reads the prompt itself.
     }
   }
 
