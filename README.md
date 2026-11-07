@@ -101,15 +101,15 @@ listens or speaks, so it never takes GPU time from your model.
 # 1. Get a model with tool calling (about 9 GB)
 ollama pull qwen3:14b
 
-# 2. Install and launch
+# 2. Build Vyomara and install it in /Applications
 pnpm install
-pnpm desktop
+pnpm install:mac
 ```
 
-`pnpm desktop` builds the app and opens `Vyomara.app`, ad-hoc signed, so macOS
-gives microphone and speech permissions to Vyomara instead of your terminal.
-Launching it again brings the open window forward. Release signing and `.dmg`
-packaging are not available yet.
+After that, open **Vyomara** from Launchpad, Spotlight, or the Dock like any
+other app. `pnpm package:mac` builds the app and a `.dmg` in `release/`
+without installing them, and `pnpm desktop` runs the app straight from the
+source while you develop. See [Building and installing](docs/building.md).
 
 The first reply comes back in about a second. While the model loads, Vyomara
 has it read the assistant's instructions in the background.
@@ -239,7 +239,9 @@ and [ADR-0015](docs/adr/0015-coding-agent-loop-and-approved-actions.md).
 pnpm check             # typecheck + all unit tests
 pnpm test:desktop-ui   # Electron UI smoke test
 pnpm eval              # agent evaluation against a real model (needs Ollama)
-pnpm build:desktop     # production build
+pnpm build             # compile main, preload, and renderer into out/
+pnpm package:mac       # standalone Vyomara.app + .dmg in release/
+pnpm install:mac       # the same, then install in /Applications
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
@@ -253,6 +255,7 @@ pnpm only, and never commit secrets.
 | [Architecture](docs/architecture.md) | Modules and how they fit together |
 | [Agent tools](docs/tools.md) | Every tool, its limits, and its approvals |
 | [Ollama guide](docs/ollama.md) | Models, context, thinking, and running any local model |
+| [Building and installing](docs/building.md) | Every command, the app bundle, the .dmg, and releases |
 | [Decisions (ADRs)](docs/adr/README.md) | Why things are built the way they are |
 
 <div align="center">

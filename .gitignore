@@ -11,4 +11,7 @@ coverage/
 .cache/
 *.sqlite
 *.sqlite-shm
-*.sqlite-waleval-results.json
+*.sqlite-wal
+eval-results.json
+release/
+
