@@ -771,15 +771,26 @@ body.pip-body #root { height: 100vh; }
 .history-clear-button { padding: 5px 10px; border: 1px solid rgba(240, 120, 130, .3); border-radius: 7px; background: transparent; color: #e8a7b0; font-size: 10px; cursor: pointer; }
 .history-clear-button:hover:not(:disabled) { border-color: rgba(240, 120, 130, .6); background: rgba(150, 40, 60, .18); color: #fff; }
 
-/* "… is thinking": the Vyomara mark at work, with a light sweeping across the words. */
-.thinking-mark { width: 34px; height: 34px; flex: 0 0 34px; overflow: visible; filter: drop-shadow(0 0 7px rgba(80, 120, 255, .45)); }
-.thinking-satellite { animation: thinking-orbit 1.7s linear infinite; }
-.thinking-satellite-reverse { animation-duration: 2.6s; animation-direction: reverse; }
-.thinking-core { transform-box: fill-box; transform-origin: center; animation: thinking-core 1.7s ease-in-out infinite; }
-.thinking-mark .mark-wave-bar { transform-box: fill-box; transform-origin: center; animation: mark-wave 900ms ease-in-out infinite; }
-.thinking-mark .mark-wave-bar-1, .thinking-mark .mark-wave-bar-5 { animation-delay: -560ms; }
-.thinking-mark .mark-wave-bar-2, .thinking-mark .mark-wave-bar-4 { animation-delay: -280ms; }
+/* The orbit mark: idles slowly in the header, races while thinking. */
+.orbit-mark { --orbit-speed: 10s; --core-speed: 4s; overflow: visible; }
+.orbit-satellite { animation: orbit-mark-spin var(--orbit-speed) linear infinite; }
+.orbit-satellite-reverse { animation-duration: calc(var(--orbit-speed) * 1.5); animation-direction: reverse; }
+.orbit-core { transform-box: fill-box; transform-origin: center; animation: thinking-core var(--core-speed) ease-in-out infinite; }
+.orbit-mark .mark-wave-bar { transform-box: fill-box; transform-origin: center; animation: mark-wave 1.05s ease-in-out infinite; }
+.orbit-mark .mark-wave-bar-1, .orbit-mark .mark-wave-bar-5 { animation-delay: -650ms; }
+.orbit-mark .mark-wave-bar-2, .orbit-mark .mark-wave-bar-4 { animation-delay: -320ms; }
+
+/* "… is thinking": the mark at work, with a light sweeping across the words. */
+.thinking-mark { --orbit-speed: 1.7s; --core-speed: 1.7s; width: 34px; height: 34px; flex: 0 0 34px; filter: drop-shadow(0 0 7px rgba(80, 120, 255, .45)); }
+.thinking-mark .mark-wave-bar { animation-duration: 900ms; }
 .thinking-text { background: linear-gradient(90deg, #8a98bd 0%, #8a98bd 35%, #f2f6ff 50%, #8a98bd 65%, #8a98bd 100%); background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: thinking-shimmer 2.2s linear infinite; }
-@keyframes thinking-orbit { to { transform: rotate(360deg); } }
+
+/* Header logo: brighter and quicker on hover; quick while the assistant works or listens. */
+.brand-live { transition: filter .3s ease; }
+.brand-live-tile { transition: stroke-width .3s ease; }
+.topbar-brand:hover .brand-live { --orbit-speed: 4s; filter: drop-shadow(0 0 12px rgba(90, 120, 255, .7)); }
+.brand-live-active { --orbit-speed: 2.2s; --core-speed: 1.8s; filter: drop-shadow(0 0 11px rgba(70, 150, 255, .6)); }
+@keyframes orbit-mark-spin { to { transform: rotate(360deg); } }
 @keyframes thinking-core { 0%, 100% { transform: scale(.95); } 50% { transform: scale(1.04); } }
 @keyframes thinking-shimmer { from { background-position: 110% 0; } to { background-position: -110% 0; } }
+.brand-live ellipse { opacity: .9; }

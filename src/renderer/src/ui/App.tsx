@@ -14,7 +14,7 @@ import type {
 } from '../../../desktop/contracts.ts';
 import { activityIcon, activityLabel } from './activity.ts';
 import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
-import { ThinkingMark, VoiceOrb, VyomaraMark } from './brand.tsx';
+import { BrandMark, ThinkingMark, VoiceOrb } from './brand.tsx';
 import { MemoriesPanel } from './memories-panel.tsx';
 import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
@@ -1204,7 +1204,7 @@ export function App() {
     <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ' app-shell-welcome'}`}>
       <header className="topbar" ref={topbar}>
         <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
-          <span className="brand-mark"><VyomaraMark /></span>
+          <span className="brand-mark"><BrandMark active={requestPending || voiceListening || vyomSpeaking} /></span>
           <span className="topbar-brand-copy">
             <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
             <small>AI Twins. One Orbit. Your Control.</small>
