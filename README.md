@@ -90,7 +90,7 @@ The desktop has these parts:
 - **Live checklist** of the agent's plan for multi-step tasks.
 - **Live step list** showing each tool call ("Reading …", "Running `pnpm test`").
 - **Approval cards** for every edit, command, app launch, and web page.
-- **History** to review, export, or delete conversations.
+- **History** to search past conversations, open one and keep talking in it, or delete it (two clicks; **Delete all history** clears everything). The most recently used conversation is on top.
 - **Models**, where you pick an installed model or download a new one.
 - **Offline voice input.**
 

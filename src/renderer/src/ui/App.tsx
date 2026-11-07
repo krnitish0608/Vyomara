@@ -6,7 +6,6 @@ import type {
   DesktopUndoStatus,
   DesktopFileOperationProposal,
   DesktopSpeechSetupStatus,
-  DesktopSessionHistory,
   DesktopSessionSummary,
   DesktopPipCommand,
   DesktopPipState,
@@ -93,9 +92,9 @@ export function App() {
   const [sessions, setSessions] = useState<readonly DesktopSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
-  const [selectedHistorySession, setSelectedHistorySession] = useState<DesktopSessionHistory>();
   const [historySearch, setHistorySearch] = useState('');
-  const [historyDeleteConfirmation, setHistoryDeleteConfirmation] = useState('');
+  /** A conversation id, or 'all', waiting for the second click that confirms deletion. */
+  const [historyConfirm, setHistoryConfirm] = useState<string>();
   const [historyNotice, setHistoryNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
@@ -897,8 +896,6 @@ export function App() {
     setFileOperationConfirmations({});
     setActionPendingId(undefined);
     setHistoryOpen(false);
-    setSelectedHistorySession(undefined);
-    setHistoryDeleteConfirmation('');
   }
 
   async function approveFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
@@ -1022,8 +1019,6 @@ export function App() {
     setHistoryLoading(true);
     setHistoryError(undefined);
     setHistoryNotice(undefined);
-    setSelectedHistorySession(undefined);
-    setHistoryDeleteConfirmation('');
     try {
       setSessions(await window.vyomara.listSessions());
     } catch (error) {
@@ -1047,8 +1042,8 @@ export function App() {
       setActivity([]);
       setRequestError(undefined);
       setHistoryOpen(false);
-      setSelectedHistorySession(undefined);
-      setHistoryDeleteConfirmation('');
+      // Ready to continue: the next message is added to this same conversation.
+      requestAnimationFrame(() => promptInput.current?.focus());
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The saved session could not be opened.');
     } finally {
@@ -1056,61 +1051,30 @@ export function App() {
     }
   }
 
-  async function reviewSessionForDeletion(id: string): Promise<void> {
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    setHistoryDeleteConfirmation('');
-    setSelectedHistorySession(undefined);
-    try {
-      setSelectedHistorySession(await window.vyomara.loadSession(id));
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The selected conversation could not be reviewed.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function exportReviewedSession(): Promise<void> {
-    if (!selectedHistorySession || historyLoading || requestPending) return;
+  /** Delete conversations after the in-place confirmation (two clicks, no typing). */
+  async function deleteSessions(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0 || historyLoading || requestPending) return;
     setHistoryLoading(true);
     setHistoryError(undefined);
     setHistoryNotice(undefined);
     try {
-      const result = await window.vyomara.exportSession(selectedHistorySession.sessionId);
-      if (result.status === 'exported') setHistoryNotice('Conversation exported. The JSON file includes complete raw history.');
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The conversation could not be exported.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function deleteReviewedSession(): Promise<void> {
-    const selected = selectedHistorySession;
-    if (!selected || historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    try {
-      const deleted = await window.vyomara.deleteSession(selected.sessionId, historyDeleteConfirmation);
-      if (!deleted) throw new Error('The selected conversation no longer exists.');
+      for (const id of ids) await window.vyomara.deleteSession(id, 'DELETE');
       setSessions(await window.vyomara.listSessions());
-      setSelectedHistorySession(undefined);
-      setHistoryDeleteConfirmation('');
-      if (sessionId === selected.sessionId) {
+      if (sessionId !== undefined && ids.includes(sessionId)) {
         setSessionId(undefined);
         setMessages([]);
         setActivity([]);
         setRequestError(undefined);
       }
-      setHistoryNotice('Conversation deleted from this Mac.');
+      setHistoryNotice(ids.length === 1 ? 'Conversation deleted.' : `${ids.length} conversations deleted.`);
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The conversation could not be deleted.');
     } finally {
+      setHistoryConfirm(undefined);
       setHistoryLoading(false);
     }
   }
+
 
   const providerTitle = provider
     ? provider.provider === 'ollama'
@@ -1627,60 +1591,7 @@ export function App() {
             </button>
           </div>
           <div className="history-content" aria-live="polite">
-            {selectedHistorySession ? (
-              <section className="session-review" aria-label="Review saved conversation">
-                <button className="history-back" type="button" onClick={() => setSelectedHistorySession(undefined)}>
-                  ← All conversations
-                </button>
-                <p className="history-review-title">
-                  {sessions.find(item => item.id === selectedHistorySession.sessionId)?.title ?? 'Conversation'}
-                </p>
-                <ol className="session-review-messages">
-                  {selectedHistorySession.messages.length === 0 ? (
-                    <li>No user or assistant messages are available to review.</li>
-                  ) : selectedHistorySession.messages.map((message, index) => (
-                    <li key={`${index}-${message.role}`} className={`session-review-${message.role}`}>
-                      <strong>{message.role === 'user' ? 'You' : assistantName}</strong>
-                      <pre className="history-reviewed-message">{message.content}</pre>
-                    </li>
-                  ))}
-                </ol>
-                <div className="session-review-actions">
-                  <button className="history-action" type="button" onClick={() => void openSession(selectedHistorySession.sessionId)} disabled={historyLoading || requestPending}>
-                    Continue this conversation
-                  </button>
-                  <button
-                    className="history-action history-action-quiet"
-                    type="button"
-                    onClick={() => void exportReviewedSession()}
-                    disabled={historyLoading || requestPending}
-                    title="Saves every stored message, including tool calls and file contents, as an unencrypted JSON file only you can read."
-                  >
-                    {historyLoading ? 'Preparing export…' : 'Export as JSON'}
-                  </button>
-                </div>
-                <div className="session-delete">
-                  <input
-                    id="history-delete-confirm"
-                    className="model-confirm"
-                    value={historyDeleteConfirmation}
-                    onChange={event => setHistoryDeleteConfirmation(event.target.value)}
-                    placeholder="Type DELETE to remove"
-                    aria-label="Type DELETE to permanently remove this conversation"
-                    autoComplete="off"
-                    disabled={historyLoading || requestPending}
-                  />
-                  <button
-                    className="history-danger"
-                    type="button"
-                    onClick={() => void deleteReviewedSession()}
-                    disabled={historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </section>
-            ) : historyLoading ? (
+            {historyLoading && sessions.length === 0 ? (
               <p className="history-message" role="status">Loading saved conversations…</p>
             ) : historyError ? (
               <p className="history-message history-error" role="alert">{historyError}</p>
@@ -1706,29 +1617,42 @@ export function App() {
                     <ol className="history-list">
                       {group.sessions.map(session => (
                         <li key={session.id} className={`history-card${session.id === sessionId ? ' history-card-current' : ''}`}>
-                          <button
-                            className="history-card-open"
-                            type="button"
-                            onClick={() => void openSession(session.id)}
-                            disabled={historyLoading || requestPending}
-                          >
-                            <span className="history-card-title">
-                              <span className="history-card-title-text">{session.title ?? 'Untitled conversation'}</span>
-                              {session.id === sessionId && <span className="history-card-badge">Open now</span>}
-                            </span>
-                            {session.preview && <span className="history-card-preview">{session.preview}</span>}
-                            <span className="history-card-meta">{relativeTime(session.updatedAt)} · {session.messageCount} messages</span>
-                          </button>
-                          <button
-                            className="history-card-more"
-                            type="button"
-                            onClick={() => void reviewSessionForDeletion(session.id)}
-                            disabled={historyLoading || requestPending}
-                            aria-label={`Review, export or delete: ${session.title ?? 'conversation'}`}
-                            title="Review, export or delete"
-                          >
-                            ⋯
-                          </button>
+                          {historyConfirm === session.id ? (
+                            <div className="history-card-confirm">
+                              <span>Delete “{session.title ?? 'this conversation'}”?</span>
+                              <div>
+                                <button className="history-danger" type="button" onClick={() => void deleteSessions([session.id])} disabled={historyLoading || requestPending}>Delete</button>
+                                <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                className="history-card-open"
+                                type="button"
+                                onClick={() => void openSession(session.id)}
+                                disabled={historyLoading || requestPending}
+                                title="Open and continue this conversation"
+                              >
+                                <span className="history-card-title">
+                                  <span className="history-card-title-text">{session.title ?? 'Untitled conversation'}</span>
+                                  {session.id === sessionId && <span className="history-card-badge">Open now</span>}
+                                </span>
+                                {session.preview && <span className="history-card-preview">{session.preview}</span>}
+                                <span className="history-card-meta">{relativeTime(session.updatedAt)} · {session.messageCount} messages</span>
+                              </button>
+                              <button
+                                className="history-card-delete"
+                                type="button"
+                                onClick={() => setHistoryConfirm(session.id)}
+                                disabled={historyLoading || requestPending}
+                                aria-label={`Delete: ${session.title ?? 'conversation'}`}
+                                title="Delete this conversation"
+                              >
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5" /></svg>
+                              </button>
+                            </>
+                          )}
                         </li>
                       ))}
                     </ol>
@@ -1737,6 +1661,19 @@ export function App() {
                 {historySearch && !sessions.some(item => matchesSearch(item, historySearch)) && (
                   <p className="history-message">Nothing matches “{historySearch}”.</p>
                 )}
+                <div className="history-clear">
+                  {historyConfirm === 'all' ? (
+                    <>
+                      <span>Delete all {sessions.length} conversations?</span>
+                      <button className="history-danger" type="button" onClick={() => void deleteSessions(sessions.map(item => item.id))} disabled={historyLoading || requestPending}>Delete all</button>
+                      <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="history-clear-button" type="button" onClick={() => setHistoryConfirm('all')} disabled={historyLoading || requestPending}>
+                      Delete all history
+                    </button>
+                  )}
+                </div>
               </>
             )}
             {historyNotice && <p className="history-notice" role="status">{historyNotice}</p>}
