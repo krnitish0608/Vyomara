@@ -156,6 +156,12 @@ const api: VyomaraDesktopApi = {
   approveAllFileOperations(id: string) {
     return ipcRenderer.invoke('vyomara:file-operation-approve-all', id);
   },
+  getPipEnabled() {
+    return ipcRenderer.invoke('vyomara:pip-enabled-get');
+  },
+  setPipEnabled(enabled: boolean) {
+    return ipcRenderer.invoke('vyomara:pip-enabled-set', enabled);
+  },
   openLink(url: string) {
     return ipcRenderer.invoke('vyomara:open-link', url);
   },

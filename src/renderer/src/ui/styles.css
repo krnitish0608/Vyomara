@@ -864,3 +864,23 @@ body.pip-body #root { height: 100vh; }
 /* Back to the newest reply after scrolling up. */
 .jump-to-latest { align-self: center; margin: -46px 0 10px; z-index: 3; padding: 6px 13px; border: 1px solid rgba(120, 150, 230, .4); border-radius: 999px; background: rgba(14, 22, 52, .95); color: #cfe0ff; font-size: 11px; cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
 .jump-to-latest:hover { border-color: rgba(140, 170, 245, .7); color: #fff; }
+
+/* Sidebar switch for the mini window. */
+.pip-toggle { position: relative; display: flex; align-items: center; gap: 9px; margin: auto 0 8px; padding: 8px 9px; border: 1px solid rgba(90, 116, 190, .22); border-radius: 10px; background: rgba(255, 255, 255, .025); cursor: pointer; transition: border-color .16s ease, background .16s ease; }
+.pip-toggle:hover { border-color: rgba(120, 150, 230, .45); background: rgba(59, 83, 150, .14); }
+.pip-toggle:focus-within { outline: 2px solid #9ab6ff; outline-offset: 2px; }
+.pip-toggle-icon { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border-radius: 8px; background: rgba(60, 100, 220, .22); color: #a9c3ff; }
+.pip-toggle-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.pip-toggle-icon .pip-toggle-icon-fill { fill: currentColor; stroke: none; opacity: .85; }
+.pip-toggle-text { flex: 1; min-width: 0; display: grid; line-height: 1.25; white-space: nowrap; }
+.pip-toggle-text strong, .pip-toggle-text small { overflow: hidden; text-overflow: ellipsis; }
+.pip-toggle-text strong { color: #dfe6f7; font-size: 10.5px; font-weight: 600; }
+.pip-toggle-text small { color: #7486ab; font-size: 8.5px; }
+.pip-toggle:has(.pip-toggle-input:checked) .pip-toggle-text small { color: #7fa6ff; }
+.pip-toggle-input { position: absolute; opacity: 0; pointer-events: none; }
+.pip-toggle-switch { position: relative; width: 30px; height: 17px; flex: 0 0 30px; border-radius: 999px; background: rgba(120, 130, 160, .35); transition: background .18s ease; }
+.pip-toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #e6ecff; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); transition: transform .18s ease; }
+.pip-toggle-input:checked ~ .pip-toggle-switch { background: linear-gradient(90deg, #2b8cff, #6a4dff); }
+.pip-toggle-input:checked ~ .pip-toggle-switch::after { transform: translateX(13px); }
+.pip-toggle:has(.pip-toggle-input:not(:checked)) .pip-toggle-icon { background: rgba(255, 255, 255, .05); color: #6c7896; }
+.side-nav .pip-toggle + .side-nav-new-chat { margin-top: 0; }

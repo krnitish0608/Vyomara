@@ -406,8 +406,24 @@ async function createPipWindow(): Promise<BrowserWindow> {
   return window;
 }
 
+/** The user's choice in the sidebar: show the mini window over other apps, or never. */
+let pipEnabled = true;
+
+function pipSettingsPath(): string {
+  return join(app.getPath('userData'), 'pip-settings.json');
+}
+
+async function readPipEnabled(): Promise<boolean> {
+  try {
+    const value: unknown = JSON.parse(await readFile(pipSettingsPath(), 'utf8'));
+    return !(typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === false);
+  } catch {
+    return true;
+  }
+}
+
 function showPip(): void {
-  if (!pipWindow || pipWindow.isDestroyed() || quitting) return;
+  if (!pipEnabled || !pipWindow || pipWindow.isDestroyed() || quitting) return;
   // Only when Vyomara itself is not in front.
   if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused()) return;
   if (!pipWindow.isVisible()) pipWindow.showInactive();
@@ -428,6 +444,20 @@ function showMainWindow(): void {
   mainWindow.focus();
   app.focus({ steal: true });
 }
+
+ipcMain.handle('vyomara:pip-enabled-get', event => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Mini window request is invalid.');
+  return pipEnabled;
+});
+
+ipcMain.handle('vyomara:pip-enabled-set', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Mini window request is invalid.');
+  if (typeof input !== 'boolean') throw new Error('Choose on or off.');
+  pipEnabled = input;
+  if (!pipEnabled && pipWindow && !pipWindow.isDestroyed()) pipWindow.hide();
+  await writeFile(pipSettingsPath(), JSON.stringify({ enabled: pipEnabled }), { encoding: 'utf8', mode: 0o600 }).catch(() => undefined);
+  return pipEnabled;
+});
 
 ipcMain.on('vyomara:pip-state', (event, state: unknown) => {
   if (event.sender !== mainWindow?.webContents) return;
@@ -1140,6 +1170,7 @@ app.whenReady().then(async () => {
   warmUpModel(config);
   app.on('activate', () => showMainWindow());
   registerVoiceShortcut();
+  pipEnabled = await readPipEnabled();
   try {
     pipWindow = await createPipWindow();
   } catch {

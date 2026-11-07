@@ -260,6 +260,9 @@ export interface VyomaraDesktopApi {
   stopSpeaking(): Promise<boolean>;
   /** Approve this change and all later edits in the current task (not deletions). */
   approveAllFileOperations(id: string): Promise<void>;
+  /** Whether the mini window may appear over other apps. */
+  getPipEnabled(): Promise<boolean>;
+  setPipEnabled(enabled: boolean): Promise<boolean>;
   /** Open a link from a reply in the user's default browser. */
   openLink(url: string): Promise<void>;
   /** What the assistant remembers across conversations. */

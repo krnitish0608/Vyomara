@@ -83,6 +83,8 @@ export function App() {
   const [modelsOpen, setModelsOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
+  /** Whether the mini window (PiP) may appear over other apps. */
+  const [pipEnabled, setPipEnabledState] = useState(true);
   const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
   const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
   const [actionPendingId, setActionPendingId] = useState<string>();
@@ -260,6 +262,9 @@ export function App() {
       }
       if (event.type === 'command') handleHeard.current?.(event.transcript);
     });
+    void window.vyomara.getPipEnabled().then(enabled => {
+      if (mounted) setPipEnabledState(enabled);
+    }).catch(() => undefined);
     void window.vyomara.getPersona().then(id => {
       if (!mounted) return;
       setPersonaState(id);
@@ -778,6 +783,15 @@ export function App() {
   function toggleComposerDictation(): void {
     if (dictationRef.current) void stopDictation();
     else void startDictation('main');
+  }
+
+  async function changePipEnabled(enabled: boolean): Promise<void> {
+    setPipEnabledState(enabled);
+    try {
+      setPipEnabledState(await window.vyomara.setPipEnabled(enabled));
+    } catch {
+      setPipEnabledState(!enabled);
+    }
   }
 
   async function refreshUndoStatus(): Promise<void> {
@@ -1385,6 +1399,24 @@ export function App() {
               <span aria-hidden="true">◷</span> History
             </button>
           </div>
+          <label className="pip-toggle" title="When on, a small Vyom floats over other apps (VS Code, Chrome …) whenever you leave this window.">
+            <span className="pip-toggle-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="2.5" /><rect x="10" y="10" width="6" height="4.5" rx="1.2" className="pip-toggle-icon-fill" /></svg>
+            </span>
+            <span className="pip-toggle-text">
+              <strong>PiP</strong>
+              <small>{pipEnabled ? 'On' : 'Off'}</small>
+            </span>
+            <input
+              className="pip-toggle-input"
+              type="checkbox"
+              role="switch"
+              checked={pipEnabled}
+              onChange={event => void changePipEnabled(event.target.checked)}
+              aria-label="Show the mini window over other apps"
+            />
+            <span className="pip-toggle-switch" aria-hidden="true" />
+          </label>
           <button className="new-chat-button side-nav-new-chat" type="button" onClick={startNewChat} disabled={requestPending}>
             <span aria-hidden="true">＋</span> New conversation
           </button>
