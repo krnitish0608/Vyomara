@@ -1586,24 +1586,10 @@ export function App() {
               <p className="eyebrow">ON THIS MAC</p>
               <h2 ref={historyHeading} tabIndex={-1}>History</h2>
             </div>
-            <div className="panel-heading-actions">
-              {sessions.length > 0 && historyConfirm !== 'all' && (
-                <button className="history-clear-button" type="button" onClick={() => setHistoryConfirm('all')} disabled={historyLoading || requestPending}>
-                  Delete all
-                </button>
-              )}
-              <button className="history-close" type="button" onClick={() => closePanel()}>
-                Close
-              </button>
-            </div>
+            <button className="history-close" type="button" onClick={() => closePanel()}>
+              Close
+            </button>
           </div>
-          {historyConfirm === 'all' && sessions.length > 0 && (
-            <div className="history-clear" role="alertdialog" aria-label="Delete all history">
-              <span>Delete all {sessions.length} conversation{sessions.length === 1 ? '' : 's'}? This cannot be undone.</span>
-              <button className="history-danger" type="button" onClick={() => void deleteSessions(sessions.map(item => item.id))} disabled={historyLoading || requestPending}>Delete all</button>
-              <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
-            </div>
-          )}
           <div className="history-content" aria-live="polite">
             {historyLoading && sessions.length === 0 ? (
               <p className="history-message" role="status">Loading saved conversations…</p>
@@ -1675,6 +1661,19 @@ export function App() {
                 {historySearch && !sessions.some(item => matchesSearch(item, historySearch)) && (
                   <p className="history-message">Nothing matches “{historySearch}”.</p>
                 )}
+                <div className="history-clear">
+                  {historyConfirm === 'all' ? (
+                    <>
+                      <span>Delete all {sessions.length} conversations?</span>
+                      <button className="history-danger" type="button" onClick={() => void deleteSessions(sessions.map(item => item.id))} disabled={historyLoading || requestPending}>Delete all</button>
+                      <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="history-clear-button" type="button" onClick={() => setHistoryConfirm('all')} disabled={historyLoading || requestPending}>
+                      Delete all history
+                    </button>
+                  )}
+                </div>
               </>
             )}
             {historyNotice && <p className="history-notice" role="status">{historyNotice}</p>}
