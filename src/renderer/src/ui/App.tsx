@@ -28,6 +28,41 @@ import { playEarcon } from './earcon.ts';
 import { VoiceCapture } from './voice-capture.ts';
 import vyomaraWordmark from './assets/vyomara-wordmark.png';
 
+/** "just now", "5 min ago", "2:40 PM", "Yesterday", "Mon", "3 Nov". */
+function relativeTime(iso: string, now = new Date()): string {
+  const then = new Date(iso);
+  const minutes = Math.round((now.getTime() - then.getTime()) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const time = then.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (then.getTime() >= startOfToday) return time;
+  if (then.getTime() >= startOfToday - 86_400_000) return `Yesterday, ${time}`;
+  if (then.getTime() >= startOfToday - 6 * 86_400_000) return then.toLocaleDateString([], { weekday: 'long' });
+  return then.toLocaleDateString([], { day: 'numeric', month: 'short', year: then.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+
+/** Conversations grouped as Today, Yesterday, This week, Earlier (newest first). */
+function groupSessions(sessions: readonly DesktopSessionSummary[], now = new Date()): { label: string; sessions: DesktopSessionSummary[] }[] {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const groups = [
+    { label: 'Today', from: startOfToday, sessions: [] as DesktopSessionSummary[] },
+    { label: 'Yesterday', from: startOfToday - 86_400_000, sessions: [] as DesktopSessionSummary[] },
+    { label: 'This week', from: startOfToday - 6 * 86_400_000, sessions: [] as DesktopSessionSummary[] },
+    { label: 'Earlier', from: -Infinity, sessions: [] as DesktopSessionSummary[] },
+  ];
+  for (const session of sessions) {
+    const time = new Date(session.updatedAt).getTime();
+    groups.find(group => time >= group.from)?.sessions.push(session);
+  }
+  return groups.filter(group => group.sessions.length > 0);
+}
+
+function matchesSearch(session: DesktopSessionSummary, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return needle === '' || `${session.title ?? ''} ${session.preview ?? ''}`.toLowerCase().includes(needle);
+}
+
 interface ChatMessage {
   readonly id: number | string;
   readonly role: 'user' | 'assistant';
@@ -59,6 +94,7 @@ export function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
   const [selectedHistorySession, setSelectedHistorySession] = useState<DesktopSessionHistory>();
+  const [historySearch, setHistorySearch] = useState('');
   const [historyDeleteConfirmation, setHistoryDeleteConfirmation] = useState('');
   const [historyNotice, setHistoryNotice] = useState<string>();
   const [prompt, setPrompt] = useState('');
@@ -1591,90 +1627,121 @@ export function App() {
             </button>
           </div>
           <div className="history-content" aria-live="polite">
-            {historyLoading ? (
-              <p className="history-message" role="status">Loading saved conversations…</p>
-            ) : historyError ? (
-              <p className="history-message history-error" role="alert">{historyError}</p>
-            ) : sessions.length === 0 ? (
-              <p className="history-message">No saved conversations yet.</p>
-            ) : (
-              <ol className="history-list">
-                {sessions.map(session => (
-                  <li key={session.id}>
-                    <div className="history-row">
-                      <button
-                        className={`history-item${session.id === sessionId ? ' history-item-current' : ''}`}
-                        type="button"
-                        onClick={() => void openSession(session.id)}
-                        disabled={historyLoading || requestPending}
-                      >
-                        <span>{new Date(session.updatedAt).toLocaleString()}</span>
-                        <span>{session.messageCount} messages · Open conversation</span>
-                      </button>
-                      <button
-                        className="history-delete"
-                        type="button"
-                        onClick={() => void reviewSessionForDeletion(session.id)}
-                        disabled={historyLoading || requestPending}
-                      >
-                        Review options
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-            {selectedHistorySession && (
+            {selectedHistorySession ? (
               <section className="session-review" aria-label="Review saved conversation">
-                <p className="history-review-title">Review conversation</p>
+                <button className="history-back" type="button" onClick={() => setSelectedHistorySession(undefined)}>
+                  ← All conversations
+                </button>
+                <p className="history-review-title">
+                  {sessions.find(item => item.id === selectedHistorySession.sessionId)?.title ?? 'Conversation'}
+                </p>
                 <ol className="session-review-messages">
                   {selectedHistorySession.messages.length === 0 ? (
                     <li>No user or assistant messages are available to review.</li>
                   ) : selectedHistorySession.messages.map((message, index) => (
-                    <li key={`${index}-${message.role}`}>
+                    <li key={`${index}-${message.role}`} className={`session-review-${message.role}`}>
                       <strong>{message.role === 'user' ? 'You' : assistantName}</strong>
                       <pre className="history-reviewed-message">{message.content}</pre>
                     </li>
                   ))}
                 </ol>
-                <p className="history-privacy">
-                  Export includes all stored messages, including raw tool calls and results that may contain private file content.
-                  The JSON export is not encrypted; Vyomara will create a new file with owner-only permissions and will not overwrite an existing file.
-                </p>
-                <button
-                  className="history-action"
-                  type="button"
-                  onClick={() => void exportReviewedSession()}
-                  disabled={historyLoading || requestPending}
-                >
-                  {historyLoading ? 'Preparing export…' : 'Export complete conversation as JSON'}
-                </button>
-                <label className="history-confirm-label" htmlFor="history-delete-confirm">
-                  Type DELETE to permanently remove this conversation
-                </label>
-                <input
-                  id="history-delete-confirm"
-                  className="history-confirm-input"
-                  value={historyDeleteConfirmation}
-                  onChange={event => setHistoryDeleteConfirmation(event.target.value)}
-                  autoComplete="off"
-                  disabled={historyLoading || requestPending}
-                />
-                <button
-                  className="history-danger"
-                  type="button"
-                  onClick={() => void deleteReviewedSession()}
-                  disabled={historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending}
-                >
-                  Delete this conversation
-                </button>
+                <div className="session-review-actions">
+                  <button className="history-action" type="button" onClick={() => void openSession(selectedHistorySession.sessionId)} disabled={historyLoading || requestPending}>
+                    Continue this conversation
+                  </button>
+                  <button
+                    className="history-action history-action-quiet"
+                    type="button"
+                    onClick={() => void exportReviewedSession()}
+                    disabled={historyLoading || requestPending}
+                    title="Saves every stored message, including tool calls and file contents, as an unencrypted JSON file only you can read."
+                  >
+                    {historyLoading ? 'Preparing export…' : 'Export as JSON'}
+                  </button>
+                </div>
+                <div className="session-delete">
+                  <input
+                    id="history-delete-confirm"
+                    className="model-confirm"
+                    value={historyDeleteConfirmation}
+                    onChange={event => setHistoryDeleteConfirmation(event.target.value)}
+                    placeholder="Type DELETE to remove"
+                    aria-label="Type DELETE to permanently remove this conversation"
+                    autoComplete="off"
+                    disabled={historyLoading || requestPending}
+                  />
+                  <button
+                    className="history-danger"
+                    type="button"
+                    onClick={() => void deleteReviewedSession()}
+                    disabled={historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending}
+                  >
+                    Delete
+                  </button>
+                </div>
               </section>
+            ) : historyLoading ? (
+              <p className="history-message" role="status">Loading saved conversations…</p>
+            ) : historyError ? (
+              <p className="history-message history-error" role="alert">{historyError}</p>
+            ) : sessions.length === 0 ? (
+              <div className="history-empty">
+                <span aria-hidden="true">✦</span>
+                <p>No conversations yet.</p>
+                <small>Type below or press the orb. Every conversation is saved here, on this Mac.</small>
+              </div>
+            ) : (
+              <>
+                <input
+                  className="history-search"
+                  type="search"
+                  value={historySearch}
+                  onChange={event => setHistorySearch(event.target.value)}
+                  placeholder={`Search ${sessions.length} conversation${sessions.length === 1 ? '' : 's'}…`}
+                  aria-label="Search conversations"
+                />
+                {groupSessions(sessions.filter(item => matchesSearch(item, historySearch))).map(group => (
+                  <section key={group.label} className="history-group" aria-label={group.label}>
+                    <p className="history-group-title">{group.label}</p>
+                    <ol className="history-list">
+                      {group.sessions.map(session => (
+                        <li key={session.id} className={`history-card${session.id === sessionId ? ' history-card-current' : ''}`}>
+                          <button
+                            className="history-card-open"
+                            type="button"
+                            onClick={() => void openSession(session.id)}
+                            disabled={historyLoading || requestPending}
+                          >
+                            <span className="history-card-title">
+                              <span className="history-card-title-text">{session.title ?? 'Untitled conversation'}</span>
+                              {session.id === sessionId && <span className="history-card-badge">Open now</span>}
+                            </span>
+                            {session.preview && <span className="history-card-preview">{session.preview}</span>}
+                            <span className="history-card-meta">{relativeTime(session.updatedAt)} · {session.messageCount} messages</span>
+                          </button>
+                          <button
+                            className="history-card-more"
+                            type="button"
+                            onClick={() => void reviewSessionForDeletion(session.id)}
+                            disabled={historyLoading || requestPending}
+                            aria-label={`Review, export or delete: ${session.title ?? 'conversation'}`}
+                            title="Review, export or delete"
+                          >
+                            ⋯
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ))}
+                {historySearch && !sessions.some(item => matchesSearch(item, historySearch)) && (
+                  <p className="history-message">Nothing matches “{historySearch}”.</p>
+                )}
+              </>
             )}
             {historyNotice && <p className="history-notice" role="status">{historyNotice}</p>}
           </div>
-          <p className="history-privacy">
-            Saved locally until deleted. Review shows user and final assistant messages; raw tool calls and results are also stored and removed with the session.
-          </p>
+          <p className="history-privacy">Saved on this Mac until you delete it.</p>
         </aside>
         ) : (
         <aside className="activity-panel" aria-label="Task activity">

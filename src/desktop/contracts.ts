@@ -123,6 +123,10 @@ export interface DesktopSessionSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messageCount: number;
+  /** The first thing the user asked, shortened. */
+  readonly title?: string;
+  /** The last final reply, shortened. */
+  readonly preview?: string;
 }
 
 export interface DesktopConversationMessage {

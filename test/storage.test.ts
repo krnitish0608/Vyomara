@@ -60,6 +60,10 @@ test('session history survives reopening, stays isolated, and cascades on deleti
   const summaries = store.listSessions();
   assert.equal(summaries.length, 2);
   assert.ok(summaries.every(summary => summary.messageCount > 0));
+  // Each summary names the conversation by its first request and shows the last final reply.
+  const firstSummary = summaries.find(summary => summary.id === first.id);
+  assert.equal(firstSummary?.preview, 'private fixture');
+  assert.equal(summaries.find(summary => summary.id === second.id)?.title, 'second session prompt');
   assert.deepEqual(store.getSession(first.id).messages(), first.messages());
   assert.deepEqual(store.getSession(second.id).messages(), second.messages());
   assert.equal(store.deleteSession(first.id), true);
@@ -387,4 +391,12 @@ test('model settings chosen in the app are saved and applied over the environmen
   assert.equal(applied.ollamaModel, 'deepseek-r1:14b');
   assert.equal(applied.ollamaNumCtx, 16_384);
   assert.equal(applied.ollamaThink, true);
+});
+
+test('summary text drops app notes and footers and is shortened', async () => {
+  const { summaryText } = await import('../src/storage/sqlite-store.ts');
+  assert.equal(summaryText('[Note from the Vyomara app: undid changes.]\n\nFix the **cart** bug', 90), 'Fix the cart bug');
+  assert.equal(summaryText('Done.\n\n---\n**Verified actions**\n- ✅ Edited `a.js`', 90), 'Done.');
+  assert.equal(summaryText('x'.repeat(200), 10), `${'x'.repeat(9)}…`);
+  assert.equal(summaryText(undefined, 10), undefined);
 });
