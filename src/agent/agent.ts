@@ -241,6 +241,24 @@ export function forbidsChanges(prompt: string): boolean {
     /\bmat\s+(?:badlo|badalna|chhedo|chhuo|chhuna|chhona|karo\s+change|change\s+karo|edit\s+karo|fix\s+karo)\b|\b(?:change|edit|fix)\s+mat\s+karo\b|\b(?:sirf|bas|bus)\s+batao\b/u.test(text);
 }
 
+/** Tools that read the web in the background. */
+const WEB_TOOLS = new Set(['web_search', 'fetch_url', 'news_headlines', 'browser']);
+
+const USE_THE_WEB_NUDGE =
+  'You do have web access without the browser: call web_search (or news_headlines for news, fetch_url for a known page) now, then answer the user\'s question from what you find. Do not repeat earlier errors. Reply in the language of the user\'s message.';
+
+/**
+ * True when a reply says it cannot reach the internet or current data
+ * ("I'm not able to access real-time data", "internet access nahi hai").
+ */
+export function claimsNoWebAccess(text: string): boolean {
+  return /\b(?:not able to|unable to|can(?:'|’)?t|cannot|don(?:'|’)?t have|do not have|no)\s+(?:access|browse|search|check|look up|retrieve|get)[^.?!]{0,60}\b(?:real[- ]time|internet|web|online|youtube|current|latest|live)\b/iu.test(text) ||
+    /\breal[- ]time (?:data|information)\b[^.?!]{0,40}\b(?:not|unable|can(?:'|’)?t|cannot)\b/iu.test(text) ||
+    /\b(?:internet|real[- ]time|live data)\b[^.?!]{0,40}\b(?:access nahi|nahi hai|nahi kar sakta|nahi kar sakti|nahi dekh sakta|nahi dekh sakti)\b/iu.test(text) ||
+    // Repeating an earlier browser error instead of searching another way.
+    /Allow JavaScript from Apple Events|JavaScript (?:ko )?enable|enable JavaScript/iu.test(text);
+}
+
 /** Tools that open or drive the user's browser; offered only when the user asks for that. */
 const BROWSER_TOOLS = new Set(['browser', 'open_url']);
 
@@ -414,6 +432,7 @@ async function runAgentTask(
   let continuationNudges = 0;
   let pendingNudge: string | undefined;
   let attemptedEdit = false;
+  let usedWebTool = false;
   const canEdit = modelTools.some(tool => tool.id === 'edit_file' || tool.id === 'write_file');
   let streamedSomething = false;
   const onText = options.onText;
@@ -502,10 +521,12 @@ async function runAgentTask(
         asksForCodeChange(prompt) &&
         /```[\s\S]*\n[\s\S]*```/u.test(response.text);
       const unfinishedPlan = isUnfinishedPlan(response.text);
-      if (canNudge && (unappliedChange || unfinishedPlan || announcesNextStep(response.text))) {
+      // "I can't access real-time data" while web tools exist and none was tried.
+      const gaveUpOnWeb = !usedWebTool && modelTools.some(tool => WEB_TOOLS.has(tool.id)) && claimsNoWebAccess(response.text);
+      if (canNudge && (unappliedChange || unfinishedPlan || gaveUpOnWeb || announcesNextStep(response.text))) {
         continuationNudges += 1;
         session.add({ role: 'assistant', content: response.text });
-        pendingNudge = unappliedChange ? APPLY_CHANGE_NUDGE : unfinishedPlan ? UNFINISHED_PLAN_NUDGE : CONTINUE_NUDGE;
+        pendingNudge = unappliedChange ? APPLY_CHANGE_NUDGE : unfinishedPlan ? UNFINISHED_PLAN_NUDGE : gaveUpOnWeb ? USE_THE_WEB_NUDGE : CONTINUE_NUDGE;
         continue;
       }
       return finish(response.text, iteration);
@@ -571,6 +592,7 @@ async function runAgentTask(
       }
 
       if (call.toolId === 'edit_file' || call.toolId === 'write_file') attemptedEdit = true;
+      if (WEB_TOOLS.has(call.toolId)) usedWebTool = true;
       options.onToolActivity?.({ id: toolCallId, toolId: call.toolId, label, status: 'running' });
       logger.emit({ event: 'tool.invoked', ...context, toolId: call.toolId });
       try {

@@ -938,3 +938,15 @@ test('the browser is offered only when the user asks to open, show, or use it', 
     assert.equal(asksForBrowser(prompt), false, prompt);
   }
 });
+
+test('a reply that says it cannot reach the internet is recognised', async () => {
+  const { claimsNoWebAccess } = await import('../src/agent/agent.ts');
+  for (const text of [
+    "I'm sorry, but I'm not able to access real-time data or the YouTube platform to check the current trending Bhojpuri songs.",
+    "I can't browse the internet.",
+    'I do not have access to live data.',
+    'Mere paas internet access nahi hai.',
+    'Aapko Chrome mein JavaScript ko enable karna padega. "View → Developer → Allow JavaScript from Apple Events" choose karein.',
+  ]) assert.equal(claimsNoWebAccess(text), true, text);
+  for (const text of ['The capital of France is Paris.', 'Abhi trending song "Beyimanwa" hai.']) assert.equal(claimsNoWebAccess(text), false, text);
+});
