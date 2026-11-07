@@ -13,6 +13,8 @@ import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
 import { buildSystemPrompt, detectEnvironment } from './system-prompt.ts';
 import type { PersonaId } from '../shared/persona.ts';
 import type { MemoryStore } from '../storage/memory-store.ts';
+import { urlsIn, verifyLinks } from '../shared/link-check.ts';
+import { LinkAliases } from '../shared/link-alias.ts';
 import type { AgentEnvironment } from './system-prompt.ts';
 import type { PlanStep } from '../tools/plan-tool.ts';
 
@@ -252,7 +254,7 @@ const USE_THE_WEB_NUDGE =
  * ("I'm not able to access real-time data", "internet access nahi hai").
  */
 export function claimsNoWebAccess(text: string): boolean {
-  return /\b(?:not able to|unable to|can(?:'|’)?t|cannot|don(?:'|’)?t have|do not have|no)\s+(?:access|browse|search|check|look up|retrieve|get)[^.?!]{0,60}\b(?:real[- ]time|internet|web|online|youtube|current|latest|live)\b/iu.test(text) ||
+  return /\b(?:not able to|unable to|can(?:'|’)?t|cannot|don(?:'|’)?t have|do not have|no)\s+(?:directly\s+)?(?:access|browse|search|check|look up|retrieve|get|see|view|read)[^.?!]{0,60}\b(?:real[- ]time|internet|web|online|youtube|current|latest|live|browser|tabs?|chrome|screen)\b/iu.test(text) ||
     /\breal[- ]time (?:data|information)\b[^.?!]{0,40}\b(?:not|unable|can(?:'|’)?t|cannot)\b/iu.test(text) ||
     /\b(?:internet|real[- ]time|live data)\b[^.?!]{0,40}\b(?:access nahi|nahi hai|nahi kar sakta|nahi kar sakti|nahi dekh sakta|nahi dekh sakti)\b/iu.test(text) ||
     // Repeating an earlier browser error instead of searching another way.
@@ -433,6 +435,7 @@ async function runAgentTask(
   let pendingNudge: string | undefined;
   let attemptedEdit = false;
   let usedWebTool = false;
+  const links = new LinkAliases();
   const canEdit = modelTools.some(tool => tool.id === 'edit_file' || tool.id === 'write_file');
   let streamedSomething = false;
   const onText = options.onText;
@@ -443,7 +446,10 @@ async function runAgentTask(
     const chatOnlyNote = toolCapable
       ? ''
       : '\n\n---\n⚠️ **Chat-only model:** it cannot read your files, run commands, open apps, or read web pages in Vyomara. Anything it says about your files or projects is not based on them. Choose a model marked “Tools” in the Models panel for that.';
-    const response = `${stripAppFooters(text).trim() || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
+    // Links must come from a tool result or the user; invented or garbled ones are removed.
+    const sources = urlsIn(session.messages().filter(message => message.role === 'tool' || message.role === 'user').map(message => message.content));
+    const checked = verifyLinks(links.expand(stripAppFooters(text)).trim(), sources).text;
+    const response = `${checked || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
     session.add({ role: 'assistant', content: response });
     if (needsAttention) task.needsAttention();
     logger.emit({
@@ -460,8 +466,9 @@ async function runAgentTask(
     if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
     const fitted = fitMessagesToBudget(session.messages(), budgetChars).map(message =>
       message.role === 'assistant' && message.kind !== 'tool-call'
-        ? { ...message, content: stripAppFooters(message.content) }
-        : message);
+        ? { ...message, content: links.shorten(stripAppFooters(message.content)) }
+        // The model sees long URLs as short aliases it can copy without mistakes.
+        : message.role === 'tool' ? { ...message, content: links.shorten(message.content) } : message);
     const messages = pendingNudge
       ? [...fitted, { role: 'user' as const, content: pendingNudge }]
       : fitted;
@@ -474,7 +481,7 @@ async function runAgentTask(
         if (firstChunk && streamedSomething) onText('\n\n');
         firstChunk = false;
         streamedSomething = true;
-        onText(text);
+        onText(links.expand(text));
       };
 
     let raw: unknown;
@@ -536,7 +543,9 @@ async function runAgentTask(
       return finish(`${response.content ?? ''}\n\nI reached the limit of ${config.maxToolCalls} tool calls for one request and stopped. Ask me to continue if needed.`, iteration, true);
     }
 
-    const calls = response.calls.slice(0, Math.max(1, config.maxToolCalls - toolCalls));
+    // Real URLs back in the arguments, so tools and history never see aliases.
+    const calls = response.calls.slice(0, Math.max(1, config.maxToolCalls - toolCalls))
+      .map(call => ({ ...call, arguments: links.expandArguments(call.arguments) }));
     session.add({
       role: 'assistant',
       kind: 'tool-call',

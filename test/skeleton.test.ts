@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { AgentError, runAgent } from '../src/agent/agent.ts';
 import { loadConfig } from '../src/config/config.ts';
@@ -127,6 +130,13 @@ test('configuration uses safe defaults and rejects invalid values without echoin
   assert.throws(() => loadConfig({ VYOM_MAX_TREE_DEPTH: '13' }), /VYOM_MAX_TREE_DEPTH/);
 });
 
+/** A private, temporary data folder for CLI runs, removed when the tests end. */
+function cliDataDir(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'vyomara-cli-test-'));
+  process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
+
 test('CLI discloses the configured provider before processing a request', () => {
   const result = spawnSync(process.execPath, [
     '--disable-warning=ExperimentalWarning',
@@ -142,6 +152,8 @@ test('CLI discloses the configured provider before processing a request', () => 
       ...process.env,
       VYOM_PROVIDER: 'placeholder',
       VYOM_ALLOWED_ROOTS: '[]',
+      // Never write test conversations into the user's real history.
+      VYOM_DATA_DIR: cliDataDir(),
     },
   });
 
@@ -167,6 +179,7 @@ test('CLI reports an unavailable local model service without falling back to ano
       VYOM_OLLAMA_MODEL: 'qwen3:14b',
       VYOM_OLLAMA_BASE_URL: 'http://127.0.0.1:9',
       VYOM_ALLOWED_ROOTS: '[]',
+      VYOM_DATA_DIR: cliDataDir(),
     },
   });
 

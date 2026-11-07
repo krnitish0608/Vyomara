@@ -950,3 +950,8 @@ test('a reply that says it cannot reach the internet is recognised', async () =>
   ]) assert.equal(claimsNoWebAccess(text), true, text);
   for (const text of ['The capital of France is Paris.', 'Abhi trending song "Beyimanwa" hai.']) assert.equal(claimsNoWebAccess(text), false, text);
 });
+
+test('"I cannot access your browser tabs" counts as giving up on the web', async () => {
+  const { claimsNoWebAccess } = await import('../src/agent/agent.ts');
+  assert.equal(claimsNoWebAccess('I cannot directly access or check the content of your browser tabs or pages.'), true);
+});
