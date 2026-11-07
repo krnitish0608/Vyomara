@@ -218,6 +218,10 @@ The Ollama URL must be loopback (`localhost`, `127.0.0.1`, or `::1`).
   never followed.
 - **Edits:** Edits are atomic and fail if the file changed after you reviewed
   it.
+- **Diffs in VS Code:** When VS Code is open, each proposed edit or new file
+  also opens there as a side-by-side diff: the real file on the left, the
+  proposal on the right. **⇄ Open in VS Code** on the review card does the
+  same at any time. Nothing is applied until you approve it in Vyomara.
 - **Undo:** Press **↶ Undo these changes** under a reply, or say or type
   "undo karo", to put back the last request's approved file changes.
   - Edited files get their exact earlier contents back.

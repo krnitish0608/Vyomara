@@ -40,7 +40,10 @@ export function FileOperationCard({
   onConfirmationChange,
   onApprove,
   onReject,
+  onOpenDiff,
 }: {
+  /** Show this change as a side-by-side diff in VS Code. */
+  readonly onOpenDiff?: () => void;
   readonly proposal: DesktopFileOperationProposal;
   readonly confirmation: string;
   readonly busy: boolean;
@@ -90,6 +93,11 @@ export function FileOperationCard({
         <button className="file-operation-reject" type="button" onClick={onReject} disabled={busy || anyBusy}>
           Reject
         </button>
+        {onOpenDiff && !isDelete && proposal.proposedContent !== undefined && (
+          <button className="file-operation-diff" type="button" onClick={onOpenDiff} title="Show this change side by side in VS Code">
+            <span aria-hidden="true">⇄</span> Open in VS Code
+          </button>
+        )}
       </div>
     </section>
   );

@@ -1420,6 +1420,9 @@ export function App() {
                 onConfirmationChange={value => setFileOperationConfirmations(current => ({ ...current, [proposal.id]: value }))}
                 onApprove={() => void approveFileOperation(proposal)}
                 onReject={() => void rejectFileOperation(proposal)}
+                onOpenDiff={() => void window.vyomara.openFileDiff(proposal.id).catch(error => {
+                  setRequestError(error instanceof Error ? error.message : 'VS Code could not show the diff.');
+                })}
               />
             ))}
             {actionProposals.map((proposal, index) => (

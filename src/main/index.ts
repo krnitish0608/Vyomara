@@ -1,3 +1,4 @@
+import { canShowDiff, VSCodeDiffPreview } from '../desktop/vscode-diff.ts';
 import { ChangeJournal } from '../desktop/change-journal.ts';
 import { DEFAULT_PERSONA, isPersonaId, personaFor, type PersonaId } from '../shared/persona.ts';
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, session, shell, systemPreferences } from 'electron';
@@ -19,7 +20,7 @@ import {
   saveSelectedModel,
 } from '../app/application.ts';
 import type { SavedModelSettings } from '../app/application.ts';
-import type { DesktopUndoResult, DesktopUndoStatus } from '../desktop/contracts.ts';
+import type { DesktopFileOperationProposal, DesktopUndoResult, DesktopUndoStatus } from '../desktop/contracts.ts';
 import { loadConfig, validateOllamaModel } from '../config/config.ts';
 import { OllamaProvider } from '../providers/provider.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
@@ -72,6 +73,10 @@ const macSpeechRunner = new MacSpeechRunner();
 const changeJournal = new ChangeJournal({ moveToTrash: path => shell.trashItem(path) });
 /** Told to the model on the next request in a session after an undo. */
 const undoNotes = new Map<string, string>();
+/** Shows proposed file changes as diffs in VS Code (created once the app is ready). */
+let diffPreview: VSCodeDiffPreview | undefined;
+/** File changes waiting for review in the current request, by id. */
+const activeProposals = new Map<string, DesktopFileOperationProposal>();
 /** Keeps the speech model loaded while listening is on. */
 const whisperServer = new LocalWhisperServer();
 const macApplicationLauncher = process.platform === 'darwin'
@@ -643,6 +648,14 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
         throw new Error('The review window is unavailable; no file operation was performed.');
       }
       mainWindow.webContents.send('vyomara:file-operation-proposed', proposal);
+      activeProposals.set(proposal.id, proposal);
+      // The owner reads code in VS Code: when it is open, show the change there too.
+      const preview = diffPreview;
+      if (preview && canShowDiff(proposal)) {
+        void preview.isVSCodeRunning()
+          .then(running => (running ? preview.open(proposal) : undefined))
+          .catch(() => console.error(JSON.stringify({ event: 'diff-preview.failed' })));
+      }
     },
     moveToTrash: path => shell.trashItem(path),
     onApplied: entry => changeJournal.record(request.requestId, entry),
@@ -696,6 +709,19 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     activeRequest = undefined;
     activeFileOperationApproval = undefined;
     activeActionApproval = undefined;
+    activeProposals.clear();
+  }
+});
+
+ipcMain.handle('vyomara:file-diff-open', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Diff request is invalid.');
+  const proposal = typeof input === 'string' ? activeProposals.get(input) : undefined;
+  if (!proposal) throw new Error('This change is no longer waiting for review.');
+  if (!diffPreview) throw new Error('VS Code diffs are not available yet.');
+  try {
+    await diffPreview.open(proposal);
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'VS Code could not show the diff.');
   }
 });
 
@@ -1000,6 +1026,8 @@ ipcMain.handle('vyomara:persona-set', async (event, input: unknown) => {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  diffPreview = new VSCodeDiffPreview({ previewRoot: join(app.getPath('userData'), 'diff-previews') });
+  void diffPreview.clear().catch(() => undefined);
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const audioOnlyRequest = 'mediaTypes' in details &&
@@ -1065,6 +1093,7 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  void diffPreview?.clear().catch(() => undefined);
 });
 
 app.on('before-quit', () => {

@@ -5,8 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ToolFailure } from '../tools/contracts.ts';
 import type { AppControlAction, LauncherPort } from '../tools/action-tools.ts';
-
-const VSCODE_CLI = '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code';
+import { VSCODE_CLI } from './vscode-diff.ts';
 
 const APPLICATION_FOLDERS = [
   '/Applications',
