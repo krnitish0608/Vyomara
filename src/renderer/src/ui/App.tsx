@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import type {
   DesktopActionProposal,
   DesktopProviderStatus,
+  DesktopUndoStatus,
   DesktopFileOperationProposal,
   DesktopSpeechSetupStatus,
   DesktopSessionHistory,
@@ -19,7 +20,7 @@ import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
 import { appendVoiceDraft } from './voice-dictation.ts';
-import { approvalQuestion, isGoodbye, isLikelyNoise, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { approvalQuestion, isGoodbye, isLikelyNoise, isUndoRequest, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
 import { TurnCollector } from '../../../shared/turn-taking.ts';
 import { DEFAULT_PERSONA, PERSONAS, type PersonaId } from '../../../shared/persona.ts';
 import { playEarcon } from './earcon.ts';
@@ -37,6 +38,9 @@ export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /** The newest request's file changes that can still be undone. */
+  const [undoStatus, setUndoStatus] = useState<DesktopUndoStatus>({ available: false, paths: [] });
+  const [undoing, setUndoing] = useState(false);
   const [fileOperationProposals, setFileOperationProposals] = useState<DesktopFileOperationProposal[]>([]);
   const [actionProposals, setActionProposals] = useState<DesktopActionProposal[]>([]);
   const [toolActivities, setToolActivities] = useState<DesktopToolActivity[]>([]);
@@ -395,6 +399,12 @@ export function App() {
       content: trimmed,
     }]);
 
+    // "undo karo": the app puts back the last changes itself; the model is not asked.
+    if (isUndoRequest(trimmed)) {
+      await undoLastChange(speakResponse);
+      return;
+    }
+
     setRequestPending(true);
     currentVoiceRequest.current = speakResponse;
     setToolActivities([]);
@@ -441,6 +451,7 @@ export function App() {
       setActionProposals([]);
       setActionPendingId(undefined);
       setRequestPending(false);
+      void refreshUndoStatus();
     }
 
   }
@@ -718,6 +729,48 @@ export function App() {
   function toggleComposerDictation(): void {
     if (dictationRef.current) void stopDictation();
     else void startDictation('main');
+  }
+
+  async function refreshUndoStatus(): Promise<void> {
+    try {
+      setUndoStatus(await window.vyomara.getUndoStatus());
+    } catch {
+      setUndoStatus({ available: false, paths: [] });
+    }
+  }
+
+  /** Put back the last request's file changes and say what happened. */
+  async function undoLastChange(speakResponse = false): Promise<void> {
+    if (undoing || requestPending) return;
+    setUndoing(true);
+    const name = (path: string): string => path.split('/').at(-1) ?? path;
+    let reply: string;
+    let spoken: string;
+    try {
+      const result = await window.vyomara.undoLastChange();
+      if (result.restored.length === 0 && result.skipped.length === 0) {
+        reply = 'There are no changes to undo.';
+        spoken = 'Wapas karne ke liye koi badlaav nahi hai.';
+      } else {
+        const lines = [
+          ...(result.restored.length > 0 ? [`↶ Undid the last changes: ${result.restored.map(path => `\`${name(path)}\``).join(', ')}.`] : []),
+          ...(result.movedToTrash.length > 0 ? [`New files ${assistantName} had created are in the Trash: ${result.movedToTrash.map(path => `\`${name(path)}\``).join(', ')}.`] : []),
+          ...result.skipped.map(item => `- Left \`${name(item.path)}\` alone: ${item.reason}.`),
+        ];
+        reply = lines.join('\n\n');
+        spoken = result.restored.length > 0
+          ? `Theek hai, pichhle badlaav wapas kar diye.${result.skipped.length > 0 ? ' Kuch files nahi badli, screen par dekhiye.' : ''}`
+          : 'Ye files baad mein badli gayi thi, isliye wapas nahi ki. Screen par dekhiye.';
+      }
+    } catch (error) {
+      reply = error instanceof Error ? error.message : 'The changes could not be undone.';
+      spoken = 'Badlaav wapas nahi ho paaye.';
+    } finally {
+      setUndoing(false);
+    }
+    setMessages(current => [...current, { id: `undo-${Date.now()}`, role: 'assistant', content: reply }]);
+    if (speakResponse) void speak(spoken);
+    void refreshUndoStatus();
   }
 
   /** Switch between Vyom and Vyomara; the new assistant greets in its own voice. */
@@ -1332,6 +1385,18 @@ export function App() {
                   {message.role === 'assistant' && !message.failed
                     ? <MessageContent text={message.content} />
                     : <p className="message-text">{message.content}</p>}
+                  {undoStatus.available && undoStatus.requestId === message.id && !requestPending && (
+                    <button
+                      type="button"
+                      className="undo-button"
+                      onClick={() => void undoLastChange()}
+                      disabled={undoing}
+                      title={undoStatus.paths.map(path => path.split('/').at(-1) ?? path).join(', ')}
+                    >
+                      <span aria-hidden="true">↶</span> Undo these changes
+                      <small>{undoStatus.paths.length} file{undoStatus.paths.length === 1 ? '' : 's'} · or say “undo karo”</small>
+                    </button>
+                  )}
                 </div>
               </article>
             ))}

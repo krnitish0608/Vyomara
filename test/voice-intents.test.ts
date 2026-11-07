@@ -172,3 +172,13 @@ test('Devanagari is read in Roman letters by the male voice', () => {
   assert.equal(romanForSpeech('ठीक है, VS Code खोल दिया। अब क्या करूँ?'), 'theek hai, VS Code khol diya. ab kya karoon?');
   assert.equal(romanForSpeech('Apply karun?'), 'Apply karun?');
 });
+
+test('undo requests are recognised in English, Hinglish and Hindi', async () => {
+  const { isUndoRequest } = await import('../src/shared/voice-intents.ts');
+  for (const text of ['undo', 'Undo karo', 'undo kar do.', 'revert the last change', 'Please undo that', 'badlaav wapas karo', 'pichla change wapas kar do', 'अनडू करो', 'बदलाव वापस करो']) {
+    assert.equal(isUndoRequest(text), true, text);
+  }
+  for (const text of ['undo the rename in cart.js and add tests', 'how do I undo a git commit?', 'wapas aao', 'Chrome kholo']) {
+    assert.equal(isUndoRequest(text), false, text);
+  }
+});

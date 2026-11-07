@@ -218,6 +218,13 @@ The Ollama URL must be loopback (`localhost`, `127.0.0.1`, or `::1`).
   never followed.
 - **Edits:** Edits are atomic and fail if the file changed after you reviewed
   it.
+- **Undo:** Press **↶ Undo these changes** under a reply, or say or type
+  "undo karo", to put back the last request's approved file changes.
+  - Edited files get their exact earlier contents back.
+  - New files go to the Trash.
+  - A file you changed afterwards is left alone, and the reply says so.
+  - Deleted items are already in the Trash; restore them from Finder.
+  - Undo history lasts until Vyomara quits.
 - **Commands:** Commands run with your user permissions after you approve
   them. There is no sandbox, so read the command before approving.
   Interactive commands are not supported.

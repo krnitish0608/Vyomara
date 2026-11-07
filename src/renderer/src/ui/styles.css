@@ -679,3 +679,11 @@ body.pip-body #root { height: 100vh; }
 .persona-menu-text small { color: #7184ad; font-size: 8.5px; }
 .persona-check { color: #8fb4ff; font-size: 11px; }
 .persona-menu-note { margin: 4px 8px 3px; color: #7184ad; font-size: 8.5px; }
+
+/* Undo the last request's file changes, shown under the reply that made them. */
+.undo-button { display: inline-flex; align-items: center; gap: 7px; margin-top: 10px; padding: 6px 11px; border: 1px solid rgba(120, 150, 230, .3); border-radius: 9px; background: rgba(255, 255, 255, .035); color: #c6d3f2; font-size: 11px; cursor: pointer; transition: background .16s ease, border-color .16s ease; }
+.undo-button:hover:not(:disabled) { border-color: rgba(140, 170, 245, .6); background: rgba(70, 100, 190, .22); color: #fff; }
+.undo-button:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }
+.undo-button:disabled { opacity: .5; cursor: progress; }
+.undo-button > span { font-size: 14px; }
+.undo-button small { color: #7f8fb3; font-size: 9.5px; }

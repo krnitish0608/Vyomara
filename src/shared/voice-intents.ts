@@ -392,3 +392,21 @@ export function isLikelyNoise(transcript: string): boolean {
   // "haan haan" is a real answer; other doubled words ("झाल झाल") are noise.
   return words.length >= 3 || classifyYesNo(text) === 'unclear';
 }
+
+const UNDO_REQUESTS = [
+  /^(?:please |plz )?(?:undo|revert)(?: (?:it|that|this|karo|kar do|kardo|kijiye|please|the|last|my|your|change|changes|edit|edits|pichla|pichle|aakhri|badlaav|badlav))*$/u,
+  /^(?:(?:pichla|pichle|last|aakhri|abhi wala) )?(?:badlaav|badlav|badlao|change|changes|edit|edits) (?:wapas|vapas|undo|revert) (?:karo|kar do|kardo|le lo|lelo|kijiye)$/u,
+  /^(?:wapas|vapas) (?:karo|kar do|kardo|le lo|lelo)$/u,
+  /^(?:अनडू|रिवर्ट)(?: (?:करो|कर दो|कीजिए))?$/u,
+  /^(?:(?:पिछला|पिछले|आखिरी) )?(?:बदलाव|चेंज|चेंजेस) (?:वापस|अनडू) (?:करो|कर दो|ले लो|कीजिए)$/u,
+];
+
+/**
+ * "undo karo", "revert the last change", "badlaav wapas karo": the whole
+ * message asks to undo the last request's file changes. Handled by the app
+ * itself, not the model, so it always works the same way.
+ */
+export function isUndoRequest(text: string): boolean {
+  const words = speechWords(text).join(' ');
+  return words !== '' && UNDO_REQUESTS.some(pattern => pattern.test(words));
+}

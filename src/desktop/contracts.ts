@@ -254,8 +254,26 @@ export interface VyomaraDesktopApi {
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;
+  /** The newest request's file changes that can still be undone. */
+  getUndoStatus(): Promise<DesktopUndoStatus>;
+  /** Put back the newest request's file changes. */
+  undoLastChange(): Promise<DesktopUndoResult>;
   /** Which assistant answers and speaks: Vyom (male) or Vyomara (female). */
   getPersona(): Promise<PersonaId>;
   setPersona(id: PersonaId): Promise<PersonaId>;
   onActivity(listener: (event: DiagnosticEvent) => void): () => void;
+}
+
+export interface DesktopUndoStatus {
+  readonly available: boolean;
+  /** The request whose changes would be undone. */
+  readonly requestId?: string;
+  readonly paths: readonly string[];
+}
+
+export interface DesktopUndoResult {
+  readonly restored: readonly string[];
+  /** Files the assistant had created; undoing moved them to the Trash. */
+  readonly movedToTrash: readonly string[];
+  readonly skipped: readonly { readonly path: string; readonly reason: string }[];
 }

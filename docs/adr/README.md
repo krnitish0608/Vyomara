@@ -31,6 +31,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0019](./0019-mini-controller-window.md) | Mini controller window (PiP), ⌥Space, model warm-up | Accepted |
 | [0020](./0020-orb-conversation-mode.md) | Orb conversation mode and turn-taking | Accepted |
 | [0021](./0021-two-assistants-vyom-and-vyomara.md) | Two assistants: Vyom (male) and Vyomara (female) | Accepted |
+| [0022](./0022-undo-approved-file-changes.md) | Undo approved file changes | Accepted |
 
 ## Open decisions
 

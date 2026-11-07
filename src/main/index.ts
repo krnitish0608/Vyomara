@@ -1,3 +1,4 @@
+import { ChangeJournal } from '../desktop/change-journal.ts';
 import { DEFAULT_PERSONA, isPersonaId, personaFor, type PersonaId } from '../shared/persona.ts';
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, screen, session, shell, systemPreferences } from 'electron';
 import type { SaveDialogOptions } from 'electron';
@@ -18,6 +19,7 @@ import {
   saveSelectedModel,
 } from '../app/application.ts';
 import type { SavedModelSettings } from '../app/application.ts';
+import type { DesktopUndoResult, DesktopUndoStatus } from '../desktop/contracts.ts';
 import { loadConfig, validateOllamaModel } from '../config/config.ts';
 import { OllamaProvider } from '../providers/provider.ts';
 import { PersistenceError } from '../storage/sqlite-store.ts';
@@ -66,6 +68,10 @@ const shellCommandRunner = new ShellCommandRunner();
 /** Standing permissions (apps, browsers, web hosts) are loaded from disk at startup. */
 let approvalMemory = new ApprovalMemory();
 const macSpeechRunner = new MacSpeechRunner();
+/** Approved file changes per request, so "undo karo" can put them back. */
+const changeJournal = new ChangeJournal({ moveToTrash: path => shell.trashItem(path) });
+/** Told to the model on the next request in a session after an undo. */
+const undoNotes = new Map<string, string>();
 /** Keeps the speech model loaded while listening is on. */
 const whisperServer = new LocalWhisperServer();
 const macApplicationLauncher = process.platform === 'darwin'
@@ -639,8 +645,13 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
       mainWindow.webContents.send('vyomara:file-operation-proposed', proposal);
     },
     moveToTrash: path => shell.trashItem(path),
+    onApplied: entry => changeJournal.record(request.requestId, entry),
   });
   activeFileOperationApproval = approvals;
+  changeJournal.begin(request.requestId, request.sessionId);
+  // After an undo, the model must know its earlier changes are gone.
+  const undoNote = request.sessionId === undefined ? undefined : undoNotes.get(request.sessionId);
+  if (request.sessionId !== undefined) undoNotes.delete(request.sessionId);
   const actionApprovals = new ActionApprovalManager({
     onProposal(proposal) {
       if (!mainWindow || mainWindow.isDestroyed()) {
@@ -654,8 +665,8 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
   };
   try {
-    return await runRequest(
-      request.prompt,
+    const result = await runRequest(
+      undoNote === undefined ? request.prompt : `${undoNote}\n\n${request.prompt}`,
       controller.signal,
       desktopConfig,
       createDesktopLogger(),
@@ -677,6 +688,8 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
         },
       },
     );
+    changeJournal.setSession(request.requestId, result.sessionId);
+    return result;
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   } finally {
@@ -684,6 +697,29 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     activeFileOperationApproval = undefined;
     activeActionApproval = undefined;
   }
+});
+
+ipcMain.handle('vyomara:undo-status', (event): DesktopUndoStatus => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Undo request is invalid.');
+  const group = changeJournal.last();
+  return group
+    ? { available: true, requestId: group.requestId, paths: group.entries.map(entry => entry.path) }
+    : { available: false, paths: [] };
+});
+
+ipcMain.handle('vyomara:undo-last', async (event): Promise<DesktopUndoResult> => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Undo request is invalid.');
+  if (activeRequest) throw new Error('Wait for the current task to finish, then undo.');
+  const result = await changeJournal.undoLast();
+  const sessionId = result.group?.sessionId;
+  if (sessionId !== undefined && result.restored.length > 0) {
+    const restored = result.restored.map(path => path.split('/').at(-1) ?? path).join(', ');
+    const skipped = result.skipped.map(item => `${item.path.split('/').at(-1) ?? item.path} (${item.reason})`).join('; ');
+    undoNotes.set(sessionId, `[Note from the Vyomara app: the user undid your file changes from the previous request. `
+      + `These are back to how they were before your changes: ${restored}.${skipped ? ` Not restored: ${skipped}.` : ''} `
+      + `Read files again before changing them.]`);
+  }
+  return { restored: result.restored, movedToTrash: result.movedToTrash, skipped: result.skipped };
 });
 
 ipcMain.handle('vyomara:file-operation-approve', async (event, input: unknown) => {

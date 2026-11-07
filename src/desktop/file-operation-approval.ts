@@ -12,6 +12,7 @@ import type {
   FileOperationResult,
 } from './contracts.ts';
 import { resolveSafeFilesystemPath } from '../tools/filesystem-tools.ts';
+import { sha256, type JournalEntry } from './change-journal.ts';
 
 interface FileSnapshot {
   readonly path: string;
@@ -47,6 +48,8 @@ export interface FileOperationApprovalOptions {
   readonly config: AppConfig;
   readonly onProposal: (proposal: DesktopFileOperationProposal) => void;
   readonly moveToTrash: (path: string) => Promise<void>;
+  /** Called after each change is applied, so it can be undone later. */
+  readonly onApplied?: (entry: JournalEntry) => void;
 }
 
 /** A safe, user- and model-facing explanation of why a reviewed change could not proceed. */
@@ -349,6 +352,7 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
       if (request.operation === 'create-directory') {
         if (pending.signal.aborted) throw new OperationStoppedError('cancelled');
         await mkdir(targetPath, { mode: 0o700 });
+        this.#options.onApplied?.({ kind: 'created-directory', path: targetPath });
         return;
       }
       const content = Buffer.from(request.content ?? '', 'utf8');
@@ -370,6 +374,7 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
         throw error;
       }
       await file.close();
+      this.#options.onApplied?.({ kind: 'created-file', path: targetPath, afterHash: sha256(content) });
       return;
     }
 
@@ -388,15 +393,18 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
     if (!snapshotMatches(snapshot, current)) {
       throw new Error('The file changed after review; no operation was performed.');
     }
+    let before: Buffer | undefined;
     if (snapshot.contentHash !== undefined) {
       const read = await readFileSnapshot(targetPath, current, this.#options.config.maxFileBytes);
       if (read.snapshot.contentHash !== snapshot.contentHash) {
         throw new Error('The file contents changed after review; no operation was performed.');
       }
+      before = Buffer.from(read.bytes);
     }
     if (request.operation === 'delete') {
       if (pending.signal.aborted) throw new OperationStoppedError('cancelled');
       await this.#options.moveToTrash(targetPath);
+      this.#options.onApplied?.({ kind: 'trashed', path: targetPath });
       return;
     }
     if (request.operation !== 'edit-file') throw new Error('Unsupported reviewed file operation.');
@@ -430,6 +438,9 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw error;
+    }
+    if (before !== undefined) {
+      this.#options.onApplied?.({ kind: 'edited', path: targetPath, before, afterHash: sha256(content), mode: snapshot.mode });
     }
   }
 }

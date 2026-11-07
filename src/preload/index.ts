@@ -153,6 +153,12 @@ const api: VyomaraDesktopApi = {
   stopSpeaking() {
     return ipcRenderer.invoke('vyomara:speech-stop');
   },
+  getUndoStatus() {
+    return ipcRenderer.invoke('vyomara:undo-status');
+  },
+  undoLastChange() {
+    return ipcRenderer.invoke('vyomara:undo-last');
+  },
   getPersona() {
     return ipcRenderer.invoke('vyomara:persona-get');
   },
