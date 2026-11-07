@@ -16,6 +16,47 @@ export function VyomaraMark({ tile = true }: { readonly tile?: boolean }) {
   );
 }
 
+/**
+ * The Vyomara mark at work: the core's wave bars move while two satellites
+ * travel the orbits in opposite directions. Shown while the assistant thinks.
+ * CSS-only motion, so the reduced-motion setting stops it.
+ */
+export function ThinkingMark() {
+  return (
+    <svg className="thinking-mark" viewBox="0 0 64 64" aria-hidden="true">
+      <defs>
+        <radialGradient id="thinking-core-fill" cx="40%" cy="35%" r="70%">
+          <stop offset="0%" stopColor="#5a63ff" />
+          <stop offset="70%" stopColor="#2426a8" />
+          <stop offset="100%" stopColor="#171a6e" />
+        </radialGradient>
+      </defs>
+      <g transform="rotate(-27 32 32)">
+        <ellipse cx="32" cy="32" rx="27" ry="11" fill="none" stroke="#27d9ff" strokeWidth="1.6" opacity=".55" />
+        <g transform="translate(32 32) scale(1 .407)">
+          <g className="thinking-satellite">
+            <circle cx="27" cy="0" r="3.4" fill="#9ff8ff" />
+          </g>
+        </g>
+      </g>
+      <g transform="rotate(33 32 32)">
+        <ellipse cx="32" cy="32" rx="24" ry="9" fill="none" stroke="#a368ff" strokeWidth="1.3" opacity=".5" strokeDasharray="30 8" />
+        <g transform="translate(32 32) scale(1 .375)">
+          <g className="thinking-satellite thinking-satellite-reverse">
+            <circle cx="24" cy="0" r="3" fill="#dcb4ff" />
+          </g>
+        </g>
+      </g>
+      <circle className="thinking-core" cx="32" cy="32" r="15" fill="url(#thinking-core-fill)" stroke="#7b6dff" strokeWidth="1.2" />
+      <rect className="mark-wave-bar mark-wave-bar-1" x="23" y="29.5" width="2.6" height="5" rx="1.3" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-2" x="27.3" y="25.5" width="2.6" height="13" rx="1.3" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-3" x="31.6" y="22.5" width="2.6" height="19" rx="1.3" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-4" x="35.9" y="26.5" width="2.6" height="11" rx="1.3" fill="#e9f4ff" />
+      <rect className="mark-wave-bar mark-wave-bar-5" x="40.2" y="29" width="2.6" height="6" rx="1.3" fill="#e9f4ff" />
+    </svg>
+  );
+}
+
 function VoiceWave({ side }: { readonly side: 'left' | 'right' }) {
   return (
     <span className={`voice-waveform voice-waveform-${side}`} aria-hidden="true">

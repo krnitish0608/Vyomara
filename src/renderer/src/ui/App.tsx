@@ -14,7 +14,7 @@ import type {
 } from '../../../desktop/contracts.ts';
 import { activityIcon, activityLabel } from './activity.ts';
 import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
-import { VoiceOrb, VyomaraMark } from './brand.tsx';
+import { ThinkingMark, VoiceOrb, VyomaraMark } from './brand.tsx';
 import { MemoriesPanel } from './memories-panel.tsx';
 import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
@@ -1450,8 +1450,8 @@ export function App() {
             ))}
             {requestPending && (
               <div className="pending-state" role="status" aria-live="polite">
-                <span className="thinking-indicator" aria-hidden="true"><i /><i /><i /></span>
-                <span>{pendingApprovals > 0
+                <ThinkingMark />
+                <span className="thinking-text">{pendingApprovals > 0
                   ? 'Waiting for your approval…'
                   : runningActivity ? `${runningActivity.label}…` : `${assistantName} is thinking…`}</span>
                 <button type="button" onClick={() => void cancel()}>Stop</button>
