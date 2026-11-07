@@ -14,6 +14,8 @@ export interface AgentEnvironment {
   readonly activeProject?: string;
   /** e.g. "branch dev, 3 changed files" for the active project, when it is a git repository. */
   readonly activeProjectGit?: string;
+  /** Facts the user asked to keep across conversations (general, or for the active project). */
+  readonly memories?: readonly { readonly text: string; readonly project?: string }[];
   /** The active project's own notes for coding agents (AGENTS.md, CLAUDE.md, …). */
   readonly projectInstructions?: readonly { readonly file: string; readonly text: string }[];
 }
@@ -241,6 +243,12 @@ The active project's own notes for coding agents. Follow them for how to build, 
 ${environment.projectInstructions.map(item => `## ${item.file}\n${item.text}`).join('\n\n')}`]
       : []),
 
+    ...(environment.memories && environment.memories.length > 0
+      ? [`# What you remember about the user
+Facts the user asked you to keep in earlier conversations. Treat them as true and use them instead of guessing (for example, "my project" means the project named here). If the user now says something different, follow the user. They can see and delete these in the Memories panel.
+${environment.memories.map(entry => `- ${entry.text}${entry.project ? ` (project: ${entry.project})` : ''}`).join('\n')}`]
+      : []),
+
     `# How to work
 - Simple questions (greetings, general knowledge, explanations): answer directly without tools.
 - Anything about the user's files, projects, or code: use tools to look first. Never guess or invent file contents, paths, search results, or command output.
@@ -251,6 +259,12 @@ ${environment.projectInstructions.map(item => `## ${item.file}\n${item.text}`).j
 - For a task with three or more steps, first call update_plan with a short checklist, then update it as steps finish (mark the current step "[>]"). Skip the plan for quick questions.
 - Work step by step until the task is fully done. Do not stop to ask for permission for read-only steps. Never end your turn by announcing what you will do next ("Let me search…"): either call the tool now or give your final answer.`,
   ];
+
+  if (has('remember')) {
+    sections.push(`# Remembering
+- When the user asks you to remember something ("yaad rakhna", "remember that…") or states a lasting preference or project fact, call remember with one short sentence (with project_path for a project fact). Then confirm briefly.
+- Never remember secrets (passwords, keys, tokens) or one-off details of the current task.`);
+  }
 
   if (canEdit) {
     sections.push(`# Changing code

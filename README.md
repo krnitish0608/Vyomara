@@ -24,6 +24,7 @@ will become the primary interface later. See
 | "VS Code full screen karo" / "maximize karo" / "hide karo" | Focuses, hides, minimizes, restores, maximizes, full-screens, or quits a running app. Quitting always asks. |
 | "cart.js mein applyDiscount VS Code mein kholo" | Finds the definition and opens VS Code at that line, after you approve. |
 | "undo karo" | Puts back the last request's approved file changes. |
+| "yaad rakhna: mera main project KeylessRN hai" | Remembers it for future conversations. See or delete memories in the **Memories** panel. |
 
 **You approve every action.**
 - **File edits:** shown as a diff, in Vyomara and, when it is open, in VS

@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/config.ts';
+import { MemoryStore } from '../storage/memory-store.ts';
 import type { PersonaId } from '../shared/persona.ts';
 import type { Logger } from '../types.ts';
 import type { SessionMessage } from '../session/session.ts';
@@ -115,11 +116,13 @@ export async function runRequest(
       ? store.createSession()
       : store.getSession(options.sessionId);
     const taskLogger = withPersistentAudit(logger, store);
+    const memory = new MemoryStore(config.dataDirectory);
     const tools = new ToolExecutor({
       registry: createDefaultToolRegistry(config, {
         ...(options.includeFilesystemTools === undefined ? {} : { includeFilesystemTools: options.includeFilesystemTools }),
         ...(options.fileOperationApproval ? { fileOperationApproval: options.fileOperationApproval } : {}),
         ...(options.actions ? { actions: options.actions } : {}),
+        memory,
       }),
       policy: new PolicyGateway({
         allowedEffects: options.actions ? ['launch', 'shell', 'network'] : [],
@@ -142,6 +145,7 @@ export async function runRequest(
         ...(options.onPlan ? { onPlan: options.onPlan } : {}),
         ...(options.voice ? { voice: true } : {}),
         ...(options.persona ? { persona: options.persona } : {}),
+        memory,
       });
     } catch (error) {
       requestError = error;

@@ -34,6 +34,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0022](./0022-undo-approved-file-changes.md) | Undo approved file changes | Accepted |
 | [0023](./0023-proposed-changes-as-vs-code-diffs.md) | Show proposed file changes as VS Code diffs | Accepted |
 | [0024](./0024-coding-agent-project-context.md) | Project instructions, language, and batch edit approval | Accepted |
+| [0025](./0025-memories-across-conversations.md) | Memories across conversations | Accepted |
 
 ## Open decisions
 

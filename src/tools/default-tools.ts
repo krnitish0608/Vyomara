@@ -5,6 +5,8 @@ import type { FileOperationApprovalPort } from '../desktop/contracts.ts';
 import { registerActionTools, registerWebTools } from './action-tools.ts';
 import type { ActionToolPorts } from './action-tools.ts';
 import { registerPlanTool } from './plan-tool.ts';
+import { registerMemoryTool } from './memory-tool.ts';
+import type { MemoryStore } from '../storage/memory-store.ts';
 
 export interface ToolRegistryOptions {
   readonly includeFilesystemTools?: boolean;
@@ -12,6 +14,8 @@ export interface ToolRegistryOptions {
   readonly fileOperationApproval?: FileOperationApprovalPort;
   /** Enables run_command, open_application, open_url, fetch_url, web_search (each approved by the user). */
   readonly actions?: ActionToolPorts;
+  /** Enables remember: lasting facts for future conversations. */
+  readonly memory?: MemoryStore;
 }
 
 export function createDefaultToolRegistry(
@@ -20,6 +24,7 @@ export function createDefaultToolRegistry(
 ): ToolRegistry {
   const registry = new ToolRegistry();
   registerPlanTool(registry);
+  if (options.memory) registerMemoryTool(registry, options.memory);
   const includeFilesystemTools = options.includeFilesystemTools ?? config.filesystemAllowedRoots.length > 0;
   if (includeFilesystemTools) {
     registerFilesystemTools(registry, config, {}, options.fileOperationApproval);

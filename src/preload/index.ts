@@ -156,6 +156,12 @@ const api: VyomaraDesktopApi = {
   approveAllFileOperations(id: string) {
     return ipcRenderer.invoke('vyomara:file-operation-approve-all', id);
   },
+  listMemories() {
+    return ipcRenderer.invoke('vyomara:memories-list');
+  },
+  forgetMemory(id: string) {
+    return ipcRenderer.invoke('vyomara:memory-forget', id);
+  },
   openFileDiff(id: string) {
     return ipcRenderer.invoke('vyomara:file-diff-open', id);
   },

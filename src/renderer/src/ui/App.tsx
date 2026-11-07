@@ -16,6 +16,7 @@ import type {
 import { activityIcon, activityLabel } from './activity.ts';
 import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
 import { VoiceOrb, VyomaraMark } from './brand.tsx';
+import { MemoriesPanel } from './memories-panel.tsx';
 import { MessageContent } from './markdown.tsx';
 import { ModelsPanel } from './models-panel.tsx';
 import { PermissionsPanel } from './permissions-panel.tsx';
@@ -47,6 +48,7 @@ export function App() {
   const [plan, setPlan] = useState<DesktopPlan['steps']>([]);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
   const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
   const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
   const [actionPendingId, setActionPendingId] = useState<string>();
@@ -134,6 +136,8 @@ export function App() {
   const modelsTrigger = useRef<HTMLButtonElement>(null);
   const modelsHeading = useRef<HTMLHeadingElement>(null);
   const permissionsTrigger = useRef<HTMLButtonElement>(null);
+  const memoriesTrigger = useRef<HTMLButtonElement>(null);
+  const memoriesHeading = useRef<HTMLHeadingElement>(null);
   const permissionsHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -382,11 +386,15 @@ export function App() {
         setPermissionsOpen(false);
         permissionsTrigger.current?.focus();
       }
+      if (memoriesOpen) {
+        setMemoriesOpen(false);
+        memoriesTrigger.current?.focus();
+      }
     }
 
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [historyOpen, modelsOpen, permissionsOpen]);
+  }, [historyOpen, modelsOpen, permissionsOpen, memoriesOpen]);
 
   async function submitPrompt(value: string, speakResponse = false): Promise<void> {
     const trimmed = value.trim();
@@ -939,6 +947,7 @@ export function App() {
     }
     setHistoryOpen(false);
     setPermissionsOpen(false);
+    setMemoriesOpen(false);
     setModelsOpen(true);
   }
 
@@ -949,7 +958,19 @@ export function App() {
     }
     setHistoryOpen(false);
     setModelsOpen(false);
+    setMemoriesOpen(false);
     setPermissionsOpen(true);
+  }
+
+  function toggleMemories(): void {
+    if (memoriesOpen) {
+      setMemoriesOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setModelsOpen(false);
+    setPermissionsOpen(false);
+    setMemoriesOpen(true);
   }
 
   async function toggleHistory(): Promise<void> {
@@ -960,6 +981,7 @@ export function App() {
 
     setModelsOpen(false);
     setPermissionsOpen(false);
+    setMemoriesOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
@@ -1335,6 +1357,16 @@ export function App() {
               <span aria-hidden="true">✓</span> Permissions
             </button>
             <button
+              ref={memoriesTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={toggleMemories}
+              aria-expanded={memoriesOpen}
+              aria-controls={memoriesOpen ? 'memories-panel' : undefined}
+            >
+              <span aria-hidden="true">✦</span> Memories
+            </button>
+            <button
               ref={historyTrigger}
               className="side-nav-item"
               type="button"
@@ -1527,7 +1559,13 @@ export function App() {
           </p>
         </section>
 
-        {permissionsOpen ? (
+        {memoriesOpen ? (
+          <MemoriesPanel
+            assistantName={assistantName}
+            headingRef={memoriesHeading}
+            onClose={() => { setMemoriesOpen(false); memoriesTrigger.current?.focus(); }}
+          />
+        ) : permissionsOpen ? (
           <PermissionsPanel
             assistantName={assistantName}
             headingRef={permissionsHeading}

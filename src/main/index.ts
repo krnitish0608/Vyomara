@@ -1,3 +1,4 @@
+import { MemoryStore } from '../storage/memory-store.ts';
 import { canShowDiff, VSCodeDiffPreview } from '../desktop/vscode-diff.ts';
 import { ChangeJournal } from '../desktop/change-journal.ts';
 import { DEFAULT_PERSONA, isPersonaId, personaFor, type PersonaId } from '../shared/persona.ts';
@@ -789,6 +790,24 @@ ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
+});
+
+function memoryStore(): MemoryStore {
+  if (!config) throw new Error('Application configuration is unavailable.');
+  return new MemoryStore(config.dataDirectory);
+}
+
+ipcMain.handle('vyomara:memories-list', event => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Memory request is invalid.');
+  return memoryStore().list();
+});
+
+ipcMain.handle('vyomara:memory-forget', (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Memory request is invalid.');
+  if (typeof input !== 'string') throw new Error('Choose a memory to forget.');
+  const store = memoryStore();
+  store.remove(input);
+  return store.list();
 });
 
 ipcMain.handle('vyomara:permissions-list', () => permissionsState());

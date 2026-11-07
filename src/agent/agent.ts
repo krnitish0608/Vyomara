@@ -12,6 +12,7 @@ import { TOOL_ID_PATTERN } from '../tools/contracts.ts';
 import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
 import { buildSystemPrompt, detectEnvironment } from './system-prompt.ts';
 import type { PersonaId } from '../shared/persona.ts';
+import type { MemoryStore } from '../storage/memory-store.ts';
 import type { AgentEnvironment } from './system-prompt.ts';
 import type { PlanStep } from '../tools/plan-tool.ts';
 
@@ -51,6 +52,8 @@ export interface AgentOptions {
   readonly voice?: boolean;
   /** Which assistant (name, gender) answers. */
   readonly persona?: PersonaId;
+  /** Lasting facts from earlier conversations, shown in the system prompt. */
+  readonly memory?: MemoryStore;
   /** Overrides environment discovery (used by tests). */
   readonly environment?: AgentEnvironment;
 }
@@ -142,6 +145,9 @@ function verifiedAction(
     return result.status === 'applied'
       ? { ok: true, text: `${verb} ${path}` }
       : { ok: false, text: `You rejected: ${verb.toLowerCase()} ${path} (not changed)` };
+  }
+  if (toolId === 'remember' && result.ok === true) {
+    return { ok: true, text: `Remembered: “${clip(String(result.remembered ?? ''), 120)}”` };
   }
   if (toolId === 'run_command') {
     const command = `\`${clip(String(result.command ?? args.command ?? ''), 70)}\``;
@@ -341,7 +347,11 @@ async function runAgentTask(
   const readOnlyRequest = forbidsChanges(prompt);
   const modelTools = (toolCapable ? tools.modelTools() : [])
     .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id));
-  const environment = options.environment ?? detectEnvironment(session.messages());
+  const detected = options.environment ?? detectEnvironment(session.messages());
+  const memories = options.memory?.relevant(detected.activeProject) ?? [];
+  const environment = memories.length > 0
+    ? { ...detected, memories: memories.map(entry => ({ text: entry.text, ...(entry.project ? { project: entry.project } : {}) })) }
+    : detected;
   const system = buildSystemPrompt(environment, modelTools, {
     chatOnly: !toolCapable,
     ...(options.voice ? { voice: true } : {}),

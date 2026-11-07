@@ -256,6 +256,9 @@ export interface VyomaraDesktopApi {
   stopSpeaking(): Promise<boolean>;
   /** Approve this change and all later edits in the current task (not deletions). */
   approveAllFileOperations(id: string): Promise<void>;
+  /** What the assistant remembers across conversations. */
+  listMemories(): Promise<readonly DesktopMemory[]>;
+  forgetMemory(id: string): Promise<readonly DesktopMemory[]>;
   /** Show a file change waiting for review as a diff in VS Code. */
   openFileDiff(id: string): Promise<void>;
   /** The newest request's file changes that can still be undone. */
@@ -280,4 +283,12 @@ export interface DesktopUndoResult {
   /** Files the assistant had created; undoing moved them to the Trash. */
   readonly movedToTrash: readonly string[];
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
+}
+
+export interface DesktopMemory {
+  readonly id: string;
+  readonly text: string;
+  /** Project root, when the memory is about one project. */
+  readonly project?: string;
+  readonly createdAt: string;
 }
