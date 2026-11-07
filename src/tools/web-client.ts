@@ -108,6 +108,16 @@ export class HttpWebClient implements WebClientPort {
     return { url: finalUrl.href, title: '', text: body.trim(), links: [] };
   }
 
+  /** Raw text of a public feed or API response (RSS, Atom, JSON); same safety rules as fetchPage. */
+  async fetchRaw(url: string, signal: AbortSignal): Promise<string> {
+    const { response, url: finalUrl } = await this.#get(new URL(url), signal, false, 'application/rss+xml,application/atom+xml,application/json,application/xml,text/xml;q=0.9,*/*;q=0.5');
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ToolFailure(`${finalUrl.hostname} answered HTTP ${response.status}.`, 'tool-failed');
+    }
+    return readLimited(response, signal);
+  }
+
   async search(query: string, signal: AbortSignal): Promise<readonly WebSearchResult[]> {
     if (!this.#searxng) throw new ToolFailure('Web search is not configured.', 'unsupported-operation');
     const url = new URL('search', this.#searxng.href.endsWith('/') ? this.#searxng : `${this.#searxng.href}/`);

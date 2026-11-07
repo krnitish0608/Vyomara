@@ -855,3 +855,12 @@ body.pip-body #root { height: 100vh; }
 .voice-orb-mark { inset: 16%; }
 /* The violet orbit of the mark, as visible as the cyan one. */
 .orbit-mark .orbit-violet { opacity: 1; stroke: #c08bff; filter: drop-shadow(0 0 2px rgba(180, 110, 255, .9)); }
+
+/* Long links and words wrap inside the reply instead of widening it. */
+.message-content, .message-content p, .message-content li, .message-text { overflow-wrap: anywhere; }
+.message-content pre { max-width: 100%; overflow-x: auto; }
+.md-link { color: #8fc2ff; text-decoration: underline; text-decoration-color: rgba(143, 194, 255, .4); text-underline-offset: 2px; cursor: pointer; }
+.md-link:hover { color: #c3dcff; text-decoration-color: currentColor; }
+/* Back to the newest reply after scrolling up. */
+.jump-to-latest { align-self: center; margin: -46px 0 10px; z-index: 3; padding: 6px 13px; border: 1px solid rgba(120, 150, 230, .4); border-radius: 999px; background: rgba(14, 22, 52, .95); color: #cfe0ff; font-size: 11px; cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
+.jump-to-latest:hover { border-color: rgba(140, 170, 245, .7); color: #fff; }

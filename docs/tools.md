@@ -120,3 +120,22 @@ FileVault.
 Portable path APIs cannot rule out every race with a hostile local process.
 Vyomara revalidates right before each change but does not claim race-free
 protection.
+
+## Finding things on the web
+
+When the user wants information, the agent finds it and answers in the chat
+with linked sources. It opens a page only when the user asks to see one.
+
+| Tool | What it does | Approval |
+|---|---|---|
+| `news_headlines` | Headlines from Google News RSS: title, publisher, time, link. Takes an optional topic and `hi` for Hindi. | `news.google.com` |
+| `web_search` | Uses SearXNG when configured. Without it, searches Wikipedia's search API (facts) and Google News RSS (current events). | the search host |
+| `fetch_url` | Reads a public page in the background. | per host |
+| `browser` | Drives the user's own Chrome, visibly: `search` Google and read the results, `open`, `read` the front tab (including signed-in pages), `click` a numbered link, `scroll`, `back`. | One "Always allow" for Google Chrome covers browsing. |
+
+The `browser` tool needs Chrome's **View → Developer → Allow JavaScript from
+Apple Events**, and macOS permission for Vyomara to control Chrome. It stops at
+CAPTCHA and sign-in pages and never tries to get around them.
+
+`control_application` can also `scroll-down` / `scroll-up` any app. It sends
+Page Down / Page Up and needs Accessibility access.

@@ -116,6 +116,17 @@ export function describeToolCall(toolId: string, args: Readonly<Record<string, u
       return `Reading ${clip(String(args.url ?? ''), 60)}`;
     case 'web_search':
       return `Searching the web for “${clip(String(args.query ?? ''), 50)}”`;
+    case 'news_headlines':
+      return `Getting the news${args.topic ? ` about “${clip(String(args.topic), 40)}”` : ''}`;
+    case 'browser': {
+      const action = String(args.action ?? 'read');
+      if (action === 'search') return `Searching Google in Chrome for “${clip(String(args.query ?? ''), 45)}”`;
+      if (action === 'open') return `Opening ${clip(String(args.url ?? ''), 55)} in Chrome`;
+      if (action === 'click') return `Clicking link ${String(args.link ?? '')} in Chrome`;
+      if (action === 'scroll') return `Scrolling ${String(args.direction ?? 'down')} in Chrome`;
+      if (action === 'back') return 'Going back in Chrome';
+      return 'Reading the page in Chrome';
+    }
     default:
       return `Using ${toolId}`;
   }
@@ -186,6 +197,17 @@ function verifiedAction(
       ? { ok: true, text: `Searched the web for ${query}` }
       : { ok: false, text: `You rejected searching for ${query}` };
   }
+  if (toolId === 'news_headlines') {
+    return result.status === 'fetched'
+      ? { ok: true, text: `Read the news${args.topic ? ` about “${clip(String(args.topic), 40)}”` : ''} (Google News)` }
+      : { ok: false, text: 'You rejected reading the news' };
+  }
+  if (toolId === 'browser') {
+    if (result.status !== 'done') return { ok: false, text: `You rejected using Chrome (${String(args.action ?? '')})` };
+    const where = clip(String(result.title || result.url || ''), 70);
+    const verb = args.action === 'search' ? `Searched Google for “${clip(String(args.query ?? ''), 40)}”` : args.action === 'open' ? 'Opened' : args.action === 'click' ? 'Clicked to' : args.action === 'scroll' ? 'Scrolled' : args.action === 'back' ? 'Went back to' : 'Read';
+    return { ok: true, text: `${verb} ${where} in Chrome` };
+  }
   return undefined;
 }
 
@@ -193,7 +215,9 @@ const INVALID_CALL_CODES = new Set(['invalid-input', 'input-too-large', 'unknown
 
 const MUTATING_TOOLS = new Set([
   'edit_file', 'write_file', 'create_directory', 'delete_path', 'run_command', 'open_application', 'open_url',
-  'fetch_url', 'web_search', 'control_application',
+  'fetch_url', 'web_search', 'control_application', 'news_headlines',
+  // Scrolling or reading again is a real step, not a repeated mistake.
+  'browser',
 ]);
 
 const CONTINUE_NUDGE =

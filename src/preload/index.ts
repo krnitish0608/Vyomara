@@ -156,6 +156,9 @@ const api: VyomaraDesktopApi = {
   approveAllFileOperations(id: string) {
     return ipcRenderer.invoke('vyomara:file-operation-approve-all', id);
   },
+  openLink(url: string) {
+    return ipcRenderer.invoke('vyomara:open-link', url);
+  },
   listMemories() {
     return ipcRenderer.invoke('vyomara:memories-list');
   },

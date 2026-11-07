@@ -2,22 +2,57 @@ import type { ReactNode } from 'react';
 
 /**
  * Small, safe Markdown renderer for assistant replies: fenced code blocks,
- * headings, bullet/numbered lists, horizontal rules, **bold**, and `code`.
- * It builds React elements only (no HTML injection).
+ * headings, bullet/numbered lists, horizontal rules, **bold**, `code`, and
+ * links ([text](https://…) and bare URLs). It builds React elements only (no
+ * HTML injection); links open in the user's browser, never inside the app.
  */
+
+/** "https://news.google.com/rss/articles/CBMi…" → "news.google.com/…" for bare links. */
+export function shortUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname === '/' ? '' : parsed.pathname;
+    const shown = `${parsed.hostname.replace(/^www\./u, '')}${path}`;
+    return shown.length > 48 ? `${shown.slice(0, 46)}…` : shown;
+  } catch {
+    return url;
+  }
+}
+
+function Link({ url, children }: { readonly url: string; readonly children: ReactNode }) {
+  return (
+    <a
+      className="md-link"
+      href={url}
+      title={url}
+      onClick={event => {
+        event.preventDefault();
+        void window.vyomara.openLink(url);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 function inline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/gu;
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s)<>\]]+)/gu;
   let last = 0;
   let index = 0;
   for (const match of text.matchAll(pattern)) {
     const start = match.index ?? 0;
     if (start > last) nodes.push(text.slice(last, start));
     const token = match[0];
+    const key = `${keyPrefix}-${index}`;
+    const named = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/u.exec(token);
     nodes.push(token.startsWith('`')
-      ? <code key={`${keyPrefix}-${index}`} className="md-inline-code">{token.slice(1, -1)}</code>
-      : <strong key={`${keyPrefix}-${index}`}>{token.slice(2, -2)}</strong>);
+      ? <code key={key} className="md-inline-code">{token.slice(1, -1)}</code>
+      : token.startsWith('**')
+        ? <strong key={key}>{token.slice(2, -2)}</strong>
+        : named
+          ? <Link key={key} url={named[2] ?? ''}>{named[1]}</Link>
+          : <Link key={key} url={token.replace(/[.,;:!?]+$/u, '')}>{shortUrl(token.replace(/[.,;:!?]+$/u, ''))}</Link>);
     last = start + token.length;
     index += 1;
   }

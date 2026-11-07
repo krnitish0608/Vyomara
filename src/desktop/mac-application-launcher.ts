@@ -125,7 +125,30 @@ export class MacApplicationLauncher implements LauncherPort {
         'end run',
       ],
       quit: ['on run argv', 'tell application id (item 1 of argv) to quit', 'end run'],
+      // Page Down / Page Up sent to the app (needs Accessibility permission for Vyomara).
+      'scroll-down': [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'set frontmost of (first application process whose bundle identifier is (item 1 of argv)) to true',
+        'delay 0.25',
+        'key code 121',
+        'end tell',
+        'end run',
+      ],
+      'scroll-up': [
+        'on run argv',
+        'tell application "System Events"',
+        'if not (exists (first application process whose bundle identifier is (item 1 of argv))) then error "not running" number 1',
+        'set frontmost of (first application process whose bundle identifier is (item 1 of argv)) to true',
+        'delay 0.25',
+        'key code 116',
+        'end tell',
+        'end run',
+      ],
+      'read-page': [],
     };
+    if (action === 'read-page') throw new ToolFailure('Reading a page is done by the browser tool.', 'unsupported-operation');
     const extraArgs = action === 'maximize' ? await this.#usableScreenFrame(signal) : [];
     // An app opened a moment ago may still be starting; give it a few seconds.
     let attempts = action === 'quit' ? 1 : 6;

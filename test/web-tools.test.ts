@@ -132,13 +132,41 @@ test('rejected fetches download nothing; "always" skips later prompts for that h
   assert.equal(asked.length, 3, 'a.example is asked twice (reject, always), b.example once');
 });
 
-test('web_search exists only with a SearXNG backend and returns cleaned results', async () => {
-  const config = loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_ALLOWED_ROOTS: '[]' });
-  const withoutSearch = createDefaultToolRegistry(config, {
-    actions: { approval: { async request() { return true; } }, web: new HttpWebClient({ fetchImplementation: fakeFetch({}) }) },
+const NEWS_RSS = `<rss><channel>
+<item><title>Chandrayaan update - ISRO</title><link>https://news.google.com/rss/articles/1</link><pubDate>Sat, 07 Nov 2026 08:00:00 GMT</pubDate><source url="https://isro.gov.in">ISRO</source></item>
+<item><title>Rupee closes higher - Mint</title><link>https://news.google.com/rss/articles/2</link></item>
+</channel></rss>`;
+const rss = (body: string): Response => new Response(body, { headers: { 'content-type': 'application/rss+xml' } });
+
+test('without SearXNG, web_search uses Wikipedia and Google News, interleaved', async () => {
+  const requested: string[] = [];
+  const client = new HttpWebClient({
+    fetchImplementation: fakeFetch({
+      'https://en.wikipedia.org/w/api.php': () => new Response(JSON.stringify({ query: { search: [{ title: 'Chandrayaan-3', snippet: 'Indian <span>lunar</span> mission' }] } }), { headers: { 'content-type': 'application/json' } }),
+      'https://news.google.com/rss/search': () => rss(NEWS_RSS),
+    }, requested),
   });
-  assert.equal(withoutSearch.get('web_search'), undefined);
-  assert.ok(withoutSearch.get('fetch_url'));
+  const asked: ActionProposal[] = [];
+  const result = await webExecutor(client, [true], asked).execute('web_search', { query: 'chandrayaan' }, new AbortController().signal) as { results: { title: string; url: string }[] };
+  assert.deepEqual(result.results.map(item => item.title), ['Chandrayaan-3 (Wikipedia)', 'Chandrayaan update (ISRO)', 'Rupee closes higher (Mint)']);
+  assert.equal(result.results[0]?.url, 'https://en.wikipedia.org/wiki/Chandrayaan-3');
+  assert.deepEqual(asked, [{ kind: 'web', operation: 'search', target: 'chandrayaan', host: 'wikipedia.org + news.google.com' }]);
+  assert.ok(requested.some(url => url.includes('srsearch=chandrayaan')));
+});
+
+test('news_headlines returns publisher, time, and link from Google News', async () => {
+  const requested: string[] = [];
+  const client = new HttpWebClient({ fetchImplementation: fakeFetch({ 'https://news.google.com/rss': () => rss(NEWS_RSS), 'https://news.google.com/rss/search': () => rss(NEWS_RSS) }, requested) });
+  const asked: ActionProposal[] = [];
+  const executor = webExecutor(client, [true, true], asked);
+  const top = await executor.execute('news_headlines', {}, new AbortController().signal) as { headlines: unknown[] };
+  assert.deepEqual(top.headlines[0], { title: 'Chandrayaan update', url: 'https://news.google.com/rss/articles/1', source: 'ISRO', published: '2026-11-07T08:00:00.000Z' });
+  await executor.execute('news_headlines', { topic: 'cricket', language: 'hi', count: 1 }, new AbortController().signal);
+  assert.match(requested[1] ?? '', /rss\/search\?q=cricket&hl=hi/u);
+  assert.equal(asked[0]?.kind === 'web' && asked[0].host, 'news.google.com');
+});
+
+test('SearXNG search returns cleaned results', async () => {
 
   const requested: string[] = [];
   const client = new HttpWebClient({
@@ -169,4 +197,36 @@ test('VYOM_SEARXNG_URL is validated', () => {
   assert.equal(loadConfig({}).searxngUrl, undefined);
   assert.throws(() => loadConfig({ VYOM_SEARXNG_URL: 'ftp://x' }), /VYOM_SEARXNG_URL/);
   assert.throws(() => loadConfig({ VYOM_SEARXNG_URL: 'https://user:pw@x.dev' }), /VYOM_SEARXNG_URL/);
+});
+
+test('the browser tool drives a browser port: one Chrome grant covers browsing, numbered links come back', async () => {
+  const config = loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_ALLOWED_ROOTS: '[]' });
+  const performed: unknown[] = [];
+  const page = { url: 'https://www.google.com/search?q=best+laptop', title: 'best laptop - Google Search', text: 'Result one ... Result two', links: [{ n: 1, text: 'Laptop review', url: 'https://example.com/review' }], results: [{ title: 'Laptop review', url: 'https://example.com/review', snippet: 'Top picks' }], scroll: 0, height: 2000, viewport: 1000 };
+  const asked: ActionProposal[] = [];
+  const memory = new ApprovalMemory();
+  const answers: ApprovalDecision[] = ['always'];
+  const executor = new ToolExecutor({
+    registry: createDefaultToolRegistry(config, {
+      actions: {
+        approval: { async request(action) { asked.push(action); return answers.shift() ?? false; } },
+        approvalMemory: memory,
+        browser: { async perform(action) { performed.push(action); return page; } },
+      },
+    }),
+    policy: new PolicyGateway({ allowedEffects: ['network'] }),
+    config,
+    logger: createLogger(() => {}),
+  });
+  const searched = await executor.execute('browser', { action: 'search', query: 'best laptop' }, new AbortController().signal) as Record<string, unknown>;
+  assert.equal(searched.status, 'done');
+  assert.deepEqual(searched.results, page.results);
+  assert.equal(searched.scrolledTo, '50% of the page');
+  assert.deepEqual(asked, [{ kind: 'url', url: 'https://www.google.com/search?q=best%20laptop', application: 'Google Chrome' }]);
+  // "Always allow" granted Chrome: clicking and scrolling do not ask again.
+  await executor.execute('browser', { action: 'click', link: 1 }, new AbortController().signal);
+  await executor.execute('browser', { action: 'scroll', direction: 'down' }, new AbortController().signal);
+  assert.equal(asked.length, 1);
+  assert.deepEqual(performed, [{ kind: 'search', query: 'best laptop' }, { kind: 'click', link: 1 }, { kind: 'scroll', direction: 'down' }]);
+  await assert.rejects(executor.execute('browser', { action: 'open', url: 'http://192.168.1.1/' }, new AbortController().signal), /private network/u);
 });

@@ -260,6 +260,8 @@ export interface VyomaraDesktopApi {
   stopSpeaking(): Promise<boolean>;
   /** Approve this change and all later edits in the current task (not deletions). */
   approveAllFileOperations(id: string): Promise<void>;
+  /** Open a link from a reply in the user's default browser. */
+  openLink(url: string): Promise<void>;
   /** What the assistant remembers across conversations. */
   listMemories(): Promise<readonly DesktopMemory[]>;
   forgetMemory(id: string): Promise<readonly DesktopMemory[]>;

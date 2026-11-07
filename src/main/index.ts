@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { ChromeBrowser } from '../desktop/chrome-browser.ts';
 import { MemoryStore } from '../storage/memory-store.ts';
 import { canShowDiff, VSCodeDiffPreview } from '../desktop/vscode-diff.ts';
 import { ChangeJournal } from '../desktop/change-journal.ts';
@@ -71,6 +73,8 @@ const shellCommandRunner = new ShellCommandRunner();
 let approvalMemory = new ApprovalMemory();
 const macSpeechRunner = new MacSpeechRunner();
 /** Approved file changes per request, so "undo karo" can put them back. */
+/** Drives the user's Chrome for the browser tool, when Chrome is installed. */
+const chromeBrowser = existsSync('/Applications/Google Chrome.app') ? new ChromeBrowser() : undefined;
 const changeJournal = new ChangeJournal({ moveToTrash: path => shell.trashItem(path) });
 /** Told to the model on the next request in a session after an undo. */
 const undoNotes = new Map<string, string>();
@@ -706,6 +710,7 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
           commandRunner: shellCommandRunner,
           ...(macApplicationLauncher ? { launcher: macApplicationLauncher } : {}),
           web: new HttpWebClient(desktopConfig.searxngUrl === undefined ? {} : { searxngUrl: desktopConfig.searxngUrl }),
+          ...(chromeBrowser ? { browser: chromeBrowser } : {}),
         },
       },
     );
@@ -790,6 +795,20 @@ ipcMain.handle('vyomara:file-operation-reject', (event, input: unknown) => {
   } catch (error) {
     throw new Error(publicErrorMessage(error));
   }
+});
+
+ipcMain.handle('vyomara:open-link', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('Link request is invalid.');
+  if (typeof input !== 'string' || input.length > 8_192) throw new Error('This link is not valid.');
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new Error('This link is not valid.');
+  }
+  // The user clicked it; only ordinary web links open, in their own browser.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only web links can be opened.');
+  await shell.openExternal(url.href);
 });
 
 function memoryStore(): MemoryStore {

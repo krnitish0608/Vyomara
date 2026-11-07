@@ -158,6 +158,9 @@ export function App() {
   const activeChatRequestId = useRef<string | undefined>(undefined);
   const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
   const messageList = useRef<HTMLDivElement>(null);
+  /** False while the user has scrolled up to read; new text then does not pull the view down. */
+  const followLatest = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const promptInput = useRef<HTMLTextAreaElement>(null);
   const topbar = useRef<HTMLElement>(null);
   const conversation = useRef<HTMLElement>(null);
@@ -290,7 +293,7 @@ export function App() {
 
   useEffect(() => {
     const list = messageList.current;
-    if (!list) return;
+    if (!list || !followLatest.current) return;
     list.scrollTo({
       top: list.scrollHeight,
       behavior: requestPending || window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -436,6 +439,9 @@ export function App() {
     if (!trimmed || requestPending) return;
     setPrompt('');
     setRequestError(undefined);
+    // Sending a message returns to the latest reply.
+    followLatest.current = true;
+    setShowJumpToLatest(false);
     setMessages(current => [...current, {
       id: Date.now(),
       role: 'user',
@@ -1385,7 +1391,18 @@ export function App() {
         </nav>
 
         <section className="conversation" aria-label="Conversation" ref={conversation}>
-          <div className="message-list" ref={messageList} aria-live="polite">
+          <div
+            className="message-list"
+            ref={messageList}
+            aria-live="polite"
+            onScroll={event => {
+              // Follow new text only while the user is at the bottom; scrolling up pauses it.
+              const list = event.currentTarget;
+              const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+              followLatest.current = atBottom;
+              setShowJumpToLatest(!atBottom);
+            }}
+          >
             <div className="message-list-content">
             {messages.length === 0 ? (
               <div className="welcome-card" aria-label="Vyomara voice orb">
@@ -1488,6 +1505,19 @@ export function App() {
             ))}
             </div>
           </div>
+          {showJumpToLatest && (
+            <button
+              className="jump-to-latest"
+              type="button"
+              onClick={() => {
+                followLatest.current = true;
+                setShowJumpToLatest(false);
+                messageList.current?.scrollTo({ top: messageList.current.scrollHeight, behavior: 'smooth' });
+              }}
+            >
+              ↓ Latest
+            </button>
+          )}
           <form className={`composer${composerMood ? ` composer-${composerMood}` : ''}${liveTurn && !prompt ? ' composer-hearing' : ''}`} onSubmit={event => void submit(event)}>
             <label className="visually-hidden" htmlFor="prompt">Message {assistantName}</label>
             <textarea
