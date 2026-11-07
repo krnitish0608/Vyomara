@@ -1,9 +1,6 @@
-import { isAbsolute } from 'node:path';
-import { validateOllamaModel } from '../config/config.ts';
-import type { DesktopChatRequest, DesktopProviderSettings } from './contracts.ts';
+import type { DesktopChatRequest } from './contracts.ts';
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const maximumMemoryChars = 32_000;
 
 export class DesktopValidationError extends Error {
   constructor(message: string) {
@@ -12,48 +9,38 @@ export class DesktopValidationError extends Error {
   }
 }
 
-export function parseDesktopProviderSettings(value: unknown): DesktopProviderSettings {
+export function parseDesktopSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !uuidPattern.test(value)) {
+    throw new Error('Session request is invalid.');
+  }
+  return value;
+}
+
+export function parseDesktopFileOperationApprovalRequest(
+  value: unknown,
+): { readonly id: string; readonly confirmation?: string } {
   if (
     typeof value !== 'object' ||
     value === null ||
     Array.isArray(value) ||
     Object.getPrototypeOf(value) !== Object.prototype
   ) {
-    throw new DesktopValidationError('Provider settings are invalid.');
+    throw new DesktopValidationError('File review request is invalid.');
   }
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 2 ||
-    !Object.hasOwn(record, 'provider') ||
-    !Object.hasOwn(record, 'model') ||
-    (record.provider !== 'ollama' && record.provider !== 'placeholder') ||
-    typeof record.model !== 'string'
+    Object.keys(record).some(key => key !== 'id' && key !== 'confirmation') ||
+    !Object.hasOwn(record, 'id') ||
+    (Object.hasOwn(record, 'confirmation') &&
+      (typeof record.confirmation !== 'string' || record.confirmation.length > 16))
   ) {
-    throw new DesktopValidationError('Choose a supported provider and enter a valid Ollama model name.');
+    throw new DesktopValidationError('File review request is invalid.');
   }
-  try {
-    return { provider: record.provider, model: validateOllamaModel(record.model) };
-  } catch {
-    throw new DesktopValidationError('Ollama model names must be 1–128 letters, numbers, dots, underscores, colons, slashes, or hyphens.');
-  }
-}
-
-export function parseDesktopOllamaModelName(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new DesktopValidationError('Ollama model name is invalid.');
-  }
-  try {
-    return validateOllamaModel(value);
-  } catch {
-    throw new DesktopValidationError('Ollama model names must be 1–128 letters, numbers, dots, underscores, colons, slashes, or hyphens.');
-  }
-}
-
-export function parseDesktopSessionId(value: unknown): string {
-  if (typeof value !== 'string' || !uuidPattern.test(value)) {
-    throw new Error('Session request is invalid.');
-  }
-  return value;
+  const id = parseDesktopSessionId(record.id);
+  return {
+    id,
+    ...(typeof record.confirmation === 'string' ? { confirmation: record.confirmation } : {}),
+  };
 }
 
 export function parseDesktopSessionDeleteRequest(value: unknown): { readonly id: string; readonly confirmation: string } {
@@ -78,111 +65,6 @@ export function parseDesktopSessionDeleteRequest(value: unknown): { readonly id:
   return { id, confirmation: record.confirmation };
 }
 
-export function parseDesktopMemoryId(value: unknown): string {
-  if (typeof value !== 'string' || !uuidPattern.test(value)) {
-    throw new DesktopValidationError('Memory request is invalid.');
-  }
-  return value;
-}
-
-export function parseDesktopMemorySaveRequest(value: unknown): { readonly content: string; readonly confirmation: string } {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw new DesktopValidationError('Memory save request is invalid.');
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 2 ||
-    !Object.hasOwn(record, 'content') ||
-    !Object.hasOwn(record, 'confirmation') ||
-    typeof record.content !== 'string' ||
-    record.content.trim() === '' ||
-    record.content.length > maximumMemoryChars ||
-    record.confirmation !== 'SAVE'
-  ) {
-    throw new DesktopValidationError('Review the memory and type SAVE to store it.');
-  }
-  return { content: record.content, confirmation: record.confirmation };
-}
-
-export function parseDesktopMemoryDeleteRequest(value: unknown): { readonly id: string; readonly confirmation: string } {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw new DesktopValidationError('Memory deletion request is invalid.');
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 2 ||
-    !Object.hasOwn(record, 'id') ||
-    !Object.hasOwn(record, 'confirmation') ||
-    record.confirmation !== 'DELETE'
-  ) {
-    throw new DesktopValidationError('Review the selected memory and type DELETE to remove it.');
-  }
-  return { id: parseDesktopMemoryId(record.id), confirmation: record.confirmation };
-}
-
-export function parseDesktopDeleteAllRequest(value: unknown): { readonly confirmation: 'DELETE ALL' } {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw new DesktopValidationError('Delete-all request is invalid.');
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 1 ||
-    !Object.hasOwn(record, 'confirmation') ||
-    record.confirmation !== 'DELETE ALL'
-  ) {
-    throw new DesktopValidationError('Type DELETE ALL to remove all saved conversations and memories.');
-  }
-  return { confirmation: record.confirmation };
-}
-
-export function parseDesktopRestoreRequest(value: unknown): { readonly confirmation: 'RESTORE' } {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  ) {
-    throw new DesktopValidationError('Restore request is invalid.');
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 1 ||
-    !Object.hasOwn(record, 'confirmation') ||
-    record.confirmation !== 'RESTORE'
-  ) {
-    throw new DesktopValidationError('Review the selected backup and type RESTORE to replace local data.');
-  }
-  return { confirmation: record.confirmation };
-}
-
-export function parseDesktopFilesystemRoot(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    !isAbsolute(value) ||
-    value.trim() !== value ||
-    value.includes('\0') ||
-    value.length > 4_096
-  ) {
-    throw new Error('Filesystem permission request is invalid.');
-  }
-  return value;
-}
-
 export function parseDesktopChatRequest(
   value: unknown,
   maxInputChars: number,
@@ -199,17 +81,39 @@ export function parseDesktopChatRequest(
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
   if (
-    keys.some(key => key !== 'prompt' && key !== 'sessionId') ||
+    keys.some(key => key !== 'prompt' && key !== 'sessionId' && key !== 'requestId' && key !== 'voice') ||
+    (record.voice !== undefined && typeof record.voice !== 'boolean') ||
     typeof record.prompt !== 'string' ||
     record.prompt.trim() === '' ||
     record.prompt.length > maxInputChars ||
+    typeof record.requestId !== 'string' ||
+    !uuidPattern.test(record.requestId) ||
     (record.sessionId !== undefined &&
       (typeof record.sessionId !== 'string' || !uuidPattern.test(record.sessionId)))
   ) {
     throw new Error('Chat request is invalid or exceeds the configured input limit.');
   }
 
-  return record.sessionId === undefined
-    ? { prompt: record.prompt }
-    : { prompt: record.prompt, sessionId: record.sessionId };
+  return {
+    prompt: record.prompt,
+    requestId: record.requestId,
+    ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+    ...(record.voice === true ? { voice: true } : {}),
+  };
+}
+
+/**
+ * Whether a microphone request comes from Vyomara's own page. Chromium reports
+ * file pages with the origin "file:///", so the exact page URL is compared
+ * (ignoring the hash, e.g. "#pip"). In development the dev-server origin is used.
+ */
+export function isTrustedPageRequest(requestingUrl: string, pageUrl: string, devServerUrl?: string): boolean {
+  if (devServerUrl) {
+    try {
+      return new URL(requestingUrl).origin === new URL(devServerUrl).origin;
+    } catch {
+      return false;
+    }
+  }
+  return requestingUrl.split('#')[0] === pageUrl;
 }

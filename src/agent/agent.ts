@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import type { AppConfig } from '../config/config.ts';
 import type { Logger } from '../types.ts';
 import { ProviderError } from '../providers/provider.ts';
@@ -7,6 +8,16 @@ import { OperationStoppedError, runBounded } from '../shared/bounded.ts';
 import { Session } from '../session/session.ts';
 import { TaskRun } from '../tasks/task-run.ts';
 import { ToolExecutionError, ToolExecutor } from '../tools/executor.ts';
+import { TOOL_ID_PATTERN } from '../tools/contracts.ts';
+import type { ModelToolDefinition } from '../tools/contracts.ts';
+import { CHARS_PER_TOKEN, fitMessagesToBudget } from './context.ts';
+import { buildSystemPrompt, detectEnvironment, spokenRequestNote } from './system-prompt.ts';
+import type { PersonaId } from '../shared/persona.ts';
+import type { MemoryStore } from '../storage/memory-store.ts';
+import { urlsIn, verifyLinks } from '../shared/link-check.ts';
+import { LinkAliases } from '../shared/link-alias.ts';
+import type { AgentEnvironment } from './system-prompt.ts';
+import type { PlanStep } from '../tools/plan-tool.ts';
 
 export class AgentError extends Error {
   readonly code: 'invalid-request' | 'timeout' | 'cancelled' | 'iteration-limit' | 'tool-limit' | 'policy-denied' | 'tool-failed' | 'invalid-provider-response';
@@ -21,225 +32,13 @@ export class AgentError extends Error {
   }
 }
 
-function unsupportedCapability(prompt: string): string | undefined {
-  if (
-    /\b(?:run|execute|launch)\b[\s\S]{0,48}\b(?:shell|terminal|command|script)\b|\b(?:shell|terminal)\s+command\b|\b(?:run|execute)\s+(?:the\s+)?(?:command\s+)?[`"']?(?:echo|pwd|ls|cat|grep|find|cd|whoami|uname|curl|wget|git|pnpm|npm|ollama)\b|\b(?:command|terminal|shell)\b[\s\S]{0,40}\b(?:chala|chalao|chalana|chalakar|run|execute)\b|(?:कमांड|टर्मिनल|शेल).{0,40}(?:चलाओ|चलाना|चलाकर|चलाया|execute|run)/iu.test(prompt)
-  ) {
-    return 'I cannot run shell or terminal commands. No command was executed.';
-  }
-  if (
-    /\b(?:web search|search the web|search (?:the )?internet|browse the internet|visit the website|open https?:\/\/|current weather|search online)\b|\b(?:internet|online)\b[\s\S]{0,48}\b(?:search|dhund|dhundo|khoj|check|verify|dekh)\b|\b(?:search|dhund|dhundo|khoj)\b[\s\S]{0,48}\b(?:internet|online)\b|\bonline\s+(?:check|verify)\b|(?:इंटरनेट|ऑनलाइन).{0,48}(?:खोज|ढूंढ|ढूँढ|सर्च|जाँच|जांच)/iu.test(prompt)
-  ) {
-    return 'Web browsing and web search are not available. No search was performed.';
-  }
-  if (
-    /\b(?:create|write|edit|modify|change|delete|remove)\b[\s\S]{0,48}\b(?:file|folder|directory)\b|\b(?:file|folder|directory)\b[\s\S]{0,40}\b(?:bana|banao|banana|likh|likho|edit|modify|badal|badlo|hata|hatao|mita|mitao|delete)\b|(?:फ़ाइल|फाइल|फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:बनाओ|बनाना|लिखो|बदल(?:ो| दो)|हटा(?:ओ| दो)|मिटा(?:ओ| दो)|डिलीट)/iu.test(prompt)
-  ) {
-    return 'File creation, editing, and deletion are not available. No filesystem change was made.';
-  }
-  if (
-    /\b(?:install|uninstall|update|upgrade)\b[\s\S]{0,48}\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b|\b(?:package|application|app|software|dependency|pnpm|npm|ollama)\b[\s\S]{0,40}\b(?:install|uninstall|update|upgrade)\b|(?:पैकेज|ऐप|एप्लिकेशन|सॉफ़्टवेयर).{0,40}(?:इंस्टॉल|अपडेट|हटाओ)/iu.test(prompt)
-  ) {
-    return 'Installing or changing packages and applications is not available. No installation was performed.';
-  }
-  if (
-    /\b(?:open|launch|access|control|turn on|turn off|restart|shutdown|take)\b[\s\S]{0,48}\b(?:system settings|camera|microphone|mic|bluetooth|wi-?fi|notifications|screenshot|screen recording|mac)\b|(?:कैमरा|माइक्रोफ़ोन|माइक्रोफोन|ब्लूटूथ|वाई-?फ़ाई|स्क्रीनशॉट).{0,40}(?:खोलो|चालू|बंद|लेना|लो|पहुँच)/iu.test(prompt)
-  ) {
-    return 'That system feature is not available to Vyomara. No system action was performed.';
-  }
-  if (
-    /\b(?:open|launch|start)\s+(?:(?:the|an?)\s+)?(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings|system preferences)\b|\b(?:application|app)\b[\s\S]{0,32}\b(?:open|launch|start)\b|(?:कैलकुलेटर|सफारी|फ़ाइंडर|फाइंडर|टर्मिनल|नोट्स|कैलेंडर).{0,24}(?:खोलो|खोलिए|चलाओ)/iu.test(prompt)
-  ) {
-    return 'Opening applications is not available to Vyomara. No application was opened.';
-  }
-  return undefined;
-}
-
-function claimsUnsupportedExecution(
-  text: string,
-): boolean {
-  const claims = [
-    /\b(?:I|we)\s+(?:have\s+)?(?:run|executed|launched)\b.{0,60}\b(?:command|script|shell)\b/i,
-    /\b(?:the\s+)?(?:command|script)\s+(?:was|has been|is)\s+(?:run|executed|launched|completed)\b/i,
-    /\b(?:running|executing|launched)\s+(?:the\s+)?(?:shell\s+)?(?:command|script)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:searched|browsed)\s+(?:the\s+)?(?:web|internet)\b/i,
-    /\b(?:the\s+)?(?:web search|search)\s+(?:is|was|has been)\s+(?:complete|completed|successful)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:created|deleted|wrote|modified|updated)\s+(?:the\s+)?(?:file|folder|directory)\b/i,
-    /\b(?:the\s+)?(?:file|folder|directory)\s+(?:was|has been)\s+(?:created|deleted|written|modified|updated)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:installed|uninstalled|updated|upgraded)\b.{0,60}\b(?:package|application|app|software|dependency)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:opened|accessed|controlled|restarted|shut down)\b.{0,60}\b(?:camera|microphone|system settings|bluetooth|wi-?fi|mac)\b/i,
-    /\b(?:I|we)\s+(?:have\s+)?(?:opened|launched|started)\b.{0,60}\b(?:application|app|calculator|safari|finder|terminal|textedit|notes|calendar|mail|messages|settings)\b/i,
-    /\b(?:maine|mainee)\b[\s\S]{0,48}\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala(?:ya|o)?|chalaya|execute|run)\b/i,
-    /\b(?:command|terminal|shell)\b[\s\S]{0,32}\b(?:chala diya|chalaya|run ho gaya|execute ho gaya)\b/i,
-    /(?:मैंने|मैने).{0,48}(?:कमांड|टर्मिनल|शेल).{0,32}(?:चलाया|चला दिया|चलाया है)/u,
-    /["'](?:name|toolId)["']\s*:\s*["'](?:shell\.[a-z0-9.-]+|assistant\.(?:open|search|browse)[a-z0-9.-]*|filesystem\.(?:create|write|delete)[a-z0-9.-]*)["']/i,
-  ];
-  return claims.some(pattern => pattern.test(text));
-}
-
-function claimsUnverifiedFileRead(
-  text: string,
-  successfulToolIds: ReadonlySet<string>,
-): boolean {
-  const fileReadClaims = [
-    /\b(?:I|we)\s+(?:have\s+)?(?:read|opened|checked)\s+(?:the\s+)?(?:file|document)\b/i,
-    /\b(?:the\s+)?file\s+(?:contains|says|states)\b/i,
-    /\b(?:maine|mainee)\b[\s\S]{0,40}\b(?:file|document)\b[\s\S]{0,32}\b(?:padha|dekha|read)\b/i,
-    /(?:मैंने|मैने).{0,40}(?:फ़ाइल|फाइल|दस्तावेज़).{0,32}(?:पढ़ी|देखी|पढ़ा)/u,
-  ];
-  return !successfulToolIds.has('filesystem.read-file') &&
-    fileReadClaims.some(pattern => pattern.test(text));
-}
-
-function claimsUnverifiedDirectoryRead(
-  text: string,
-  successfulToolIds: ReadonlySet<string>,
-): boolean {
-  const claimsListing = [
-    /\b(?:I|we)\s+(?:have\s+)?(?:listed|scanned|enumerated)\s+(?:the\s+)?(?:directory|folder)\b/i,
-    /\b(?:the\s+)?(?:directory|folder)\s+(?:contains|has)\b/i,
-    /\bhere\s+(?:are|is)\s+(?:the\s+)?(?:files|entries)\s+(?:in|of)\s+(?:the\s+)?(?:directory|folder)\b/i,
-    /\b(?:maine|mainee)\b[\s\S]{0,40}\b(?:folder|directory)\b[\s\S]{0,32}\b(?:list|files|entries)\b/i,
-    /(?:फ़ोल्डर|फोल्डर|डायरेक्टरी).{0,40}(?:में ये फ़ाइलें|में ये फाइलें|की सूची|में मौजूद)/u,
-  ];
-  const claimsTree = [
-    /\b(?:I|we)\s+(?:have\s+)?(?:shown|generated|built)\s+(?:the\s+)?(?:directory|folder)\s+tree\b/i,
-    /\b(?:directory|folder)\s+tree\s+(?:shows|contains|is)\b/i,
-  ];
-  const hasListing = successfulToolIds.has('filesystem.list-directory') ||
-    successfulToolIds.has('filesystem.directory-tree');
-  return (!hasListing && claimsListing.some(pattern => pattern.test(text))) ||
-    (!successfulToolIds.has('filesystem.directory-tree') &&
-      claimsTree.some(pattern => pattern.test(text)));
-}
-
-function filesystemResultResponse(
-  results: readonly string[],
-  maxResponseChars: number,
-  followupFailed = false,
-): string {
-  const heading = followupFailed
-    ? 'Verified filesystem tool result(s); Ollama could not complete its follow-up, so no summary was generated:'
-    : 'Verified filesystem tool result(s):';
-  const response = `${heading}\n${results.join('\n')}`;
-  return response.length <= maxResponseChars
-    ? response
-    : 'The filesystem tool completed, but its verified result exceeds the configured response limit and cannot be shown.';
-}
-
-function filesystemPartialResultResponse(
-  results: readonly string[],
-  failureCode: string,
-  failureMessage: string,
-  maxResponseChars: number,
-): string {
-  const response =
-    `Verified filesystem tool result(s), partial; a later operation failed (${failureCode}): ${failureMessage}\n${results.join('\n')}`;
-  return response.length <= maxResponseChars
-    ? response
-    : 'A filesystem operation failed after a verified result; the partial result exceeds the configured response limit and cannot be shown.';
-}
-
-function exactQuotedAbsolutePath(prompt: string): string | undefined {
-  const matches = [...prompt.matchAll(/(["'`])(\/[^\r\n]{1,4096}?)\1/g)];
-  return matches.length === 1 ? matches[0]?.[2] : undefined;
-}
-
-function executionArguments(
-  prompt: string,
-  toolId: string,
-  arguments_: Readonly<Record<string, unknown>>,
-  batchSize: number,
-): Readonly<Record<string, unknown>> {
-  if (
-    batchSize !== 1 ||
-    !['filesystem.list-directory', 'filesystem.read-file', 'filesystem.directory-tree'].includes(toolId)
-  ) {
-    return arguments_;
-  }
-  const exactPath = exactQuotedAbsolutePath(prompt);
-  if (!exactPath || arguments_.path === exactPath) return arguments_;
-  return { ...arguments_, path: exactPath };
-}
-
-function parseProviderResponse(
-  value: unknown,
-  maxTextChars: number,
-  maxToolInputChars: number,
-): ProviderResponse {
-  if (typeof value !== 'object' || value === null) {
-    throw new AgentError('Provider returned an invalid response.', 'invalid-provider-response');
-  }
-  const response = value as Record<string, unknown>;
-  if (
-    Object.hasOwn(response, 'kind') &&
-    response.kind === 'final' &&
-    Object.keys(response).every(key => key === 'kind' || key === 'text') &&
-    Object.hasOwn(response, 'text') &&
-    typeof response.text === 'string' &&
-    response.text.trim() !== '' &&
-    response.text.length <= maxTextChars
-  ) {
-    return { kind: 'final', text: response.text };
-  }
-  if (
-    Object.hasOwn(response, 'kind') &&
-    response.kind === 'tool-calls' &&
-    Object.keys(response).every(key => key === 'kind' || key === 'calls' || key === 'content') &&
-    Object.hasOwn(response, 'calls') &&
-    Array.isArray(response.calls) &&
-    response.calls.length > 0 &&
-    response.calls.length <= 10 &&
-    (response.content === undefined ||
-      (typeof response.content === 'string' && response.content.length <= maxTextChars))
-  ) {
-    const calls = response.calls.map(call => {
-      if (typeof call !== 'object' || call === null || Array.isArray(call)) {
-        throw new AgentError('Provider returned an invalid tool call.', 'invalid-provider-response');
-      }
-      const candidate = call as Record<string, unknown>;
-      if (
-        !Object.hasOwn(candidate, 'toolId') ||
-        !Object.hasOwn(candidate, 'arguments') ||
-        Object.keys(candidate).some(key => key !== 'toolId' && key !== 'arguments') ||
-        typeof candidate.toolId !== 'string' ||
-        !/^[a-z][a-z0-9.-]{0,63}$/.test(candidate.toolId) ||
-        typeof candidate.arguments !== 'object' ||
-        candidate.arguments === null ||
-        Array.isArray(candidate.arguments)
-      ) {
-        throw new AgentError('Provider returned an invalid tool call.', 'invalid-provider-response');
-      }
-      let serialized: string | undefined;
-      try {
-        serialized = JSON.stringify(candidate.arguments);
-      } catch {
-        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
-      }
-      if (serialized === undefined || serialized.length > maxToolInputChars) {
-        throw new AgentError('Provider returned oversized tool arguments.', 'invalid-provider-response');
-      }
-      let normalized: unknown;
-      try {
-        normalized = JSON.parse(serialized);
-      } catch {
-        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
-      }
-      if (typeof normalized !== 'object' || normalized === null || Array.isArray(normalized)) {
-        throw new AgentError('Provider returned invalid tool arguments.', 'invalid-provider-response');
-      }
-      return {
-        toolId: candidate.toolId,
-        arguments: normalized as Readonly<Record<string, unknown>>,
-      };
-    });
-    return {
-      kind: 'tool-calls',
-      content: response.content ?? '',
-      calls,
-    };
-  }
-  throw new AgentError('Provider returned an invalid response.', 'invalid-provider-response');
+/** A live, human-readable description of one tool call, for the UI or terminal. */
+export interface ToolActivity {
+  readonly id: string;
+  readonly toolId: string;
+  readonly label: string;
+  readonly status: 'running' | 'done' | 'failed' | 'rejected';
+  readonly detail?: string;
 }
 
 export interface AgentOptions {
@@ -248,6 +47,281 @@ export interface AgentOptions {
   readonly config: AppConfig;
   readonly session: Session;
   readonly logger: Logger;
+  readonly onText?: (text: string) => void;
+  readonly onToolActivity?: (activity: ToolActivity) => void;
+  /** Receives the agent's checklist whenever it calls update_plan. */
+  readonly onPlan?: (steps: readonly PlanStep[]) => void;
+  /** Spoken request: ask for a short reply (fewer tokens, faster, and pleasant to hear). */
+  readonly voice?: boolean;
+  /** Which assistant (name, gender) answers. */
+  readonly persona?: PersonaId;
+  /** Lasting facts from earlier conversations, shown in the system prompt. */
+  readonly memory?: MemoryStore;
+  /** Overrides environment discovery (used by tests). */
+  readonly environment?: AgentEnvironment;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Readable path for labels: `~` for home, and only the last segments of long paths. */
+export function shortPath(path: unknown): string {
+  if (typeof path !== 'string') return '';
+  const home = homedir();
+  const display = path === home ? '~' : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+  if (display.length <= 60) return display;
+  return `…/${display.split('/').filter(Boolean).slice(-3).join('/')}`;
+}
+
+function clip(text: string, max = 80): string {
+  const single = text.replace(/\s+/gu, ' ').trim();
+  return single.length > max ? `${single.slice(0, max - 1)}…` : single;
+}
+
+/** Human-readable label for a tool call, e.g. "Reading ~/Projects/app/src/index.ts". */
+export function describeToolCall(toolId: string, args: Readonly<Record<string, unknown>>): string {
+  switch (toolId) {
+    case 'read_file': {
+      const range = typeof args.offset === 'number' ? ` (from line ${args.offset})` : '';
+      return `Reading ${shortPath(args.path)}${range}`;
+    }
+    case 'list_directory':
+      return `Listing ${shortPath(args.path)}`;
+    case 'directory_tree':
+      return `Mapping ${shortPath(args.path)}`;
+    case 'find_files':
+      return `Finding “${clip(String(args.query ?? ''), 40)}”${args.path ? ` in ${shortPath(args.path)}` : ''}`;
+    case 'search_text':
+      return `Searching “${clip(String(args.pattern ?? ''), 40)}” in ${shortPath(args.path)}`;
+    case 'edit_file':
+      return `Editing ${shortPath(args.path)}`;
+    case 'write_file':
+      return `Writing ${shortPath(args.path)}`;
+    case 'create_directory':
+      return `Creating folder ${shortPath(args.path)}`;
+    case 'delete_path':
+      return `Moving ${shortPath(args.path)} to Trash`;
+    case 'run_command':
+      return `Running \`${clip(String(args.command ?? ''), 60)}\``;
+    case 'open_application':
+      return `Opening ${String(args.application ?? 'app')}${args.path ? ` with ${shortPath(args.path)}` : ''}`;
+    case 'open_url':
+      return `Opening ${clip(String(args.url ?? ''), 60)}`;
+    case 'update_plan': {
+      const steps = String(args.plan ?? '').split('\n').filter(line => line.trim() !== '');
+      const done = steps.filter(line => /\[[xX]\]/u.test(line)).length;
+      return `Updating plan (${done}/${steps.length} done)`;
+    }
+    case 'control_application':
+      return `${String(args.action ?? 'Control').replace(/^./u, letter => letter.toUpperCase())} ${String(args.application ?? 'app')}`;
+    case 'fetch_url':
+      return `Reading ${clip(String(args.url ?? ''), 60)}`;
+    case 'web_search':
+      return `Searching the web for “${clip(String(args.query ?? ''), 50)}”`;
+    case 'news_headlines':
+      return `Getting the news${args.topic ? ` about “${clip(String(args.topic), 40)}”` : ''}`;
+    case 'browser': {
+      const action = String(args.action ?? 'read');
+      if (action === 'search') return `Searching Google in Chrome for “${clip(String(args.query ?? ''), 45)}”`;
+      if (action === 'open') return `Opening ${clip(String(args.url ?? ''), 55)} in Chrome`;
+      if (action === 'click') return `Clicking link ${String(args.link ?? '')} in Chrome`;
+      if (action === 'scroll') return `Scrolling ${String(args.direction ?? 'down')} in Chrome`;
+      if (action === 'back') return 'Going back in Chrome';
+      return 'Reading the page in Chrome';
+    }
+    default:
+      return `Using ${toolId}`;
+  }
+}
+
+/** A side effect confirmed (or refused) by a tool result — the only source for "done" claims. */
+interface VerifiedAction {
+  readonly ok: boolean;
+  readonly text: string;
+}
+
+function verifiedAction(
+  toolId: string,
+  args: Readonly<Record<string, unknown>>,
+  result: unknown,
+): VerifiedAction | undefined {
+  if (!isRecord(result)) return undefined;
+  const path = `\`${shortPath(result.path ?? args.path)}\``;
+  if (toolId === 'edit_file' || toolId === 'write_file' || toolId === 'create_directory' || toolId === 'delete_path') {
+    const verb = result.operation === 'create-file'
+      ? 'Created'
+      : result.operation === 'create-directory'
+        ? 'Created folder'
+        : result.operation === 'delete'
+          ? 'Moved to Trash'
+          : 'Edited';
+    return result.status === 'applied'
+      ? { ok: true, text: `${verb} ${path}` }
+      : { ok: false, text: `You rejected: ${verb.toLowerCase()} ${path} (not changed)` };
+  }
+  if (toolId === 'remember' && result.ok === true) {
+    return { ok: true, text: `Remembered: “${clip(String(result.remembered ?? ''), 120)}”` };
+  }
+  if (toolId === 'run_command') {
+    const command = `\`${clip(String(result.command ?? args.command ?? ''), 70)}\``;
+    if (result.status === 'rejected') return { ok: false, text: `You rejected running ${command}` };
+    if (result.timedOut === true) return { ok: false, text: `Ran ${command} — timed out` };
+    const remembered = result.approval === 'remembered' ? ' (always-allowed)' : '';
+    return { ok: result.exitCode === 0, text: `Ran ${command}${remembered} — exit code ${String(result.exitCode)}` };
+  }
+  if (toolId === 'open_application') {
+    const name = `${String(result.application)}${result.path ? ` (${shortPath(result.path)})` : ''}`;
+    return result.status === 'opened'
+      ? { ok: true, text: `Opened ${name}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
+      : { ok: false, text: `You rejected opening ${name}` };
+  }
+  if (toolId === 'open_url') {
+    const url = clip(String(result.url), 90);
+    return result.status === 'opened'
+      ? { ok: true, text: `Opened ${url}${result.browser ? ` in ${String(result.browser)}` : ''}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
+      : { ok: false, text: `You rejected opening ${url}` };
+  }
+  if (toolId === 'control_application') {
+    const what = `${String(result.action ?? args.action)} ${String(result.application ?? args.application)}`;
+    return result.status === 'done'
+      ? { ok: true, text: `Did ${what}${result.approval === 'remembered' ? ' (always-allowed)' : ''}` }
+      : { ok: false, text: `You rejected: ${what}` };
+  }
+  if (toolId === 'fetch_url') {
+    const url = clip(String(result.url ?? args.url), 90);
+    return result.status === 'fetched'
+      ? { ok: true, text: `Read ${url}` }
+      : { ok: false, text: `You rejected reading ${url}` };
+  }
+  if (toolId === 'web_search') {
+    const query = `“${clip(String(result.query ?? args.query), 60)}”`;
+    return result.status === 'searched'
+      ? { ok: true, text: `Searched the web for ${query}` }
+      : { ok: false, text: `You rejected searching for ${query}` };
+  }
+  if (toolId === 'news_headlines') {
+    return result.status === 'fetched'
+      ? { ok: true, text: `Read the news${args.topic ? ` about “${clip(String(args.topic), 40)}”` : ''} (Google News)` }
+      : { ok: false, text: 'You rejected reading the news' };
+  }
+  if (toolId === 'browser') {
+    if (result.status !== 'done') return { ok: false, text: `You rejected using Chrome (${String(args.action ?? '')})` };
+    const where = clip(String(result.title || result.url || ''), 70);
+    const verb = args.action === 'search' ? `Searched Google for “${clip(String(args.query ?? ''), 40)}”` : args.action === 'open' ? 'Opened' : args.action === 'click' ? 'Clicked to' : args.action === 'scroll' ? 'Scrolled' : args.action === 'back' ? 'Went back to' : 'Read';
+    return { ok: true, text: `${verb} ${where} in Chrome` };
+  }
+  return undefined;
+}
+
+const INVALID_CALL_CODES = new Set(['invalid-input', 'input-too-large', 'unknown-tool', 'policy-denied']);
+
+const MUTATING_TOOLS = new Set([
+  'edit_file', 'write_file', 'create_directory', 'delete_path', 'run_command', 'open_application', 'open_url',
+  'fetch_url', 'web_search', 'control_application', 'news_headlines',
+  // Scrolling or reading again is a real step, not a repeated mistake.
+  'browser',
+]);
+
+const CONTINUE_NUDGE =
+  'Continue the task now: call the tool for the step you just described. If the task is already complete, give your final answer instead.';
+
+const APPLY_CHANGE_NUDGE =
+  'You described a code change but did not apply it. Do not ask the user to paste code: make the change yourself with edit_file (the user reviews it before it is written), then verify it. If you have not reproduced the problem yet, do that first.';
+
+/** Tools that change files; withheld when the user asked for no changes. */
+const FILE_CHANGE_TOOLS = new Set(['edit_file', 'write_file', 'create_directory', 'delete_path']);
+
+/**
+ * "don't change anything", "just tell me", "kuch mat badlo", "sirf batao":
+ * the user wants an answer, not edits. Such a request gets no file-changing
+ * tools at all, so a model that ignores the instruction still cannot edit.
+ */
+export function forbidsChanges(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /\b(?:don'?t|do not|dont|never|without)\s+(?:change|changing|edit|editing|modify|modifying|touch|touching|fix|fixing|write|writing)\b/u.test(text) ||
+    /\b(?:no|without)\s+(?:changes|edits)\b|\bread[- ]only\b|\bjust\s+(?:tell|explain|show)\b/u.test(text) ||
+    /\bmat\s+(?:badlo|badalna|chhedo|chhuo|chhuna|chhona|karo\s+change|change\s+karo|edit\s+karo|fix\s+karo)\b|\b(?:change|edit|fix)\s+mat\s+karo\b|\b(?:sirf|bas|bus)\s+batao\b/u.test(text);
+}
+
+/** Tools that read the web in the background. */
+const WEB_TOOLS = new Set(['web_search', 'fetch_url', 'news_headlines', 'browser']);
+
+const USE_THE_WEB_NUDGE =
+  'You do have web access without the browser: call web_search (or news_headlines for news, fetch_url for a known page) now, then answer the user\'s question from what you find. Do not repeat earlier errors. Reply in the language of the user\'s message.';
+
+/**
+ * True when a reply says it cannot reach the internet or current data
+ * ("I'm not able to access real-time data", "internet access nahi hai").
+ */
+export function claimsNoWebAccess(text: string): boolean {
+  return /\b(?:not able to|unable to|can(?:'|’)?t|cannot|don(?:'|’)?t have|do not have|no)\s+(?:directly\s+)?(?:access|browse|search|check|look up|retrieve|get|see|view|read)[^.?!]{0,60}\b(?:real[- ]time|internet|web|online|youtube|current|latest|live|browser|tabs?|chrome|screen)\b/iu.test(text) ||
+    /\breal[- ]time (?:data|information)\b[^.?!]{0,40}\b(?:not|unable|can(?:'|’)?t|cannot)\b/iu.test(text) ||
+    /\b(?:internet|real[- ]time|live data)\b[^.?!]{0,40}\b(?:access nahi|nahi hai|nahi kar sakta|nahi kar sakti|nahi dekh sakta|nahi dekh sakti)\b/iu.test(text) ||
+    // Repeating an earlier browser error instead of searching another way.
+    /Allow JavaScript from Apple Events|JavaScript (?:ko )?enable|enable JavaScript/iu.test(text);
+}
+
+/** Tools that open or drive the user's browser; offered only when the user asks for that. */
+const BROWSER_TOOLS = new Set(['browser', 'open_url']);
+
+/**
+ * Whether the user asked to use, open, show, or act in the browser ("Chrome
+ * mein dekho", "YouTube kholo", "jo khula hai padho", "scroll karo"). A plain
+ * question ("trending song kya hai?") is answered in the background instead,
+ * without touching the user's browser.
+ */
+export function asksForBrowser(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /\b(?:chrome|browser|safari|tab|tabs|website|site)\b/u.test(text) ||
+    /\b(?:open|show me|show|visit|go to|navigate|play|scroll|click)\b/u.test(text) ||
+    /\b(?:kholo|khol do|kholiye|kholna|dikhao|dikha do|dikhaiye|chalao|chala do|bajao|baja do|scroll|click|khula|khuli|khule)\b/u.test(text) ||
+    /(?:खोलो|खोल दो|दिखाओ|चलाओ|बजाओ|खुला|खुली)/u.test(text);
+}
+
+/** Whether the request asks for code to be changed (English or Hinglish). */
+export function asksForCodeChange(prompt: string): boolean {
+  return /\b(?:fix|bug|implement|change|update|add|refactor|rename|remove|replace|edit|modify|write|create|make)\b|\b(?:karo|kar do|kardo|banao|bana do|likho|likh do|sudhaaro|sudharo|hatao|badlo|badal do|thik karo|theek karo)\b/iu.test(prompt);
+}
+
+const UNFINISHED_PLAN_NUDGE =
+  'Your reply is a checklist with steps still open. Do not stop at the plan: carry out the next open step now with tools, then keep going until every step is done, and only then give your final answer.';
+
+/**
+ * True when a final answer is mostly a checklist with open steps ("- [ ] Fix
+ * cartTotal") rather than a report of finished work.
+ */
+export function isUnfinishedPlan(text: string): boolean {
+  const lines = text.trim().split(/\n+/u).filter(line => line.trim() !== '');
+  const open = lines.filter(line => /^\s*(?:[-*]\s*)?\[\s*(?:>\s*)?\]/u.test(line)).length;
+  return open >= 2 && open >= lines.length / 2;
+}
+
+/** True when a final answer only announces a next step ("Let me search…") instead of finishing. */
+export function announcesNextStep(text: string): boolean {
+  const tail = text.trim().split(/\n+/u).slice(-2).join(' ');
+  // Offers to the user ("Let me know if…", "if you want I can…") are genuine endings.
+  if (/\blet me know\b|\bif you (?:want|like|need|'d like)\b|\bshould i\b|\?\s*$/iu.test(tail)) return false;
+  const intent = /\b(?:let me|let's|i'll|i will|i am going to|i'm going to|next,? i|now i(?:'ll| will)?)\b.{0,160}\b(?:search|check|look|read|open|run|try|find|inspect|examine|edit|fix|update|list|explore|verify|test|add|create|write|implement|change|modify|rename|refactor|apply|make|remove|install|build)\b/iu;
+  const hinglishIntent = /\b(?:main|mai|ab main|ab mai)\b.{0,80}\b(?:dekhta|check karta|search karta|dhundhta|dhoondhta|padhta|chalata|karta|fix karta) (?:hoon|hu|hun|hu)\b/iu;
+  return intent.test(tail) || hinglishIntent.test(tail);
+}
+
+/**
+ * Remove footers that only the app may write ("Verified actions", the
+ * chat-only notice). Models imitate them from history, which could fake
+ * evidence of work, so they are stripped from model output and from history.
+ */
+export function stripAppFooters(text: string): string {
+  const markers = [/\n*\s*(?:-{3,}\s*\n+\s*)?\**Verified actions\**[\s\S]*$/iu, /\n*\s*(?:-{3,}\s*\n+\s*)?⚠️\s*\**Chat-only model:[\s\S]*$/u];
+  let result = text;
+  for (const marker of markers) result = result.replace(marker, '');
+  return result.trimEnd();
+}
+
+function actionsFooter(actions: readonly VerifiedAction[]): string {
+  if (actions.length === 0) return '';
+  return `\n\n---\n**Verified actions**\n${actions.map(action => `- ${action.ok ? '✅' : '⛔'} ${action.text}`).join('\n')}`;
 }
 
 function safeErrorCode(error: unknown, fallback = 'internal-error'): string {
@@ -256,6 +330,47 @@ function safeErrorCode(error: unknown, fallback = 'internal-error'): string {
   }
   if (error instanceof OperationStoppedError) return error.reason;
   return fallback;
+}
+
+function parseProviderResponse(value: unknown, maxTextChars: number): ProviderResponse {
+  if (!isRecord(value)) {
+    throw new AgentError('The model returned an invalid response.', 'invalid-provider-response');
+  }
+  if (value.kind === 'final' && typeof value.text === 'string') {
+    return { kind: 'final', text: value.text.slice(0, maxTextChars) };
+  }
+  if (value.kind === 'tool-calls' && Array.isArray(value.calls) && value.calls.length > 0) {
+    const calls = value.calls.slice(0, 10).map(call => {
+      if (
+        !isRecord(call) ||
+        typeof call.toolId !== 'string' ||
+        !TOOL_ID_PATTERN.test(call.toolId) ||
+        !isRecord(call.arguments)
+      ) {
+        throw new AgentError('The model returned an invalid tool call.', 'invalid-provider-response');
+      }
+      return { toolId: call.toolId, arguments: structuredClone(call.arguments) };
+    });
+    return {
+      kind: 'tool-calls',
+      content: typeof value.content === 'string' ? value.content.slice(0, maxTextChars) : '',
+      calls,
+    };
+  }
+  throw new AgentError('The model returned an invalid response.', 'invalid-provider-response');
+}
+
+/** Ask the provider whether the model can use tools, bounded so a stuck service cannot hang the request. */
+async function checkToolSupport(provider: ModelProvider, config: AppConfig, signal: AbortSignal): Promise<boolean> {
+  if (!provider.supportsTools) return true;
+  try {
+    return await runBounded(() => provider.supportsTools?.() ?? Promise.resolve(true), Math.min(10_000, config.requestTimeoutMs), signal);
+  } catch (error) {
+    if (error instanceof OperationStoppedError && error.reason === 'cancelled') {
+      throw new AgentError('Operation cancelled.', 'cancelled');
+    }
+    return true;
+  }
 }
 
 export async function runAgent(
@@ -274,322 +389,305 @@ export async function runAgent(
   }
 }
 
+/** The system prompt and tools a request gets. primeAgent must build exactly the same for a new chat. */
+async function prepareTurn(
+  prompt: string,
+  signal: AbortSignal,
+  options: Pick<AgentOptions, 'provider' | 'tools' | 'config' | 'session' | 'persona' | 'memory' | 'environment'>,
+): Promise<{ readonly toolCapable: boolean; readonly modelTools: readonly ModelToolDefinition[]; readonly system: string }> {
+  // Models without tool support still chat; they are told what they cannot do.
+  const toolCapable = await checkToolSupport(options.provider, options.config, signal);
+  const readOnlyRequest = forbidsChanges(prompt);
+  const browserAllowed = asksForBrowser(prompt);
+  const modelTools = (toolCapable ? options.tools.modelTools() : [])
+    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id))
+    // The user's browser is touched only when they ask for it.
+    .filter(tool => browserAllowed || !BROWSER_TOOLS.has(tool.id));
+  const detected = options.environment ?? detectEnvironment(options.session.messages());
+  const memories = options.memory?.relevant(detected.activeProject) ?? [];
+  const environment = memories.length > 0
+    ? { ...detected, memories: memories.map(entry => ({ text: entry.text, ...(entry.project ? { project: entry.project } : {}) })) }
+    : detected;
+  const system = buildSystemPrompt(environment, modelTools, {
+    chatOnly: !toolCapable,
+    ...(options.persona ? { persona: options.persona } : {}),
+  });
+  return { toolCapable, modelTools, system };
+}
+
+/**
+ * Have the model read the system prompt and tool list of a new chat ahead of
+ * time. That part is ~4,000 tokens and takes ~25 s on a 14B model; Ollama
+ * keeps what it read, so the user's first message then starts at once.
+ */
+export async function primeAgent(
+  signal: AbortSignal,
+  options: Pick<AgentOptions, 'provider' | 'tools' | 'config' | 'session' | 'persona' | 'memory' | 'environment'>,
+): Promise<void> {
+  if (!options.provider.prime) return;
+  const { modelTools, system } = await prepareTurn('', signal, options);
+  await options.provider.prime(system, modelTools, signal);
+}
+
 async function runAgentTask(
   prompt: string,
   signal: AbortSignal,
   options: AgentOptions,
   task: TaskRun,
 ): Promise<string> {
-  if (!prompt.trim() || prompt.length > options.config.maxInputChars) {
+  const { config, session, logger, tools } = options;
+  if (!prompt.trim() || prompt.length > config.maxInputChars) {
     throw new AgentError('Request is empty or exceeds the configured input limit.', 'invalid-request');
   }
   if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
-  options.session.add({ role: 'user', content: prompt });
+  session.add({ role: 'user', content: prompt });
   const start = Date.now();
   task.transition('planning');
-  const unsupportedResponse = unsupportedCapability(prompt);
-  if (unsupportedResponse) {
-    options.session.add({ role: 'assistant', content: unsupportedResponse });
-    options.logger.emit({
-      event: 'request.completed',
-      taskId: task.taskId,
-      runId: task.runId,
-      durationMs: Date.now() - start,
-      iterations: 0,
-    });
-    return unsupportedResponse;
-  }
+
+  const { toolCapable, modelTools, system } = await prepareTurn(prompt, signal, options);
+  const readOnlyRequest = forbidsChanges(prompt);
+  const browserAllowed = asksForBrowser(prompt);
+  const fixedChars = system.length + JSON.stringify(modelTools).length;
+  const budgetChars = Math.max(
+    8_000,
+    (config.ollamaNumCtx - 4_096) * CHARS_PER_TOKEN - fixedChars,
+  );
+
+  const actions: VerifiedAction[] = [];
+  const callCounts = new Map<string, number>();
   let toolCalls = 0;
-  let recoverableToolFailure: ToolExecutionError | undefined;
-  let failedToolId: string | undefined;
-  let correctionAttempts = 0;
-  const successfulToolIds = new Set<string>();
-  const filesystemToolResults: string[] = [];
-  const toolAttempts = new Map<string, number>();
-  const returnPartialFilesystemResult = (
-    error: { readonly code: string; readonly message: string },
-    iteration: number,
-  ): string => {
-    const response = filesystemPartialResultResponse(
-      filesystemToolResults,
-      error.code,
-      error.message,
-      options.config.maxResponseChars,
-    );
-    options.session.add({ role: 'assistant', content: response });
-    task.needsAttention();
-    options.logger.emit({
+  let malformedRetries = 0;
+  let continuationNudges = 0;
+  let pendingNudge: string | undefined;
+  let attemptedEdit = false;
+  let usedWebTool = false;
+  const links = new LinkAliases();
+  const canEdit = modelTools.some(tool => tool.id === 'edit_file' || tool.id === 'write_file');
+  let streamedSomething = false;
+  const onText = options.onText;
+
+  const finish = (text: string, iterations: number, needsAttention = false): string => {
+    // Small models often ignore the system prompt and pretend to have read files;
+    // the app states the limitation itself instead of trusting the model.
+    const chatOnlyNote = toolCapable
+      ? ''
+      : '\n\n---\n⚠️ **Chat-only model:** it cannot read your files, run commands, open apps, or read web pages in Vyomara. Anything it says about your files or projects is not based on them. Choose a model marked “Tools” in the Models panel for that.';
+    // Links must come from a tool result or the user; invented or garbled ones are removed.
+    const sources = urlsIn(session.messages().filter(message => message.role === 'tool' || message.role === 'user').map(message => message.content));
+    const checked = verifyLinks(links.expand(stripAppFooters(text)).trim(), sources).text;
+    const response = `${checked || 'Done.'}${actionsFooter(actions)}${chatOnlyNote}`;
+    session.add({ role: 'assistant', content: response });
+    if (needsAttention) task.needsAttention();
+    logger.emit({
       event: 'request.completed',
       taskId: task.taskId,
       runId: task.runId,
       durationMs: Date.now() - start,
-      iterations: iteration,
+      iterations,
     });
     return response;
   };
 
-  for (let iteration = 1; iteration <= options.config.maxAgentIterations; iteration++) {
-    let rawResponse: unknown;
+  for (let iteration = 1; iteration <= config.maxAgentIterations; iteration += 1) {
+    if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
+    const fitted = fitMessagesToBudget(session.messages(), budgetChars).map(message =>
+      message.role === 'assistant' && message.kind !== 'tool-call'
+        ? { ...message, content: links.shorten(stripAppFooters(message.content)) }
+        // The model sees long URLs as short aliases it can copy without mistakes.
+        : message.role === 'tool' ? { ...message, content: links.shorten(message.content) } : message);
+    // A spoken request carries its note in the message, keeping the system prompt cacheable.
+    let spokenIndex = -1;
+    if (options.voice) {
+      for (let index = fitted.length - 1; index >= 0; index -= 1) {
+        const message = fitted[index];
+        if (message?.role === 'user' && message.content === prompt) { spokenIndex = index; break; }
+      }
+    }
+    const withNote = spokenIndex < 0
+      ? fitted
+      : fitted.map((message, index) => index === spokenIndex ? { ...message, content: `${message.content}\n\n${spokenRequestNote(options.persona)}` } : message);
+    const messages = pendingNudge
+      ? [...withNote, { role: 'user' as const, content: pendingNudge }]
+      : withNote;
+    pendingNudge = undefined;
+    const toolsForTurn = toolCalls < config.maxToolCalls ? modelTools : [];
+    let firstChunk = true;
+    const iterationText = onText === undefined
+      ? undefined
+      : (text: string): void => {
+        if (firstChunk && streamedSomething) onText('\n\n');
+        firstChunk = false;
+        streamedSomething = true;
+        onText(links.expand(text));
+      };
+
+    let raw: unknown;
     try {
-      rawResponse = await runBounded(
-        providerSignal => options.provider.complete(
-          options.session.messages(),
-          providerSignal,
-          toolCalls < options.config.maxToolCalls ? options.tools.modelTools() : [],
-        ),
-        options.config.requestTimeoutMs,
+      raw = await runBounded(
+        providerSignal => options.provider.complete(messages, providerSignal, toolsForTurn, iterationText, system),
+        config.requestTimeoutMs,
         signal,
       );
     } catch (error) {
-      if (
-        filesystemToolResults.length > 0 &&
-        ((error instanceof OperationStoppedError && error.reason === 'timeout') ||
-          (error instanceof ProviderError && error.code !== 'cancelled'))
-      ) {
-        const partialResponse = filesystemResultResponse(
-          filesystemToolResults,
-          options.config.maxResponseChars,
-          true,
-        );
-        options.session.add({ role: 'assistant', content: partialResponse });
-        task.needsAttention();
-        options.logger.emit({
-          event: 'request.completed',
-          taskId: task.taskId,
-          runId: task.runId,
-          durationMs: Date.now() - start,
-          iterations: iteration,
-        });
-        return partialResponse;
-      }
       if (error instanceof OperationStoppedError) {
-        throw new AgentError(error.message, error.reason);
-      }
-      throw error;
-    }
-    let response: ProviderResponse;
-    try {
-      response = parseProviderResponse(
-        rawResponse,
-        options.config.maxResponseChars,
-        options.config.maxToolOutputChars,
-      );
-    } catch (error) {
-      if (error instanceof AgentError && filesystemToolResults.length > 0) {
-        return returnPartialFilesystemResult(error, iteration);
-      }
-      throw error;
-    }
-    if (response.kind === 'final') {
-      if (recoverableToolFailure) {
-        if (filesystemToolResults.length > 0) {
-          return returnPartialFilesystemResult(recoverableToolFailure, iteration);
+        if (error.reason === 'cancelled') throw new AgentError('Operation cancelled.', 'cancelled');
+        if (actions.length > 0 || toolCalls > 0) {
+          return finish('The model took too long to respond, so I stopped here. The work done so far is listed below.', iteration, true);
         }
-        throw recoverableToolFailure;
+        throw new AgentError('The model took too long to respond. Try again, or choose a smaller/faster model.', 'timeout');
       }
-      if (claimsUnsupportedExecution(response.text)) {
-        const safeResponse =
-          'I cannot verify that action because no registered tool result confirms it. No shell command, web search, or file mutation was performed.';
-        options.session.add({ role: 'assistant', content: safeResponse });
-        options.logger.emit({
-          event: 'request.completed',
-          taskId: task.taskId,
-          runId: task.runId,
-          durationMs: Date.now() - start,
-          iterations: iteration,
-        });
-        return safeResponse;
+      if (error instanceof ProviderError && error.code === 'malformed-response' && malformedRetries < 2) {
+        malformedRetries += 1;
+        continue;
       }
-      if (claimsUnverifiedFileRead(response.text, successfulToolIds)) {
-        const safeResponse =
-          'I cannot report file contents because no registered filesystem read completed successfully.';
-        options.session.add({ role: 'assistant', content: safeResponse });
-        options.logger.emit({
-          event: 'request.completed',
-          taskId: task.taskId,
-          runId: task.runId,
-          durationMs: Date.now() - start,
-          iterations: iteration,
-        });
-        return safeResponse;
-      }
-      if (claimsUnverifiedDirectoryRead(response.text, successfulToolIds)) {
-        const safeResponse =
-          'I cannot report directory contents because no registered directory listing or tree tool completed successfully.';
-        options.session.add({ role: 'assistant', content: safeResponse });
-        options.logger.emit({
-          event: 'request.completed',
-          taskId: task.taskId,
-          runId: task.runId,
-          durationMs: Date.now() - start,
-          iterations: iteration,
-        });
-        return safeResponse;
-      }
-      if (filesystemToolResults.length > 0) {
-        const finalResponse = filesystemResultResponse(
-          filesystemToolResults,
-          options.config.maxResponseChars,
-        );
-        options.session.add({ role: 'assistant', content: finalResponse });
-        options.logger.emit({
-          event: 'request.completed',
-          taskId: task.taskId,
-          runId: task.runId,
-          durationMs: Date.now() - start,
-          iterations: iteration,
-        });
-        return finalResponse;
-      }
-      options.session.add({ role: 'assistant', content: response.text });
-      options.logger.emit({
-        event: 'request.completed',
-        taskId: task.taskId,
-        runId: task.runId,
-        durationMs: Date.now() - start,
-        iterations: iteration,
-      });
-      return response.text;
+      throw error;
     }
 
-    const proposedCalls = response.calls.map(call => {
-      const attempt = (toolAttempts.get(call.toolId) ?? 0) + 1;
-      toolAttempts.set(call.toolId, attempt);
+    let response: ProviderResponse;
+    try {
+      response = parseProviderResponse(raw, config.maxResponseChars);
+    } catch (error) {
+      if (malformedRetries < 2) {
+        malformedRetries += 1;
+        continue;
+      }
+      throw error;
+    }
+
+    if (response.kind === 'final') {
+      // Local models sometimes describe their next step and stop. Nudge them
+      // (at most twice) to actually continue instead of ending the task early.
+      const canNudge = continuationNudges < 2 &&
+        iteration < config.maxAgentIterations &&
+        toolCalls < config.maxToolCalls;
+      const unappliedChange = canEdit &&
+        !attemptedEdit &&
+        asksForCodeChange(prompt) &&
+        /```[\s\S]*\n[\s\S]*```/u.test(response.text);
+      const unfinishedPlan = isUnfinishedPlan(response.text);
+      // "I can't access real-time data" while web tools exist and none was tried.
+      const gaveUpOnWeb = !usedWebTool && modelTools.some(tool => WEB_TOOLS.has(tool.id)) && claimsNoWebAccess(response.text);
+      if (canNudge && (unappliedChange || unfinishedPlan || gaveUpOnWeb || announcesNextStep(response.text))) {
+        continuationNudges += 1;
+        session.add({ role: 'assistant', content: response.text });
+        pendingNudge = unappliedChange ? APPLY_CHANGE_NUDGE : unfinishedPlan ? UNFINISHED_PLAN_NUDGE : gaveUpOnWeb ? USE_THE_WEB_NUDGE : CONTINUE_NUDGE;
+        continue;
+      }
+      return finish(response.text, iteration);
+    }
+
+    if (toolCalls >= config.maxToolCalls) {
+      return finish(`${response.content ?? ''}\n\nI reached the limit of ${config.maxToolCalls} tool calls for one request and stopped. Ask me to continue if needed.`, iteration, true);
+    }
+
+    // Real URLs back in the arguments, so tools and history never see aliases.
+    const calls = response.calls.slice(0, Math.max(1, config.maxToolCalls - toolCalls))
+      .map(call => ({ ...call, arguments: links.expandArguments(call.arguments) }));
+    session.add({
+      role: 'assistant',
+      kind: 'tool-call',
+      content: response.content ?? '',
+      toolCalls: calls.map(call => ({ toolId: call.toolId, arguments: call.arguments })),
+    });
+    if (task.state === 'planning') task.transition('running');
+
+    for (const call of calls) {
+      if (signal.aborted) throw new AgentError('Operation cancelled.', 'cancelled');
+      toolCalls += 1;
       const toolCallId = randomUUID();
+      const signature = `${call.toolId}:${JSON.stringify(call.arguments)}`;
+      const attempt = (callCounts.get(signature) ?? 0) + 1;
+      callCounts.set(signature, attempt);
       const context = task.context(toolCallId, attempt);
-      options.logger.emit({
+      const label = describeToolCall(call.toolId, call.arguments);
+      logger.emit({
         event: 'tool.requested',
         ...context,
         toolId: call.toolId,
         argumentKeys: Object.keys(call.arguments).sort(),
       });
-      return { call, attempt, toolCallId, context };
-    });
-    if (response.calls.length > options.config.maxToolCalls - toolCalls) {
-      const error = new AgentError('Tool call limit reached.', 'tool-limit');
-      if (filesystemToolResults.length > 0) {
-        return returnPartialFilesystemResult(error, iteration);
-      }
-      throw error;
-    }
-    if (iteration === options.config.maxAgentIterations) {
-      const error = new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');
-      if (filesystemToolResults.length > 0) {
-        return returnPartialFilesystemResult(error, iteration);
-      }
-      throw error;
-    }
-    options.session.add({
-      role: 'assistant',
-      kind: 'tool-call',
-      content: response.content ?? '',
-      toolCalls: response.calls.map(call => ({
-        toolId: call.toolId,
-        arguments: call.arguments,
-      })),
-    });
-    for (const { call, attempt, toolCallId, context } of proposedCalls) {
-      toolCalls++;
-      if (task.state === 'planning') task.transition('running');
-      options.logger.emit({
-        event: 'tool.invoked',
-        ...context,
-        toolId: call.toolId,
-      });
-      try {
-        const args = executionArguments(prompt, call.toolId, call.arguments, response.calls.length);
-        const result = await options.tools.execute(call.toolId, args, signal, context);
-        const serialized = JSON.stringify(result);
-        if (serialized === undefined || serialized.length > options.config.maxToolOutputChars) {
-          throw new ToolExecutionError(
-            'Tool result exceeded the configured safety limit; success cannot be confirmed.',
-            'output-too-large',
-          );
-        }
-        options.session.add({ role: 'tool', toolId: call.toolId, content: serialized });
-        successfulToolIds.add(call.toolId);
-        if (call.toolId.startsWith('filesystem.')) {
-          filesystemToolResults.push(`${call.toolId}: ${serialized}`);
-        }
-        if (failedToolId === call.toolId) {
-          recoverableToolFailure = undefined;
-          failedToolId = undefined;
-        }
-      } catch (error) {
-        const code = safeErrorCode(error, 'tool-failed');
-        options.logger.emit({
-          event: 'tool.failed',
-          ...context,
+
+      if (attempt > 2 && !MUTATING_TOOLS.has(call.toolId)) {
+        session.add({
+          role: 'tool',
           toolId: call.toolId,
-          code,
+          content: JSON.stringify({
+            ok: false,
+            error: 'You already made this exact call. Use the earlier result above, or try a different approach.',
+          }),
         });
-        if (error instanceof ToolExecutionError && error.code === 'policy-denied') {
-          if (filesystemToolResults.length > 0) {
-            return returnPartialFilesystemResult(error, iteration);
-          }
-          throw new AgentError('Requested tool was denied by policy.', 'policy-denied');
+        continue;
+      }
+
+      if (!browserAllowed && BROWSER_TOOLS.has(call.toolId)) {
+        session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({ ok: false, error: 'The user did not ask to open or use the browser. Find the answer with web_search, fetch_url, or news_headlines and reply in the chat; if that is not enough, say so and offer to look in Chrome.' }),
+        });
+        continue;
+      }
+
+      if (readOnlyRequest && FILE_CHANGE_TOOLS.has(call.toolId)) {
+        session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({ ok: false, error: 'The user asked not to change anything in this request. Answer in words; describe the fix instead of making it.' }),
+        });
+        continue;
+      }
+
+      if (call.toolId === 'edit_file' || call.toolId === 'write_file') attemptedEdit = true;
+      if (WEB_TOOLS.has(call.toolId)) usedWebTool = true;
+      options.onToolActivity?.({ id: toolCallId, toolId: call.toolId, label, status: 'running' });
+      logger.emit({ event: 'tool.invoked', ...context, toolId: call.toolId });
+      try {
+        const result = await tools.execute(call.toolId, call.arguments, signal, context);
+        if (call.toolId === 'update_plan' && isRecord(result) && Array.isArray(result.steps)) {
+          options.onPlan?.(result.steps as PlanStep[]);
         }
-        if (
-          error instanceof ToolExecutionError &&
-          ['invalid-input', 'input-too-large', 'unknown-tool'].includes(error.code)
-        ) {
-          if (correctionAttempts >= 1) {
-            const finalError = new ToolExecutionError(
-              'Tool arguments remained invalid after one correction attempt; no operation was performed.',
-              error.code,
-            );
-            if (filesystemToolResults.length > 0) {
-              return returnPartialFilesystemResult(finalError, iteration);
-            }
-            throw finalError;
-          }
-          correctionAttempts++;
-          options.logger.emit({
-            event: 'tool.retry-scheduled',
-            taskId: task.taskId,
-            runId: task.runId,
-            toolCallId,
-            toolId: call.toolId,
-            nextAttempt: attempt + 1,
-            reasonCode: error.code,
-          });
-          recoverableToolFailure = error;
-          failedToolId = call.toolId;
-          options.session.add({
-            role: 'tool',
-            toolId: call.toolId,
-            content: JSON.stringify({
-              ok: false,
-              error: {
-                code: error.code,
-                message: error.message,
-              },
-            }),
-          });
-          continue;
+        const action = verifiedAction(call.toolId, call.arguments, result);
+        if (action) actions.push(action);
+        const rejected = isRecord(result) && result.status === 'rejected';
+        const content = JSON.stringify(rejected
+          ? { ...result, note: 'The user declined this action. Do not retry it unchanged; adapt or ask the user.' }
+          : result);
+        session.add({ role: 'tool', toolId: call.toolId, content });
+        options.onToolActivity?.({
+          id: toolCallId,
+          toolId: call.toolId,
+          label,
+          status: rejected ? 'rejected' : action && !action.ok ? 'failed' : 'done',
+          ...(action ? { detail: action.text } : {}),
+        });
+      } catch (error) {
+        if (signal.aborted || (error instanceof ToolExecutionError && error.code === 'cancelled')) {
+          throw new AgentError('Operation cancelled.', 'cancelled');
         }
-        if (error instanceof AgentError || error instanceof ToolExecutionError) {
-          if (
-            error instanceof ToolExecutionError &&
-            error.code !== 'cancelled' &&
-            filesystemToolResults.length > 0
-          ) {
-            return returnPartialFilesystemResult(error, iteration);
-          }
-          throw error;
+        const code = safeErrorCode(error, 'tool-failed');
+        const message = error instanceof ToolExecutionError
+          ? error.message
+          : 'The tool failed unexpectedly; nothing is confirmed.';
+        logger.emit({ event: 'tool.failed', ...context, toolId: call.toolId, code });
+        // Invalid calls never reached the world, so they are not "actions"; the
+        // model still sees the error and can correct the call.
+        if (MUTATING_TOOLS.has(call.toolId) && !INVALID_CALL_CODES.has(code)) {
+          actions.push({ ok: false, text: `${label} failed: ${clip(message, 140)}` });
         }
-        const wrappedError = new ToolExecutionError(
-          'The requested operation failed; no success is implied.',
-          'tool-failed',
-        );
-        if (filesystemToolResults.length > 0) {
-          return returnPartialFilesystemResult(wrappedError, iteration);
-        }
-        throw wrappedError;
+        session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({ ok: false, error: { code, message } }),
+        });
+        options.onToolActivity?.({ id: toolCallId, toolId: call.toolId, label, status: 'failed', detail: clip(message, 160) });
       }
     }
     if (task.state === 'running') task.transition('planning');
   }
 
-  throw new AgentError('Agent iteration limit reached without a final response.', 'iteration-limit');
+  return finish(
+    `I used all ${config.maxAgentIterations} steps allowed for one request before finishing. Ask me to continue and I will pick up from here.`,
+    config.maxAgentIterations,
+    true,
+  );
 }

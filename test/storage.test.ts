@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { loadConfig } from '../src/config/config.ts';
 import { PersistenceError, SqliteStore } from '../src/storage/sqlite-store.ts';
+import { readModelSettings, saveModelSettings, saveSelectedModel, withSavedModelSettings } from '../src/app/application.ts';
 
 function temporaryDirectory(): string {
   return mkdtempSync(join(tmpdir(), 'vyomara-storage-'));
@@ -47,9 +48,9 @@ test('session history survives reopening, stays isolated, and cascades on deleti
     role: 'assistant',
     kind: 'tool-call',
     content: '',
-    toolCalls: [{ toolId: 'filesystem.read-file', arguments: { path: '/private/file.txt' } }],
+    toolCalls: [{ toolId: 'read_file', arguments: { path: '/private/file.txt' } }],
   });
-  first.add({ role: 'tool', toolId: 'filesystem.read-file', content: '{"content":"private fixture"}' });
+  first.add({ role: 'tool', toolId: 'read_file', content: '{"content":"private fixture"}' });
   first.add({ role: 'assistant', content: 'private fixture' });
   const second = store.createSession();
   second.add({ role: 'user', content: 'second session prompt' });
@@ -59,6 +60,10 @@ test('session history survives reopening, stays isolated, and cascades on deleti
   const summaries = store.listSessions();
   assert.equal(summaries.length, 2);
   assert.ok(summaries.every(summary => summary.messageCount > 0));
+  // Each summary names the conversation by its first request and shows the last final reply.
+  const firstSummary = summaries.find(summary => summary.id === first.id);
+  assert.equal(firstSummary?.preview, 'private fixture');
+  assert.equal(summaries.find(summary => summary.id === second.id)?.title, 'second session prompt');
   assert.deepEqual(store.getSession(first.id).messages(), first.messages());
   assert.deepEqual(store.getSession(second.id).messages(), second.messages());
   assert.equal(store.deleteSession(first.id), true);
@@ -346,7 +351,7 @@ test('audit events are persisted as metadata without conversation payloads', t =
     runId: 'run-id-fixture',
     toolCallId: 'call-id-fixture',
     attempt: 1,
-    toolId: 'filesystem.read-file',
+    toolId: 'read_file',
     durationMs: 12,
     outputChars: 45,
   });
@@ -370,4 +375,28 @@ test('VYOM_DATA_DIR is absolute and defaults under macOS Application Support', (
     () => loadConfig({ VYOM_DATA_DIR: 'relative/path' }),
     /VYOM_DATA_DIR must be an absolute local directory path/,
   );
+});
+
+test('model settings chosen in the app are saved and applied over the environment', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'vyomara-settings-'));
+  chmodSync(root, 0o700);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = loadConfig({ VYOM_DATA_DIR: join(root, 'data') });
+  assert.deepEqual(readModelSettings(config), {});
+  saveSelectedModel(config, 'deepseek-r1:14b');
+  saveModelSettings(config, { numCtx: 16_384, think: true });
+  const saved = readModelSettings(config);
+  assert.deepEqual(saved, { model: 'deepseek-r1:14b', numCtx: 16_384, think: true });
+  const applied = withSavedModelSettings(config, saved);
+  assert.equal(applied.ollamaModel, 'deepseek-r1:14b');
+  assert.equal(applied.ollamaNumCtx, 16_384);
+  assert.equal(applied.ollamaThink, true);
+});
+
+test('summary text drops app notes and footers and is shortened', async () => {
+  const { summaryText } = await import('../src/storage/sqlite-store.ts');
+  assert.equal(summaryText('[Note from the Vyomara app: undid changes.]\n\nFix the **cart** bug', 90), 'Fix the cart bug');
+  assert.equal(summaryText('Done.\n\n---\n**Verified actions**\n- ✅ Edited `a.js`', 90), 'Done.');
+  assert.equal(summaryText('x'.repeat(200), 10), `${'x'.repeat(9)}…`);
+  assert.equal(summaryText(undefined, 10), undefined);
 });

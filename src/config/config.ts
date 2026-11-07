@@ -5,6 +5,12 @@ export interface AppConfig {
   readonly provider: 'ollama' | 'placeholder';
   readonly ollamaBaseUrl: string;
   readonly ollamaModel: string;
+  /** Context window requested from Ollama, in tokens. */
+  readonly ollamaNumCtx: number;
+  /** Whether thinking-capable models should reason before answering. */
+  readonly ollamaThink: boolean;
+  /** Optional SearXNG instance used by web_search (JSON format must be enabled). */
+  readonly searxngUrl: string | undefined;
   readonly filesystemAllowedRoots: readonly string[];
   readonly dataDirectory: string;
   readonly maxAgentIterations: number;
@@ -13,6 +19,8 @@ export interface AppConfig {
   readonly toolTimeoutMs: number;
   readonly maxInputChars: number;
   readonly maxToolOutputChars: number;
+  readonly maxToolInputChars: number;
+  readonly commandTimeoutMs: number;
   readonly maxResponseChars: number;
   readonly maxFileBytes: number;
   readonly maxDirectoryEntries: number;
@@ -73,12 +81,39 @@ export function validateOllamaModel(value: string): string {
   return model;
 }
 
+export const DEFAULT_OLLAMA_MODEL = 'qwen3:14b';
+
 function modelName(raw: string | undefined): string {
-  return validateOllamaModel(raw === undefined ? 'llama3.2' : raw);
+  return validateOllamaModel(raw === undefined ? DEFAULT_OLLAMA_MODEL : raw);
+}
+
+function searxngUrl(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error('VYOM_SEARXNG_URL must be a valid http(s) URL.');
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username !== '' || url.password !== '') {
+    throw new Error('VYOM_SEARXNG_URL must be an http(s) URL without credentials.');
+  }
+  return url.href;
+}
+
+function booleanSetting(env: Environment, name: string, fallback: boolean): boolean {
+  const raw = env[name]?.trim().toLowerCase();
+  if (raw === undefined || raw === '') return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  throw new Error(`${name} must be true or false.`);
 }
 
 function allowedRoots(raw: string | undefined): readonly string[] {
-  if (raw === undefined) return [];
+  // Default: the whole machine for the current user. Protected system and
+  // credential paths stay blocked by the filesystem layer. An explicit JSON
+  // array narrows access (and `[]` disables filesystem tools entirely).
+  if (raw === undefined || raw.trim() === '') return ['/'];
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -120,18 +155,23 @@ export function loadConfig(env: Environment): AppConfig {
     ollamaBaseUrl: usesOllama
       ? localOllamaBaseUrl(env.VYOM_OLLAMA_BASE_URL)
       : 'http://127.0.0.1:11434',
-    ollamaModel: usesOllama ? modelName(env.VYOM_OLLAMA_MODEL) : 'llama3.2',
+    ollamaModel: usesOllama ? modelName(env.VYOM_OLLAMA_MODEL) : DEFAULT_OLLAMA_MODEL,
+    ollamaNumCtx: boundedInteger(env, 'VYOM_OLLAMA_NUM_CTX', 32_768, 2_048, 262_144),
+    ollamaThink: booleanSetting(env, 'VYOM_OLLAMA_THINK', false),
+    searxngUrl: searxngUrl(env.VYOM_SEARXNG_URL),
     filesystemAllowedRoots: allowedRoots(env.VYOM_ALLOWED_ROOTS),
     dataDirectory: dataDirectory(env.VYOM_DATA_DIR),
-    maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 3, 1, 10),
-    maxToolCalls: boundedInteger(env, 'VYOM_MAX_TOOL_CALLS', 2, 0, 10),
-    requestTimeoutMs: boundedInteger(env, 'VYOM_REQUEST_TIMEOUT_MS', 120_000, 1_000, 300_000),
-    toolTimeoutMs: boundedInteger(env, 'VYOM_TOOL_TIMEOUT_MS', 2_000, 50, 10_000),
-    maxInputChars: boundedInteger(env, 'VYOM_MAX_INPUT_CHARS', 8_000, 1, 32_000),
-    maxToolOutputChars: boundedInteger(env, 'VYOM_MAX_TOOL_OUTPUT_CHARS', 4_000, 1, 20_000),
-    maxResponseChars: boundedInteger(env, 'VYOM_MAX_RESPONSE_CHARS', 16_000, 1_000, 64_000),
-    maxFileBytes: boundedInteger(env, 'VYOM_MAX_FILE_BYTES', 65_536, 1, 1_048_576),
-    maxDirectoryEntries: boundedInteger(env, 'VYOM_MAX_DIRECTORY_ENTRIES', 100, 1, 500),
-    maxTreeDepth: boundedInteger(env, 'VYOM_MAX_TREE_DEPTH', 3, 1, 10),
+    maxAgentIterations: boundedInteger(env, 'VYOM_MAX_AGENT_ITERATIONS', 40, 1, 200),
+    maxToolCalls: boundedInteger(env, 'VYOM_MAX_TOOL_CALLS', 80, 0, 400),
+    requestTimeoutMs: boundedInteger(env, 'VYOM_REQUEST_TIMEOUT_MS', 300_000, 1_000, 1_800_000),
+    toolTimeoutMs: boundedInteger(env, 'VYOM_TOOL_TIMEOUT_MS', 30_000, 50, 300_000),
+    commandTimeoutMs: boundedInteger(env, 'VYOM_COMMAND_TIMEOUT_MS', 120_000, 1_000, 1_800_000),
+    maxInputChars: boundedInteger(env, 'VYOM_MAX_INPUT_CHARS', 32_000, 1, 200_000),
+    maxToolOutputChars: boundedInteger(env, 'VYOM_MAX_TOOL_OUTPUT_CHARS', 24_000, 1, 200_000),
+    maxToolInputChars: boundedInteger(env, 'VYOM_MAX_TOOL_INPUT_CHARS', 400_000, 1, 2_000_000),
+    maxResponseChars: boundedInteger(env, 'VYOM_MAX_RESPONSE_CHARS', 32_000, 1_000, 200_000),
+    maxFileBytes: boundedInteger(env, 'VYOM_MAX_FILE_BYTES', 2_097_152, 1, 16_777_216),
+    maxDirectoryEntries: boundedInteger(env, 'VYOM_MAX_DIRECTORY_ENTRIES', 300, 1, 2_000),
+    maxTreeDepth: boundedInteger(env, 'VYOM_MAX_TREE_DEPTH', 4, 1, 12),
   };
 }

@@ -1,21 +1,23 @@
-import { realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join } from 'node:path';
 import type { AppConfig } from '../config/config.ts';
-import { validateOllamaModel } from '../config/config.ts';
+import { MemoryStore } from '../storage/memory-store.ts';
+import type { PersonaId } from '../shared/persona.ts';
 import type { Logger } from '../types.ts';
+import { Session } from '../session/session.ts';
 import type { SessionMessage } from '../session/session.ts';
-import { runAgent } from '../agent/agent.ts';
+import { primeAgent, runAgent } from '../agent/agent.ts';
+import type { ToolActivity } from '../agent/agent.ts';
 import { OllamaProvider, PlaceholderProvider } from '../providers/provider.ts';
+import type { ModelProvider } from '../providers/provider.ts';
 import { SqliteStore } from '../storage/sqlite-store.ts';
 import type {
   DesktopConversationMessage,
-  DesktopMemorySummary,
-  DesktopProviderSettings,
-  DesktopProviderStatus,
+  FileOperationApprovalPort,
   DesktopSessionHistory,
   DesktopSessionSummary,
 } from '../desktop/contracts.ts';
 import { createDefaultToolRegistry } from '../tools/default-tools.ts';
+import type { ActionToolPorts } from '../tools/action-tools.ts';
+import type { PlanStep } from '../tools/plan-tool.ts';
 import { ToolExecutor } from '../tools/executor.ts';
 import { PolicyGateway } from '../tools/policy.ts';
 import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
@@ -23,217 +25,6 @@ import { withPersistentAudit } from '../diagnostics/persistent-logger.ts';
 export interface RequestResult {
   readonly response: string;
   readonly sessionId: string;
-}
-
-export function initializeDesktopFilesystemRoots(config: AppConfig): AppConfig {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return { ...config, filesystemAllowedRoots: store.initializeFilesystemRoots(config.filesystemAllowedRoots) };
-  } finally {
-    store.close();
-  }
-}
-
-export function initializeDesktopProviderSettings(config: AppConfig): AppConfig {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    const provider = store.getAppSetting('provider');
-    const model = store.getAppSetting('ollama-model');
-    if (provider === undefined && model === undefined) return config;
-    if (
-      (provider !== 'ollama' && provider !== 'placeholder') ||
-      model === undefined
-    ) {
-      throw new Error('Saved provider settings are incomplete or invalid.');
-    }
-    try {
-      return { ...config, provider, ollamaModel: validateOllamaModel(model) };
-    } catch {
-      throw new Error('Saved provider settings are invalid.');
-    }
-  } finally {
-    store.close();
-  }
-}
-
-export function saveDesktopProviderSettings(
-  config: AppConfig,
-  settings: DesktopProviderSettings,
-): { readonly config: AppConfig; readonly status: DesktopProviderStatus } {
-  const model = validateOllamaModel(settings.model);
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    store.setAppSettings({ provider: settings.provider, 'ollama-model': model });
-  } finally {
-    store.close();
-  }
-  const updated = { ...config, provider: settings.provider, ollamaModel: model };
-  return {
-    config: updated,
-    status: { provider: updated.provider, model: updated.ollamaModel, connection: 'not-checked' },
-  };
-}
-
-export function resetDesktopProviderSettings(
-  config: AppConfig,
-  defaults: AppConfig,
-): { readonly config: AppConfig; readonly status: DesktopProviderStatus } {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    store.deleteAppSettings(['provider', 'ollama-model']);
-  } finally {
-    store.close();
-  }
-  const updated = {
-    ...config,
-    provider: defaults.provider,
-    ollamaModel: defaults.ollamaModel,
-  };
-  return {
-    config: updated,
-    status: { provider: updated.provider, model: updated.ollamaModel, connection: 'not-checked' },
-  };
-}
-
-export async function grantDesktopFilesystemRoot(config: AppConfig, selectedPath: string): Promise<AppConfig> {
-  if (
-    !isAbsolute(selectedPath) ||
-    selectedPath.trim() !== selectedPath ||
-    selectedPath.includes('\0') ||
-    selectedPath.length > 4_096
-  ) {
-    throw new Error('The selected folder path is invalid.');
-  }
-  let canonicalPath: string;
-  try {
-    canonicalPath = await realpath(selectedPath);
-    if (!(await stat(canonicalPath)).isDirectory()) {
-      throw new Error('The selected item is not a folder.');
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === 'The selected item is not a folder.') throw error;
-    throw new Error('The selected folder is unavailable or cannot be accessed.');
-  }
-
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return { ...config, filesystemAllowedRoots: store.addFilesystemRoot(canonicalPath) };
-  } finally {
-    store.close();
-  }
-}
-
-export function revokeDesktopFilesystemRoot(config: AppConfig, root: string): AppConfig {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return { ...config, filesystemAllowedRoots: store.removeFilesystemRoot(root) };
-  } finally {
-    store.close();
-  }
-}
-
-export function readDesktopMemories(config: AppConfig): readonly DesktopMemorySummary[] {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.listMemories();
-  } finally {
-    store.close();
-  }
-}
-
-export function readDesktopMemory(config: AppConfig, id: string): string {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.getMemory(id);
-  } finally {
-    store.close();
-  }
-}
-
-export function exportDesktopMemory(config: AppConfig, id: string): string {
-  const content = readDesktopMemory(config, id);
-  return `${JSON.stringify({
-    format: 'vyomara-memory',
-    version: 1,
-    memoryId: id,
-    exportedAt: new Date().toISOString(),
-    content,
-  }, null, 2)}\n`;
-}
-
-export function saveDesktopMemory(config: AppConfig, content: string): string {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.saveMemory(content);
-  } finally {
-    store.close();
-  }
-}
-
-export function deleteDesktopMemory(config: AppConfig, id: string): boolean {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.deleteMemory(id);
-  } finally {
-    store.close();
-  }
-}
-
-export function deleteAllDesktopSessionsAndMemories(config: AppConfig): {
-  readonly sessionsDeleted: number;
-  readonly memoriesDeleted: number;
-} {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return store.deleteAllSessionsAndMemories();
-  } finally {
-    store.close();
-  }
-}
-
-export function exportDesktopBackup(config: AppConfig, destination: string): void {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    store.exportBackup(destination);
-  } finally {
-    store.close();
-  }
-}
-
-export function inspectDesktopBackup(config: AppConfig, sourcePath: string): {
-  readonly fileName: string;
-  readonly sessions: number;
-  readonly memories: number;
-} {
-  const store = new SqliteStore(config.dataDirectory);
-  try {
-    return { fileName: basename(sourcePath), ...store.inspectBackup(sourcePath) };
-  } finally {
-    store.close();
-  }
-}
-
-export function restoreDesktopBackup(config: AppConfig, sourcePath: string): {
-  readonly fileName: string;
-  readonly sessions: number;
-  readonly memories: number;
-  readonly safetyBackupName: string;
-} {
-  const store = new SqliteStore(config.dataDirectory);
-  const safetyBackupPath = join(
-    config.dataDirectory,
-    `vyomara-pre-restore-${new Date().toISOString().replaceAll(':', '-')}.sqlite`,
-  );
-  try {
-    const summary = store.restoreBackup(sourcePath, safetyBackupPath);
-    return {
-      fileName: basename(sourcePath),
-      ...summary,
-      safetyBackupName: basename(safetyBackupPath),
-    };
-  } finally {
-    store.close();
-  }
 }
 
 export function readDesktopSessions(config: AppConfig): readonly DesktopSessionSummary[] {
@@ -287,43 +78,96 @@ export function exportDesktopSession(config: AppConfig, sessionId: string): stri
   }
 }
 
+export interface RequestOptions {
+  readonly sessionId?: string;
+  readonly onText?: (text: string) => void;
+  readonly onToolActivity?: (activity: ToolActivity) => void;
+  readonly onPlan?: (steps: readonly PlanStep[]) => void;
+  /** The request was spoken; replies should be short enough to read aloud. */
+  readonly voice?: boolean;
+  readonly persona?: PersonaId;
+  readonly includeFilesystemTools?: boolean;
+  readonly fileOperationApproval?: FileOperationApprovalPort;
+  readonly actions?: ActionToolPorts;
+}
+
+export function createProvider(config: AppConfig): ModelProvider {
+  return config.provider === 'ollama'
+    ? new OllamaProvider({
+      baseUrl: config.ollamaBaseUrl,
+      model: config.ollamaModel,
+      numCtx: config.ollamaNumCtx,
+      think: config.ollamaThink,
+      maxResponseChars: config.maxResponseChars,
+      maxToolCallArgumentsChars: config.maxToolInputChars,
+    })
+    : new PlaceholderProvider();
+}
+
+function createTools(config: AppConfig, logger: Logger, memory: MemoryStore, options: RequestOptions): ToolExecutor {
+  return new ToolExecutor({
+    registry: createDefaultToolRegistry(config, {
+      ...(options.includeFilesystemTools === undefined ? {} : { includeFilesystemTools: options.includeFilesystemTools }),
+      ...(options.fileOperationApproval ? { fileOperationApproval: options.fileOperationApproval } : {}),
+      ...(options.actions ? { actions: options.actions } : {}),
+      memory,
+    }),
+    policy: new PolicyGateway({
+      allowedEffects: options.actions ? ['launch', 'shell', 'network'] : [],
+    }),
+    config,
+    logger,
+  });
+}
+
+/**
+ * Let the model read a new chat's system prompt and tools in the background
+ * (see primeAgent). Pass the same options as the requests that follow.
+ */
+export async function primeModel(config: AppConfig, logger: Logger, signal: AbortSignal, options: RequestOptions = {}): Promise<void> {
+  if (config.provider !== 'ollama') return;
+  const memory = new MemoryStore(config.dataDirectory);
+  await primeAgent(signal, {
+    provider: createProvider(config),
+    tools: createTools(config, logger, memory, options),
+    config,
+    session: new Session(),
+    ...(options.persona ? { persona: options.persona } : {}),
+    memory,
+  });
+}
+
 export async function runRequest(
   prompt: string,
   signal: AbortSignal,
   config: AppConfig,
   logger: Logger,
-  sessionId?: string,
+  options: RequestOptions = {},
 ): Promise<RequestResult> {
   const store = new SqliteStore(config.dataDirectory);
   try {
-    const session = sessionId === undefined
+    const session = options.sessionId === undefined
       ? store.createSession()
-      : store.getSession(sessionId);
+      : store.getSession(options.sessionId);
     const taskLogger = withPersistentAudit(logger, store);
-    const provider = config.provider === 'ollama'
-      ? new OllamaProvider({
-        baseUrl: config.ollamaBaseUrl,
-        model: config.ollamaModel,
-        maxResponseChars: config.maxResponseChars,
-        maxToolCallArgumentsChars: config.maxToolOutputChars,
-      })
-      : new PlaceholderProvider();
-    const tools = new ToolExecutor({
-      registry: createDefaultToolRegistry(config),
-      policy: new PolicyGateway(),
-      config,
-      logger: taskLogger,
-    });
+    const memory = new MemoryStore(config.dataDirectory);
+    const tools = createTools(config, taskLogger, memory, options);
 
     let response: string | undefined;
     let requestError: unknown;
     try {
       response = await runAgent(prompt, signal, {
-        provider,
+        provider: createProvider(config),
         tools,
         config,
         session,
         logger: taskLogger,
+        ...(options.onText ? { onText: options.onText } : {}),
+        ...(options.onToolActivity ? { onToolActivity: options.onToolActivity } : {}),
+        ...(options.onPlan ? { onPlan: options.onPlan } : {}),
+        ...(options.voice ? { voice: true } : {}),
+        ...(options.persona ? { persona: options.persona } : {}),
+        memory,
       });
     } catch (error) {
       requestError = error;
@@ -346,8 +190,69 @@ export async function runRequest(
     if (response === undefined) {
       throw new Error('The request ended without a response.');
     }
-    return { response, sessionId: session.id };
+    return {
+      response,
+      sessionId: session.id,
+    };
   } finally {
     store.close();
   }
+}
+
+export function saveSelectedModel(config: AppConfig, model: string): void {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.setAppSettings({ [SELECTED_MODEL_SETTING]: model });
+  } finally {
+    store.close();
+  }
+}
+
+const SELECTED_MODEL_SETTING = 'selected-model';
+const NUM_CTX_SETTING = 'ollama-num-ctx';
+const THINK_SETTING = 'ollama-think';
+
+/** Model settings chosen in the app; each field is present only if the user changed it. */
+export interface SavedModelSettings {
+  readonly model?: string;
+  readonly numCtx?: number;
+  readonly think?: boolean;
+}
+
+export function readModelSettings(config: AppConfig): SavedModelSettings {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    const model = store.getAppSetting(SELECTED_MODEL_SETTING);
+    const numCtx = Number(store.getAppSetting(NUM_CTX_SETTING));
+    const think = store.getAppSetting(THINK_SETTING);
+    return {
+      ...(model ? { model } : {}),
+      ...(Number.isSafeInteger(numCtx) && numCtx >= 2_048 && numCtx <= 262_144 ? { numCtx } : {}),
+      ...(think === 'true' || think === 'false' ? { think: think === 'true' } : {}),
+    };
+  } finally {
+    store.close();
+  }
+}
+
+export function saveModelSettings(config: AppConfig, settings: { readonly numCtx?: number; readonly think?: boolean }): void {
+  const store = new SqliteStore(config.dataDirectory);
+  try {
+    store.setAppSettings({
+      ...(settings.numCtx === undefined ? {} : { [NUM_CTX_SETTING]: String(settings.numCtx) }),
+      ...(settings.think === undefined ? {} : { [THINK_SETTING]: String(settings.think) }),
+    });
+  } finally {
+    store.close();
+  }
+}
+
+/** Apply saved model settings on top of the environment configuration. */
+export function withSavedModelSettings(config: AppConfig, saved: SavedModelSettings): AppConfig {
+  return {
+    ...config,
+    ...(config.provider === 'ollama' && saved.model ? { ollamaModel: saved.model } : {}),
+    ...(saved.numCtx === undefined ? {} : { ollamaNumCtx: saved.numCtx }),
+    ...(saved.think === undefined ? {} : { ollamaThink: saved.think }),
+  };
 }

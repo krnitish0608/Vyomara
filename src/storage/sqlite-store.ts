@@ -51,6 +51,23 @@ export interface StoredSessionSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messageCount: number;
+  /** The first thing the user asked, shortened. */
+  readonly title?: string;
+  /** The last final reply, shortened. */
+  readonly preview?: string;
+}
+
+/** Shorten stored text for a list: drop app notes and footers, collapse whitespace. */
+export function summaryText(value: unknown, maxChars: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value
+    .replace(/^\[Note from the Vyomara app:[^\]]*\]\s*/u, '')
+    .replace(/\n*\s*-{3,}\s*\n+\s*\**Verified actions\**[\s\S]*$/iu, '')
+    .replace(/[`*_#>]/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  if (text === '') return undefined;
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1).trimEnd()}…` : text;
 }
 
 export interface StoredMemorySummary {
@@ -82,7 +99,7 @@ function validToolCalls(value: unknown): value is SessionMessage & {
       isRecord(call) &&
       exactKeys(call, ['toolId', 'arguments']) &&
       typeof call.toolId === 'string' &&
-      /^[a-z][a-z0-9.-]{0,63}$/.test(call.toolId) &&
+      /^[a-z][a-z0-9_.-]{0,63}$/.test(call.toolId) &&
       isRecord(call.arguments));
 }
 
@@ -97,7 +114,7 @@ function validSessionMessage(value: unknown): value is SessionMessage {
   if (value.role === 'tool') {
     return exactKeys(value, ['role', 'toolId', 'content']) &&
       typeof value.toolId === 'string' &&
-      /^[a-z][a-z0-9.-]{0,63}$/.test(value.toolId) &&
+      /^[a-z][a-z0-9_.-]{0,63}$/.test(value.toolId) &&
       typeof value.content === 'string';
   }
   if (value.role === 'assistant' && value.kind === 'tool-call') {
@@ -361,7 +378,14 @@ export class SqliteStore {
   listSessions(): readonly StoredSessionSummary[] {
     this.assertOpen();
     return this.#database.prepare(`
-      SELECT s.id, s.created_at, s.updated_at, COUNT(m.ordinal) AS message_count
+      SELECT s.id, s.created_at, s.updated_at, COUNT(m.ordinal) AS message_count,
+        (SELECT substr(json_extract(f.message_json, '$.content'), 1, 600) FROM session_messages AS f
+          WHERE f.session_id = s.id AND json_extract(f.message_json, '$.role') = 'user'
+          ORDER BY f.ordinal LIMIT 1) AS title,
+        (SELECT substr(json_extract(l.message_json, '$.content'), 1, 600) FROM session_messages AS l
+          WHERE l.session_id = s.id AND json_extract(l.message_json, '$.role') = 'assistant'
+            AND json_extract(l.message_json, '$.kind') IS NULL
+          ORDER BY l.ordinal DESC LIMIT 1) AS preview
       FROM sessions AS s
       LEFT JOIN session_messages AS m ON m.session_id = s.id
       GROUP BY s.id
@@ -374,11 +398,15 @@ export class SqliteStore {
         typeof row.message_count !== 'number') {
         throw new PersistenceError('Stored session index is invalid.', 'invalid-data');
       }
+      const title = summaryText(row.title, 90);
+      const preview = summaryText(row.preview, 140);
       return {
         id: row.id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         messageCount: row.message_count,
+        ...(title === undefined ? {} : { title }),
+        ...(preview === undefined ? {} : { preview }),
       };
     });
   }

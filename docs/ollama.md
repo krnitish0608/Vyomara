@@ -1,148 +1,148 @@
 # Local Ollama provider
 
-Vyomara defaults to a local Ollama provider at
-`http://127.0.0.1:11434` using model `llama3.2`. The provider uses Ollama's
-non-streaming `/api/chat` endpoint. Requests stay on loopback; the configured
-URL must use HTTP on `localhost`, `127.0.0.1`, or `::1`. No cloud fallback,
-redirect following, Ollama package, API credential, or model download is
-performed by Vyomara.
+Vyomara talks only to a local [Ollama](https://ollama.com) service, by default
+at `http://127.0.0.1:11434`. The URL must use HTTP on `localhost`,
+`127.0.0.1`, or `::1`. There is no cloud fallback. Vyomara never follows
+redirects and needs no API key.
 
-## Configure and run
+## Choosing a model
 
-Install Ollama separately and make sure the desired model is already available.
-`.env.example` documents the supported local settings; Vyomara does not
-automatically load `.env` files. Export variables in the shell before starting:
+The agent needs a model with **tool calling**. Bigger models follow multi-step
+instructions far better.
 
-Before a request is sent, the CLI identifies the selected provider and whether
-the request will go to the configured local Ollama service or use the
-no-model placeholder.
+| Model | Size | Notes |
+|---|---|---|
+| `qwen3:14b` (default) | ~9.3 GB | Best balance on 24 GB Macs. Reliable tool calls. |
+| `qwen2.5-coder:14b` | ~9 GB | Strong at code; slightly weaker at long tool sequences. |
+| `qwen3:8b`, `qwen2.5-coder:7b` | ~5 GB | Faster, noticeably less reliable on multi-step tasks. |
+| `qwen3:30b-a3b` | ~19 GB | Better quality; needs 32 GB+ RAM. |
+| `llama3.2` (3B) | ~2 GB | Answers simple questions; not recommended for coding. |
+
+## Running any local model from the app
+
+Everything below happens in the **Models** panel (sidebar, or the model name in
+the header). No code or configuration changes are needed.
+
+| Task | How |
+|---|---|
+| Use a new model | Type its name under **Download another model**. Use a name from [ollama.com/library](https://ollama.com/library) (for example `deepseek-r1:14b`), or a GGUF model from Hugging Face as `hf.co/<user>/<repo>:<quantization>`. Then click the model to use it. |
+| See what a model can do | Each model shows its size, its maximum context, and badges. **Tools** means it can read and edit code, run commands, and open apps. **Thinking** and **Vision** are optional extras. **Chat only** means no tools. |
+| Change memory and speed | Under **Settings for \<model\>**, choose a context window (capped at the model's maximum), and turn **thinking** on or off (only for models that support it). |
+| Free disk space | Click **Remove…** next to an unused model and type `DELETE`. |
+| Start Ollama | If Ollama is not running, the panel offers **Start Ollama**. |
+
+The model choice, context window, and thinking setting are saved locally and
+take precedence over the `VYOM_OLLAMA_*` environment variables. The CLI uses
+them too, unless an environment variable or `--model` is given.
+
+**Chat-only models** (no tool support) still work for conversation. Vyomara
+sends them no tools, tells them their limits, and adds a fixed notice under
+every reply, because small models often ignore instructions and claim to have
+read files they cannot access. If Ollama rejects tools at request time,
+Vyomara retries the request without tools and treats the model as chat-only.
+
+From a terminal, the same steps are:
 
 ```sh
-export VYOM_PROVIDER=ollama
-export VYOM_OLLAMA_BASE_URL=http://127.0.0.1:11434
-export VYOM_OLLAMA_MODEL=llama3.2
-export VYOM_REQUEST_TIMEOUT_MS=120000
-pnpm dev -- "Hello, Vyom"
+ollama pull deepseek-r1:14b
+ollama show deepseek-r1:14b   # "tools" under Capabilities = full agent
+pnpm dev -- --model deepseek-r1:14b "your task"
+pnpm eval -- --model deepseek-r1:14b --runs 2   # compare quality with qwen3:14b
 ```
 
-Set `VYOM_PROVIDER=placeholder` to use the deterministic no-model provider.
-`VYOM_REQUEST_TIMEOUT_MS` accepts values from 1000 to 300000 milliseconds.
-The application caps response body size and assistant text; other safe
-resource bounds are configurable through the `VYOM_MAX_*` variables validated
-at startup.
+## Context window and thinking
 
-## Read-only tool calling
+Ollama's built-in context window is only a few thousand tokens. That is far
+too small for reading code, and longer prompts are silently cut. Vyomara
+therefore always sends `options.num_ctx`:
 
-The Ollama `/api/chat` request advertises only tools in the existing registry
-whose effect is `read`. Each has an explicit function name, description, and
-closed JSON argument schema. The agent accepts only calls matching an
-advertised registered tool, processes a returned batch in order, and sends
-assistant `tool_calls` plus corresponding `tool` result messages on the next
-request. Calls go through the existing executor and policy gateway; no
-model-generated code is evaluated.
+- `VYOM_OLLAMA_NUM_CTX` (default `32768`, range 2,048–262,144). The KV cache
+  grows with this value. For `qwen3:14b`, 32K adds roughly 5 GB on top of the
+  model. Lower it to `16384` if memory is tight.
+- Before each model call, the agent fits the conversation into this budget:
+  1. It shortens tool output from earlier turns.
+  2. It drops the oldest turns.
+  3. As a last resort, it shortens older results within the current request.
 
-The agent enforces the configured iteration and total tool-call limits.
-Arguments and results are bounded, tool input/output schemas are validated,
-and invalid arguments can receive one bounded correction attempt. The original
-validation remains authoritative; each correction is revalidated by the same
-executor and policy gateway. A structured tool error is returned to the model,
-and a failed correction stops the request with a clear error. Filesystem
-tools require explicitly allowed roots; the default `[]` grants no filesystem
-access. The desktop can select and revoke roots through its Folders panel,
-persisting those choices locally. `VYOM_ALLOWED_ROOTS` seeds desktop
-permissions only when its local permission list is first initialized; the CLI
-continues to read this environment variable directly. A file read result is sent to the configured local Ollama
-service as conversation context, so allow only roots whose contents you are
-willing to provide to that local model.
+For models that report the `thinking` capability (such as qwen3), Vyomara
+sends `think: false` unless `VYOM_OLLAMA_THINK=true`. Any `<think>` blocks a
+model prints are removed from replies.
 
-Filesystem optional integer limits are advertised as optional and nullable.
-An actual JSON `null` for one of these optional fields is normalized to omission
-at the provider boundary, which uses the configured default. String numbers,
-the string `"null"`, out-of-range values, and other malformed values are not
-coerced. Tool descriptions recommend omitting optional limits when defaults are
-suitable; if a limit is supplied, it must be a JSON integer. Filesystem schema
-errors identify the argument problem (for example, an integer limit supplied
-as a string or a limit outside its advertised range) without echoing the
-supplied path or argument values. The model may make one bounded correction
-attempt; that call is passed through the same validation, allowed-root checks,
-and policy gateway. A failed correction is surfaced as an error, not a
-successful filesystem result.
+## How well it works
 
-When exactly one filesystem tool call is returned and the user's request
-contains exactly one quoted absolute path, the agent uses that exact quoted
-path for execution instead of a path altered by the model. This narrow
-preservation rule supports paths containing spaces, punctuation, and Unicode;
-it does not apply to unquoted or multiple paths, or to batches of tool calls.
-The executor still enforces the absolute-path, configured-root, symlink, and
-tool-schema restrictions. Ambiguous paths are not guessed or pinned.
+Real runs on an Apple M4 Pro (24 GB) with `qwen3:14b`, 32K context, through
+the CLI with approvals answered "yes":
 
-Only a completed registered tool call with a validated result is evidence that
-an operation occurred. A model-generated claim or proposed call is not proof.
-Requests for unsupported shell, web, or file mutation capabilities are refused
-without asking the model to invent an execution result. Common English, Hindi,
-and Hinglish request phrases are recognized; this bounded phrase matching is
-not a general multilingual intent classifier. Final responses that claim an
-unsupported command, search, or file mutation was performed are replaced with
-a truthful status. Claims to have read a file or report its contents are replaced unless
-`filesystem.read-file` completed successfully. Claims to have listed a
-directory or generated a tree likewise require a successful matching tool.
-After a filesystem tool succeeds, Vyomara returns its validated serialized
-result rather than relying on a model-generated summary. This prevents a
-tool-completion event from being mistaken for proof that the model accurately
-interpreted the result. Claims without a matching result are also screened by
-bounded phrase patterns, not semantic verification. Treat file contents as
-untrusted prompt data: they cannot authorize new tools or override system
-policy. If Ollama returns a typed provider error or times out after a
-filesystem result has already been validated, Vyomara returns that bounded
-result and states that no model summary was generated. User cancellation and
-filesystem tool errors are still surfaced.
-Shell execution, web search, package installation, application launching,
-system-feature control, writes, and deletes are not implemented.
+- **"Where is `num_ctx` set in my vyomara project?"** No path was given. The
+  agent found the project from the project-folder list, ran `search_text`, and
+  answered with the correct file and line in about 40 s.
+- **"A test is failing in this project — find the bug, fix it, and verify":**
+  - **Thinking off, before nudges:** 2 of 3 runs succeeded. The failed run
+    announced a next step and stopped, or pasted a fix instead of applying it.
+  - **Thinking off, with nudges:** the agent now nudges the model to continue
+    or to apply the change (at most twice per request). 4 of 4 runs
+    succeeded, in 63–192 s and 8–13 steps:
+    1. Ran the tests.
+    2. Read the test and the source.
+    3. Edited `price * quantity`, and only that file.
+    4. Re-ran the tests to confirm they pass.
+  - **Thinking on:** 0 of 2 succeeded and took 3–4 minutes each, so it stays
+    off by default.
 
-Filesystem errors are returned with safe categories such as `not-found`,
-`invalid-path`, `outside-root`, and `permission-denied`; user-facing messages
-omit absolute paths and stack traces. Unexpected failures use a generic safe
-message and never imply success.
+### `pnpm eval` results (qwen3:14b, 32K context, 2 runs per scenario)
 
-## Request task and activity events
+| Scenario | Before `update_plan` | With `update_plan` and later fixes |
+|---|---|---|
+| locate-code (file + line of a function) | 2/2, 9–24 s | 2/2, 10–20 s |
+| fix-bug (failing test, fix code not test) | 1/2, 47–60 s | 2/2, 77–118 s |
+| add-feature (new function + test + fix) | 2/2, 111–379 s | 2/2, 153–266 s |
+| explain-hinglish (Roman Hinglish summary) | 0/2 | 0/2 — still replies in Devanagari |
+| **Total** | **5/8** | **6/8** |
 
-Each CLI or desktop chat request receives an in-memory task ID and run ID. Structured events
-record the `queued -> planning -> running -> planning -> completed` lifecycle
-as applicable, with terminal `failed` or `cancelled` states on errors.
-Cancellations are reported separately from task failures. The activity stream
-distinguishes `tool.requested` (model proposal),
-`tool.invoked` (agent calls the executor), `tool.execution-started` (input and
-policy checks passed and the tool is about to run), `tool.completed` (validated
-result), and `tool.failed`. A bounded correction is recorded as
-`tool.retry-scheduled` with the next attempt number.
-If a later operation fails after a filesystem result has already been
-validated, Vyom returns that verified partial result with a safe failure
-notice and marks the task `needs_attention`; it does not flatten the run into
-success or discard the completed read.
+These samples are small, and timings are noisy because other work shared
+Ollama during the runs. The plan checklist made fixes more reliable at the
+cost of a few extra steps. Roman-script Hinglish replies remain a weakness of
+this model.
 
-Events correlate task/run/tool-call IDs, attempt numbers, safe error codes,
-duration, and serialized output size. They do not log prompt text, argument
-values, file contents, or tool results. The desktop activity panel displays a short, request-scoped view of these
-events; it is not a durable task database or full user-facing timeline. The
-queue, approval-wait and pause states are reserved but not currently produced;
-concurrency, durable task history, and a full task timeline are not implemented.
+Local models are not deterministic. If a task stalls, ask Vyom to continue or
+rephrase with more detail (a file name, the error message). A larger model
+gives the biggest improvement.
+
+## Request flow
+
+1. The agent builds a system prompt containing:
+   - Today's date and the OS.
+   - Your home folder.
+   - Project folders (for example `~/Projects`) and the projects in them.
+   - The project this conversation last worked in.
+   - Working rules for the tools that are available.
+2. It calls `/api/chat` with every registered tool. In the desktop the response
+   streams, so text appears live.
+3. Each tool call goes through:
+   - argument validation, after `null` options are dropped and numeric
+     strings are coerced;
+   - policy;
+   - approval, if needed;
+   - execution.
+
+   The result, or the error, goes back to the model.
+4. The loop ends when the model answers without tool calls, or when a step
+   limit is reached. The reply ends with **Verified actions**, built from tool
+   results.
+
+Streaming responses may spread tool calls over several chunks; all of them are
+kept.
 
 ## Troubleshooting
 
-- **Ollama unavailable:** start the local Ollama service and verify its local
-  endpoint is reachable. Vyomara reports a bounded error and does not fall
-  back to a remote provider.
-- **Model not found:** install/pull the configured model using the Ollama
-  application before retrying. Vyomara itself does not download models.
-- **HTTP or malformed response:** check the local Ollama service/version and
-  endpoint configuration. Raw server bodies are not printed or logged.
-- **Timeout:** increase `VYOM_REQUEST_TIMEOUT_MS` within its allowed range.
+| Symptom | Fix |
+|---|---|
+| "Ollama is unavailable" | Start Ollama (`ollama serve` or the app). Check `VYOM_OLLAMA_BASE_URL`. |
+| "model is not installed" | `ollama pull <model>` or download it in **Models**. |
+| Very slow first reply | The model is loading into memory. Vyomara keeps it loaded for 30 minutes while the app runs, unloads it when you quit, and unloads the old model when you switch. Check with `ollama ps`. |
+| Replies ignore files or forget earlier steps | Raise `VYOM_OLLAMA_NUM_CTX` (memory permitting) or use a stronger model. |
+| "took too long to respond" | Raise `VYOM_REQUEST_TIMEOUT_MS` (default 300,000 ms per model call). |
+| Agent stops early | Ask it to continue. Raise `VYOM_MAX_AGENT_ITERATIONS` or `VYOM_MAX_TOOL_CALLS` for very large tasks. |
 
-Automated tests use an injected mock `fetch`; they verify request shape,
-response handling, errors, timeout, and cancellation without a running Ollama
-server or internet access. Tool-call request/response messages are verified
-with mock responses. Live basic chat and read-only list, tree, and file-read
-tool calls have also been exercised with Ollama `0.40.11` and `llama3.2` in the
-development environment. Model argument compliance is not deterministic:
-invalid arguments are rejected, with at most one bounded correction attempt.
-Other Ollama versions and models remain unverified.
+Set `VYOM_PROVIDER=placeholder` to run the app without any model (it returns a
+fixed reply).

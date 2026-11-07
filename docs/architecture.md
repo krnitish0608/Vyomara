@@ -2,42 +2,33 @@
 
 ## Status
 
-This architecture blueprint was created in Phase 3 and is updated selectively
-to reflect implementation status. Phases 1–7.1 implemented the CLI, Ollama
-adapter, tool registry/executor/policy gateway, and read-only filesystem
-tools. Phase 8 added request-scoped task/run lifecycle events. Phase 9 added
-local session history and separately managed explicit memory through SQLite.
-Phase 10 added the first Electron/React desktop chat shell. Phase 11 added a
-local session-history browser and continuation from the desktop UI. Phase 12
-added a local Ollama reachability check and persistent, revocable desktop
-filesystem roots. Phase 13 adds explicit desktop memory management. Phase 14
-adds review-before-delete controls for desktop session history. Phase 15 adds
-desktop settings for the local provider and Ollama model tag. Phase 16 adds an
-explicit read-only check for the configured model's local availability.
-Phase 17 adds a reset for the saved provider/model overrides. Phase 18 groups
-provider identity, Ollama reachability, and selected-model availability in
-the desktop Settings status view. Phase 19 improves keyboard focus, escape-key
-panel dismissal, and reduced-motion handling in the desktop shell. Phase 20
-adds explicit per-conversation JSON export to a new owner-only file, including
-the complete stored history. Phase 21 adds a repeatable Electron UI smoke
-check for keyboard navigation and reduced-motion behavior. Phase 22 adds
-explicit per-memory JSON export to new owner-only files. Phase 23 adds an
-exact-confirmation action to delete all saved conversations and memories
-without resetting provider settings or filesystem permissions. Phase 24 adds
-manual owner-only full-database backups. Phase 25 adds validated restore with
-an explicit confirmation and a pre-restore safety snapshot. The diagram and
-component boundaries also describe proposed or future components; their
-implementation status is called out below. Decisions labeled **Accepted** in
-the [ADR index](./adr/README.md) are supported by current project requirements
-or explicit project direction. Decisions labeled **Proposed** still need user
-confirmation.
+Current as of [ADR-0015](./adr/0015-coding-agent-loop-and-approved-actions.md).
+The desktop app and the CLI share one agent that works like a coding agent:
+
+- It loops over model calls and tools until the task is done.
+- It discovers projects without manual selection.
+- It reads, searches, and edits code through reviewed proposals.
+- It runs approved shell commands, and opens apps and web pages after
+  approval.
+
+The desktop adds:
+- live step activity;
+- diff-based review cards;
+- History;
+- a Models panel for choosing or downloading Ollama models;
+- offline voice input.
+
+Later sections still contain some MVP-era phase notes. Where they conflict
+with ADR-0015 or [the product direction](./product-direction.md), those
+documents win.
 
 ## Architecture at a glance
 
 The MVP is a single-process modular monolith with one primary agent. UI,
 provider, storage, and tool implementations sit behind narrow interfaces.
-There is no worker-agent service, cloud fallback, shell tool, or unrestricted
-side-effect capability in the MVP.
+There is no worker-agent service, cloud fallback, or direct, unreviewed
+filesystem mutation. Shell commands, app launches, and web pages exist only as
+approval-gated actions.
 
 ```mermaid
 flowchart TD
@@ -51,8 +42,8 @@ flowchart TD
     Ollama[Local Ollama adapter]
     ToolRegistry[Tool registry and schemas]
     Policy[Policy and approval gateway]
-    Tools[Read-only filesystem tools]
-    Roots[Explicitly configured filesystem roots]
+    Tools[Filesystem tools and approved actions]
+    Roots[Machine scope with protected-path exclusions]
     Store[Local persistence interface]
     History[Session history]
     Memory[Explicit memory]
@@ -75,65 +66,52 @@ flowchart TD
     Tools --> Audit
 ```
 
-The CLI stores local session history, supports review, continuation, and
-deletion, and offers separate explicitly confirmed memory operations. The
-desktop shell uses the same application service and exposes chat, cancellation,
-provider configuration status, request-scoped activity, and filtered session
-history through a restricted preload bridge. Desktop history entries can be
-reviewed and deleted only after a typed confirmation; deleting the active
-history entry also clears it from the current view. A reviewed conversation
-can be explicitly exported as JSON to a new owner-only file; exports include
-complete raw history and are not encrypted. Reviewed memories can likewise be
-exported individually as unencrypted JSON files with owner-only permissions.
-Provider configuration
-is editable between the local Ollama adapter and deterministic placeholder;
-the model tag and provider choice are stored in the local app settings table.
-The user can remove those two overrides to restore the current process
-environment defaults; unrelated app settings and filesystem permissions are
-preserved.
-The Ollama endpoint remains environment-configured and loopback-only. Provider
-configuration status is separate from reachability. The desktop can make
-explicit, loopback-only checks for service reachability and whether the
-selected model appears in Ollama's installed model list; both checks use a
-bounded GET to `/api/tags` and never download models. Memory is not currently
-injected into model context. Allowed filesystem roots are
-selected and revoked through the native folder picker, then persisted in the
-owner-only SQLite database. Memory content can be saved only after exact
-content review and typed confirmation, inspected, and deleted after review
-and typed confirmation; it is not automatically injected into requests. CLI
-roots are configured through environment
-variables. There is no interactive approval UI. The current Ollama
-adapter advertises explicitly registered read-only tools and accepts
-structured tool calls. Every requested call still passes through executor
-validation and the policy gateway. Invalid arguments receive at most one
-structured correction opportunity through the same executor and policy path.
-Unsupported shell, web, and filesystem mutation requests are refused without
-calling the provider; assistant claims about unsupported execution are not
-accepted as evidence. In MVP, policy denies side effects; the
-approval gateway is a fail-closed boundary for future approved capabilities,
-not permission to add them now.
+Both hosts (Electron main and the CLI) compose the same request service
+(`src/app/application.ts`). They differ only in how approvals are shown:
+
+- **Desktop:** cards sent over a typed preload bridge.
+- **CLI:** terminal prompts that print a diff.
+
+Each request works like this:
+1. It opens or continues a stored session.
+2. It builds the tool registry with the host's approval ports.
+3. It runs the agent loop (`src/agent/agent.ts`).
+
+The agent's system prompt (`src/agent/system-prompt.ts`) describes:
+- the environment: home directory, project folders, and the active project;
+- the working rules for the tools that are actually available.
+
+Before each model call, history is fitted to the context budget
+(`src/agent/context.ts`). Every reply ends with a verified-actions list built
+from tool results.
+
+The Ollama endpoint is loopback-only. The model can be chosen in the desktop
+Models panel (stored in local app settings), with `--model` on the CLI, or
+with `VYOM_OLLAMA_MODEL`.
 
 ## Components and boundaries
 
 | Component | Responsibility | Must not do |
 |---|---|---|
 | Text interaction adapter | Accept user input; display state, response, errors, and approval requests. | Call a model or tool directly. |
-| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/filesystem-permission IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
+| Electron preload bridge | Expose narrow, typed chat/status/cancel/activity/history/speech IPC methods. | Expose `ipcRenderer`, Node APIs, filesystem, provider, or tool objects. |
 | Electron main process | Compose the existing application service and validate renderer IPC. | Bypass the agent, tool executor, policy gateway, or local-provider checks. |
 | Session coordinator | Own one session lifecycle, turn ordering, cancellation, and history boundary. | Treat transient context as durable memory. |
-| Primary agent | Interpret a request, request a provider response, and propose typed tool calls within bounded iterations. | Grant permissions, perform filesystem operations, or execute model-generated shell. |
+| Primary agent | Loop: send history + tools to the model, execute requested tool calls, feed results/errors back, stop on a final answer or a step limit; nudge stalled models; report verified actions. | Grant permissions, bypass approvals, or claim actions no tool result confirms. |
 | Provider interface | Define normalized request, response, cancellation, and error contracts. | Expose provider-specific objects to agent or tools. |
 | Ollama adapter | Translate the provider contract to the selected local Ollama-compatible API/model. | Silently contact a remote provider or decide policy. |
 | Tool registry | Resolve stable tool names, validate input/output schemas, classify effects, and enforce limits. | Allow unknown or model-invented tools to execute. |
 | Policy/approval gateway | Check identity, scope, permission, and approval before any side effect; deny by default. | Let model output or a tool self-authorize. |
-| Filesystem tools | List/read only within explicit roots and enforce traversal/symlink containment at access time. | Write/delete or return unbounded file content. |
+| Filesystem tools | Name/glob and content search, tree/list, ranged reads; stage edits/creations/deletions for explicit review; enforce protected paths and symlink containment. | Apply an unreviewed change, traverse a symlink, or return unbounded content. |
+| Action tools | `run_command`, `open_application`, `open_url`: validate, show the exact action, and run only after per-action approval; bound command output and time. | Run, launch, or open anything without approval, or open non-http(s) URLs. |
 | Persistence interface | Separate session history from explicit memory and expose inspect/review/delete operations. | Automatically promote conversation into durable memory. |
 | Audit sink | Record bounded, structured operational events with redaction. | Store secrets or full sensitive prompts/file contents by default. |
 
 These are logical boundaries within one process, not separate services.
 
 The desktop renderer runs with context isolation, sandboxing, disabled Node
-integration, and web security. It renders assistant output as text. No remote
+integration, and web security. It renders assistant Markdown with a small
+React renderer (no HTML injection). No remote
 font or renderer-side provider request is used.
 
 ## Request and tool flows
@@ -165,9 +143,13 @@ font or renderer-side provider request is used.
    function by emitting arbitrary code.
 2. The registry rejects unknown names, validates arguments, and applies
    per-tool timeout/output limits and effect classification.
-3. Policy checks the request, configured roots, and current permission. MVP
-   filesystem tools are read-only. Any future side effect is denied unless a
-   separately approved capability and action-specific user approval exist.
+3. Policy checks the effect:
+   - `read` and `propose` are always allowed.
+   - `shell`, `launch`, and `network` are allowed only when the host supplied
+     approval ports.
+   - Raw `write`/`delete` effects are always denied.
+
+   Proposal and action tools wait for the user to approve each exact action.
 4. The tool executes with least privilege. Filesystem paths are resolved and
    checked against allowed roots, including symlink targets, at the point of
    access.
@@ -185,15 +167,21 @@ responses, cancellation, and typed errors. An adapter owns Ollama transport,
 serialization, endpoint/model compatibility, and local availability errors.
 No automatic cloud fallback is allowed.
 
-The adapter currently uses the non-streaming Ollama `/api/chat` endpoint,
-default model `llama3.2`, and loopback endpoint documented in
-[ADR-0003](./adr/0003-model-provider.md). A local request has been tested, but
-the installed Ollama version was not recorded. Tool definitions come from
-registered read-only tools; structured assistant tool-call and tool-result
+The adapter uses Ollama `/api/chat`:
+- It streams in the desktop and makes plain requests in the CLI.
+- It always sends `options.num_ctx`.
+- It sends `think: false` to thinking-capable models unless
+  `VYOM_OLLAMA_THINK=true`.
+- It merges tool calls spread across stream chunks.
+- It can list and pull models for the Models panel.
+
+The default model is `qwen3:14b`, tested with Ollama 0.40.13 (see
+[the Ollama guide](./ollama.md)). Tool definitions come from
+registered tools; structured assistant tool-call and tool-result
 messages stay in the temporary session. No provider framework or SDK has been
 added.
 
-## History and explicit memory data flow
+## History and retained local data
 
 Session messages and saved memories are distinct data classes in one local
 SQLite database. The CLI creates a new session or resumes one by ID. User
@@ -206,13 +194,12 @@ deletable but is not injected into model context.
 
 The accepted [ADR-0005](./adr/0005-persistence.md) selects the built-in Node
 SQLite API, local user-only permissions, retention until explicit deletion,
-and explicit-only memory. The database is not application-encrypted, and
-automatic backup is not provided. Users can create manual full-database
-backups from History; these contain private history and settings, are
-unencrypted, and can be restored after schema/integrity validation and an
-explicit confirmation. Restore creates a safety copy of current data before
-replacing it. macOS FileVault is recommended; operating-system backups may
-include the database.
+and explicit-only memory. Memory and older settings/permission data remain
+separate in the local store for compatibility, but desktop UI does not expose
+them. The database is not application-encrypted. Desktop History supports
+individual conversation export and deletion; desktop backup/restore controls
+are not available. macOS FileVault is recommended; operating-system backups
+may include the database.
 
 ## Trust boundaries and failure handling
 
@@ -221,8 +208,9 @@ include the database.
 - **Policy gateway:** sole authorization point for tools and all future
   side effects; fail closed if permissions or approval state cannot be
   established.
-- **Filesystem:** least-privilege reads only in MVP; explicit roots and
-  traversal/symlink defenses are mandatory.
+- **Filesystem:** desktop-wide access remains under the logged-in user's OS
+  permissions and excludes system/credential paths; CLI access remains
+  explicitly rooted. Traversal/symlink defenses are mandatory.
 - **Network:** local Ollama is the initial provider target. No silent remote
   fallback or undisclosed content transfer.
 - **Secrets and diagnostics:** no secrets in source control or ordinary logs;
@@ -234,45 +222,37 @@ include the database.
   work; re-check policy on retry; never turn a failed or cancelled operation
   into a success.
 
-## Proposed Phase 4 source layout
-
-This is a proposal, not a commitment to a specific CLI framework or storage
-package. Module interfaces should remain testable without Ollama or real user
-files.
+## Source layout
 
 ```text
 src/
-  app/                 # composition root and lifecycle
-  interaction/         # proposed text adapter
-  sessions/            # session state, turns, cancellation
-  agent/               # one primary agent and bounded loop
-  providers/
-    contracts/         # provider port and normalized types
-    ollama/            # isolated local adapter
+  agent/
+    agent.ts            # model/tool loop, nudges, verified actions, activity labels
+    system-prompt.ts    # environment discovery (project folders, active project) and rules
+    context.ts          # fit history into the model's context budget
+  app/application.ts    # request service shared by desktop and CLI; model selection storage
+  cli.ts                # terminal chat/REPL with diff and y/N approvals
+  config/               # validated environment configuration
+  desktop/              # approval managers, macOS launcher, speech, IPC contracts/validation
+  main/ preload/        # Electron main process and typed bridge
+  providers/provider.ts # provider port, Ollama adapter (chat, list, pull), placeholder
+  renderer/             # React UI (chat, approvals with diffs, activity, History, Models)
+  session/ tasks/       # in-memory session and task-run lifecycle events
+  shared/               # bounded execution, line diff (also used by the renderer)
+  storage/              # SQLite sessions, memory, audit events, app settings
   tools/
-    contracts/         # schemas, registry, result limits
-    filesystem/        # read-only tools and allowed-root checks
-  policy/              # authorization and approval gateway
-  persistence/
-    contracts/         # history and explicit-memory ports
-  diagnostics/         # redaction, audit event contract
-  config/              # validated non-secret configuration
-test/
-  unit/
-  contracts/
-  security/
-  evaluations/
+    contracts.ts executor.ts policy.ts default-tools.ts
+    filesystem-tools.ts # discovery, search, ranged reads, reviewed changes
+    action-tools.ts     # run_command, open_application, open_url
+    command-runner.ts   # zsh runner with bounded output and process-group timeouts
+test/                   # node:test suites (agent, tools, approvals, provider, storage, CLI)
 ```
-
-Implementation may adjust names after the language, interaction, and
-persistence decisions are confirmed. Keep platform-specific code and
-provider-specific behavior inside adapters.
 
 ## MVP implementation sequence
 
 This is the original planning sequence, not a checklist of pending work.
 Phases 1–9 implemented the core contracts and validation, policy and executor,
-Ollama adapter, bounded agent/task lifecycle, read-only tools, and local SQLite
+Ollama adapter, bounded agent/task lifecycle, filesystem tools, and local SQLite
 history with separately managed explicit memory. Phase 10 starts the desktop
 interaction layer. User-facing allowed-root management, memory context
 injection, app packaging, project/session browsing, voice, and broader
@@ -284,8 +264,7 @@ end-to-end evaluation remain future work.
 2. **Core contracts and validation:** normalized errors, request cancellation,
    schemas, size/time/iteration limits, and deterministic test fixtures.
 3. **Policy and tool boundary:** fail-closed policy, approval state model,
-   allowed-root representation, and traversal/symlink security tests. Expose
-   only read-only filesystem tools.
+   filesystem scope, and traversal/symlink security tests.
 4. **Provider port and local adapter:** fake-provider contract tests first,
    then Ollama compatibility tests with no remote fallback.
 5. **Session coordinator and primary agent:** one turn at a time, bounded

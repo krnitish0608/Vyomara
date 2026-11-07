@@ -1,6 +1,7 @@
 # ADR-0003: Replaceable provider interface and local Ollama adapter
 
-- **Status:** Accepted
+- **Status:** Accepted; default model, context window, thinking, and model
+  selection updated by [ADR-0015](./0015-coding-agent-loop-and-approved-actions.md)
 
 ## Context and problem
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,7 +37,7 @@ test('requests persist and continue isolated session history with metadata-only 
     new AbortController().signal,
     config,
     logger,
-    first.sessionId,
+    { sessionId: first.sessionId },
   );
   assert.equal(second.sessionId, first.sessionId);
   assert.match(first.response, /deterministic skeleton response/);
@@ -63,6 +64,40 @@ test('requests persist and continue isolated session history with metadata-only 
     !row.details_json.includes('continued turn fixture')));
 });
 
+test('Ollama chat offers the coding tools and lets the model answer ordinary questions directly', async t => {
+  const root = temporaryDirectory();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const allowedRoot = join(root, 'allowed');
+  await mkdir(allowedRoot);
+  const config = loadConfig({
+    VYOM_PROVIDER: 'ollama',
+    VYOM_DATA_DIR: join(root, 'app-data'),
+    VYOM_ALLOWED_ROOTS: JSON.stringify([allowedRoot]),
+  });
+  let chatRequest: { readonly tools?: readonly { function: { name: string } }[]; readonly options?: unknown; readonly think?: unknown } | undefined;
+  t.mock.method(globalThis, 'fetch', async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    if (String(input).endsWith('/api/show')) {
+      return new Response(JSON.stringify({ capabilities: ['completion', 'tools', 'thinking'] }));
+    }
+    chatRequest = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      message: { role: 'assistant', content: 'React Native is a framework for building native mobile apps with React.' },
+    }), { headers: { 'content-type': 'application/json' } });
+  });
+
+  const result = await runRequest(
+    'Do you know about React Native?',
+    new AbortController().signal,
+    config,
+    createLogger(() => {}),
+  );
+  assert.match(result.response, /^React Native is a framework/);
+  assert.ok(chatRequest?.tools?.some(tool => tool.function.name === 'read_file'));
+  assert.ok(chatRequest?.tools?.some(tool => tool.function.name === 'search_text'));
+  assert.deepEqual(chatRequest?.options, { num_ctx: 32_768 });
+  assert.equal(chatRequest?.think, false);
+});
+
 test('CLI exposes session review/deletion and explicit confirmed memory operations', t => {
   const root = temporaryDirectory();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -80,7 +115,7 @@ test('CLI exposes session review/deletion and explicit confirmed memory operatio
 
   const request = invoke(['A persisted CLI turn']);
   assert.equal(request.status, 0, request.stderr);
-  const sessionId = request.stdout.match(/Session ID: ([0-9a-f-]{36})/)?.[1];
+  const sessionId = request.stderr.match(/Session ID: ([0-9a-f-]{36})/)?.[1];
   assert.ok(sessionId);
 
   const sessionList = invoke(['--sessions', 'list']);

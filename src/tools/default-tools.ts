@@ -1,51 +1,37 @@
-import type { Tool } from './contracts.ts';
 import { ToolRegistry } from './contracts.ts';
 import type { AppConfig } from '../config/config.ts';
 import { registerFilesystemTools } from './filesystem-tools.ts';
+import type { FileOperationApprovalPort } from '../desktop/contracts.ts';
+import { registerActionTools, registerWebTools } from './action-tools.ts';
+import type { ActionToolPorts } from './action-tools.ts';
+import { registerPlanTool } from './plan-tool.ts';
+import { registerMemoryTool } from './memory-tool.ts';
+import type { MemoryStore } from '../storage/memory-store.ts';
 
-interface EmptyInput {
-  readonly [key: string]: never;
+export interface ToolRegistryOptions {
+  readonly includeFilesystemTools?: boolean;
+  /** Enables write_file, edit_file, create_directory, and delete_path (each reviewed by the user). */
+  readonly fileOperationApproval?: FileOperationApprovalPort;
+  /** Enables run_command, open_application, open_url, fetch_url, web_search (each approved by the user). */
+  readonly actions?: ActionToolPorts;
+  /** Enables remember: lasting facts for future conversations. */
+  readonly memory?: MemoryStore;
 }
 
-interface AppInfo {
-  readonly app: 'Vyomara';
-  readonly assistant: 'Vyom';
-  readonly provider: 'ollama' | 'deterministic-placeholder';
-}
-
-const isEmptyInput = (value: unknown): value is EmptyInput =>
-  typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
-
-const isAppInfo = (value: unknown): value is AppInfo =>
-  typeof value === 'object' &&
-  value !== null &&
-  'app' in value && value.app === 'Vyomara' &&
-  'assistant' in value && value.assistant === 'Vyom' &&
-  'provider' in value &&
-  (value.provider === 'ollama' || value.provider === 'deterministic-placeholder');
-
-export function createDefaultToolRegistry(config: AppConfig): ToolRegistry {
+export function createDefaultToolRegistry(
+  config: AppConfig,
+  options: ToolRegistryOptions = {},
+): ToolRegistry {
   const registry = new ToolRegistry();
-  const appInfoTool: Tool<EmptyInput, AppInfo> = {
-    id: 'assistant.info',
-    effect: 'read',
-    description: 'Return the assistant and application identity.',
-    parameters: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-    validateInput: isEmptyInput,
-    validateOutput: isAppInfo,
-    async run() {
-      return {
-        app: 'Vyomara',
-        assistant: 'Vyom',
-        provider: config.provider === 'ollama' ? 'ollama' : 'deterministic-placeholder',
-      };
-    },
-  };
-  registry.register(appInfoTool);
-  registerFilesystemTools(registry, config);
+  registerPlanTool(registry);
+  if (options.memory) registerMemoryTool(registry, options.memory);
+  const includeFilesystemTools = options.includeFilesystemTools ?? config.filesystemAllowedRoots.length > 0;
+  if (includeFilesystemTools) {
+    registerFilesystemTools(registry, config, {}, options.fileOperationApproval);
+  }
+  if (options.actions) {
+    registerActionTools(registry, config, options.actions);
+    registerWebTools(registry, config, options.actions);
+  }
   return registry;
 }

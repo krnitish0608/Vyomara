@@ -1,5 +1,16 @@
 # Vyomara Product Requirements
 
+> **Historical document.** [Vyomara Product Direction](./product-direction.md)
+> and [ADR-0015](./adr/0015-coding-agent-loop-and-approved-actions.md) are
+> authoritative and supersede any conflicting MVP, phase, interaction, scope,
+> or acceptance decision below. In particular, Vyomara is now a coding agent
+> that is typed first and voice later. It edits files through reviewed
+> operations and runs shell commands, opens apps, and opens web pages only
+> after per-action approval. See [the agent tools](./tools.md). The read-only,
+> no-shell, and "out of scope for MVP" statements below describe the original
+> MVP, not the current product. The wake phrase is now “Hello Vyomara”, with
+> no end phrase; listening stays on until it is turned off.
+
 ## 1. Product vision and target user
 
 Vyomara is a local-first personal AI assistant for macOS. Its spoken name is

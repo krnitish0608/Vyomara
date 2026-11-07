@@ -1,399 +1,1029 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { DiagnosticEvent } from '../../../diagnostics/logger.ts';
 import type {
-  DesktopApprovedCheckId,
-  DesktopApprovedCheckResult,
-  DesktopBackupRestorePreview,
-  DesktopProviderConnectionResult,
-  DesktopProviderModelCheckResult,
-  DesktopProviderSettings,
+  DesktopActionProposal,
   DesktopProviderStatus,
-  DesktopSessionHistory,
-  DesktopMemorySummary,
+  DesktopUndoStatus,
+  DesktopFileOperationProposal,
+  DesktopSpeechSetupStatus,
   DesktopSessionSummary,
+  DesktopPipCommand,
+  DesktopPipState,
+  DesktopPlan,
+  DesktopToolActivity,
 } from '../../../desktop/contracts.ts';
+import { activityIcon, activityLabel } from './activity.ts';
+import { ActionApprovalCard, FileOperationCard } from './approvals.tsx';
+import { BrandMark, ThinkingMark, VoiceOrb } from './brand.tsx';
+import { MemoriesPanel } from './memories-panel.tsx';
+import { MessageContent } from './markdown.tsx';
+import { ModelsPanel } from './models-panel.tsx';
+import { PermissionsPanel } from './permissions-panel.tsx';
+import { appendVoiceDraft } from './voice-dictation.ts';
+import { approvalQuestion, isGoodbye, isLikelyNoise, isUndoRequest, speechText, VoiceSession } from '../../../shared/voice-intents.ts';
+import { TurnCollector } from '../../../shared/turn-taking.ts';
+import { DEFAULT_PERSONA, PERSONAS, type PersonaId } from '../../../shared/persona.ts';
+import { playEarcon } from './earcon.ts';
+import { VoiceCapture } from './voice-capture.ts';
+import vyomaraWordmark from './assets/vyomara-wordmark.png';
+
+/** "just now", "5 min ago", "2:40 PM", "Yesterday", "Mon", "3 Nov". */
+function relativeTime(iso: string, now = new Date()): string {
+  const then = new Date(iso);
+  const minutes = Math.round((now.getTime() - then.getTime()) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const time = then.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (then.getTime() >= startOfToday) return time;
+  if (then.getTime() >= startOfToday - 86_400_000) return `Yesterday, ${time}`;
+  if (then.getTime() >= startOfToday - 6 * 86_400_000) return then.toLocaleDateString([], { weekday: 'long' });
+  return then.toLocaleDateString([], { day: 'numeric', month: 'short', year: then.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+
+/** Conversations grouped as Today, Yesterday, This week, Earlier (newest first). */
+function groupSessions(sessions: readonly DesktopSessionSummary[], now = new Date()): { label: string; sessions: DesktopSessionSummary[] }[] {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const groups = [
+    { label: 'Today', from: startOfToday, sessions: [] as DesktopSessionSummary[] },
+    { label: 'Yesterday', from: startOfToday - 86_400_000, sessions: [] as DesktopSessionSummary[] },
+    { label: 'This week', from: startOfToday - 6 * 86_400_000, sessions: [] as DesktopSessionSummary[] },
+    { label: 'Earlier', from: -Infinity, sessions: [] as DesktopSessionSummary[] },
+  ];
+  for (const session of sessions) {
+    const time = new Date(session.updatedAt).getTime();
+    groups.find(group => time >= group.from)?.sessions.push(session);
+  }
+  return groups.filter(group => group.sessions.length > 0);
+}
+
+function matchesSearch(session: DesktopSessionSummary, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return needle === '' || `${session.title ?? ''} ${session.preview ?? ''}`.toLowerCase().includes(needle);
+}
 
 interface ChatMessage {
-  readonly id: number;
+  readonly id: number | string;
   readonly role: 'user' | 'assistant';
   readonly content: string;
   readonly failed?: boolean;
 }
 
-function activityLabel(event: DiagnosticEvent): string | undefined {
-  switch (event.event) {
-    case 'task.created':
-      return 'Task accepted';
-    case 'task.state-changed':
-      if (['completed', 'failed', 'cancelled'].includes(event.to)) return undefined;
-      return `Task ${event.to.replaceAll('_', ' ')}`;
-    case 'task.completed':
-      return 'Task completed';
-    case 'task.needs-attention':
-      return 'Task needs attention';
-    case 'task.failed':
-    case 'request.failed':
-      return `Task failed (${event.code})`;
-    case 'task.cancelled':
-    case 'request.cancelled':
-      return 'Task cancelled';
-    case 'tool.requested':
-      return `Requested ${event.toolId}`;
-    case 'tool.invoked':
-      return `Invoking ${event.toolId}`;
-    case 'tool.execution-started':
-      return `Running ${event.toolId}`;
-    case 'tool.completed':
-      return `Completed ${event.toolId}`;
-    case 'tool.failed':
-      return `Failed ${event.toolId} (${event.code})`;
-    case 'tool.retry-scheduled':
-      return `Correcting ${event.toolId}`;
-    case 'tool.denied':
-      return `Denied ${event.toolId}`;
-    case 'request.completed':
-      return 'Response ready';
-  }
-}
-
 export function App() {
   const [provider, setProvider] = useState<DesktopProviderStatus>();
   const [providerError, setProviderError] = useState<string>();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [providerDraft, setProviderDraft] = useState<DesktopProviderSettings['provider']>('ollama');
-  const [modelDraft, setModelDraft] = useState('llama3.2');
-  const [settingsLoading, setSettingsLoading] = useState(false);
-  const [settingsError, setSettingsError] = useState<string>();
-  const [settingsNotice, setSettingsNotice] = useState<string>();
-  const [modelCheck, setModelCheck] = useState<DesktopProviderModelCheckResult>();
-  const [modelCheckLoading, setModelCheckLoading] = useState(false);
-  const [connectionCheck, setConnectionCheck] = useState<'not-checked' | 'checking' | 'available' | 'unavailable'>('not-checked');
-  const [connectionMessage, setConnectionMessage] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /** The newest request's file changes that can still be undone. */
+  const [undoStatus, setUndoStatus] = useState<DesktopUndoStatus>({ available: false, paths: [] });
+  const [undoing, setUndoing] = useState(false);
+  const [fileOperationProposals, setFileOperationProposals] = useState<DesktopFileOperationProposal[]>([]);
+  const [actionProposals, setActionProposals] = useState<DesktopActionProposal[]>([]);
+  const [toolActivities, setToolActivities] = useState<DesktopToolActivity[]>([]);
+  const [plan, setPlan] = useState<DesktopPlan['steps']>([]);
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  /** Whether the mini window (PiP) may appear over other apps. */
+  const [pipEnabled, setPipEnabledState] = useState(false);
+  const [fileOperationConfirmations, setFileOperationConfirmations] = useState<Record<string, string>>({});
+  const [fileOperationActionPending, setFileOperationActionPending] = useState<string>();
+  const [actionPendingId, setActionPendingId] = useState<string>();
   const [activity, setActivity] = useState<string[]>([]);
   const [sessionId, setSessionId] = useState<string>();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sessions, setSessions] = useState<readonly DesktopSessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string>();
-  const [selectedHistorySession, setSelectedHistorySession] = useState<DesktopSessionHistory>();
-  const [historyDeleteConfirmation, setHistoryDeleteConfirmation] = useState('');
-  const [historyDeleteAllConfirmation, setHistoryDeleteAllConfirmation] = useState('');
-  const [backupRestorePreview, setBackupRestorePreview] = useState<DesktopBackupRestorePreview>();
-  const [backupRestoreConfirmation, setBackupRestoreConfirmation] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
+  /** A conversation id, or 'all', waiting for the second click that confirms deletion. */
+  const [historyConfirm, setHistoryConfirm] = useState<string>();
   const [historyNotice, setHistoryNotice] = useState<string>();
-  const [permissionsOpen, setPermissionsOpen] = useState(false);
-  const [allowedRoots, setAllowedRoots] = useState<readonly string[]>([]);
-  const [permissionsLoading, setPermissionsLoading] = useState(false);
-  const [permissionsError, setPermissionsError] = useState<string>();
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [memories, setMemories] = useState<readonly DesktopMemorySummary[]>([]);
-  const [memoryDraft, setMemoryDraft] = useState('');
-  const [memoryPreviewOpen, setMemoryPreviewOpen] = useState(false);
-  const [memoryConfirmation, setMemoryConfirmation] = useState('');
-  const [selectedMemory, setSelectedMemory] = useState<{ readonly id: string; readonly content: string }>();
-  const [memoryDeleteConfirmation, setMemoryDeleteConfirmation] = useState('');
-  const [memoryLoading, setMemoryLoading] = useState(false);
-  const [memoryError, setMemoryError] = useState<string>();
-  const [memoryNotice, setMemoryNotice] = useState<string>();
-  const [checksOpen, setChecksOpen] = useState(false);
-  const [checkProjectDirectory, setCheckProjectDirectory] = useState<string>();
-  const [checkLoading, setCheckLoading] = useState(false);
-  const [checkResult, setCheckResult] = useState<DesktopApprovedCheckResult>();
-  const [checkError, setCheckError] = useState<string>();
   const [prompt, setPrompt] = useState('');
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [requestPending, setRequestPending] = useState(false);
   const [requestError, setRequestError] = useState<string>();
-  const endOfMessages = useRef<HTMLDivElement>(null);
-  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const [speechSetup, setSpeechSetup] = useState<DesktopSpeechSetupStatus>();
+  const [voiceListening, setVoiceListening] = useState(false);
+  /** Where tap-to-dictate text goes: the main message box or the mini window's box. */
+  const [dictation, setDictation] = useState<'main' | 'pip'>();
+  const [pipDraft, setPipDraft] = useState({ text: '', seq: 0 });
+  const [voiceStarting, setVoiceStarting] = useState(false);
+  const [voiceDownloading, setVoiceDownloading] = useState(false);
+  const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number>();
+  const [voiceTranscript, setVoiceTranscript] = useState('');
+  const [voiceError, setVoiceError] = useState<string>();
+  const [speechError, setSpeechError] = useState<string>();
+  const [orbRailGeometry, setOrbRailGeometry] = useState<{ readonly width: number; readonly center: number; readonly span: number }>();
+  const queuedVoiceCommands = useRef<string[]>([]);
+  /** Wake phrase, follow-up window, and spoken approvals. */
+  const voiceSession = useRef(new VoiceSession());
+  const lastVoiceQuestion = useRef('');
+  const voiceListeningRef = useRef(false);
+  const pendingFileProposals = useRef<DesktopFileOperationProposal[]>([]);
+  const pendingActionProposals = useRef<DesktopActionProposal[]>([]);
+  const handleVoiceCommand = useRef<((transcript: string) => void) | undefined>(undefined);
+  const askByVoice = useRef<((question: string, kind: 'delete' | 'other') => void) | undefined>(undefined);
+  const handlePipCommand = useRef<((command: DesktopPipCommand) => void) | undefined>(undefined);
+  /** Records phrases from the microphone while listening is on. */
+  const voiceCapture = useRef(new VoiceCapture());
+  const handleHeard = useRef<((transcript: string) => void) | undefined>(undefined);
+  const startCapture = useRef<(() => Promise<void>) | undefined>(undefined);
+  const releaseCapture = useRef<(() => void) | undefined>(undefined);
+  const [voiceHearing, setVoiceHearing] = useState(false);
+  /** Vyom is speaking a reply aloud. */
+  const [vyomSpeaking, setVyomSpeaking] = useState(false);
+  /** Which assistant answers: Vyom (male voice) or Vyomara (female voice). */
+  const [persona, setPersonaState] = useState<PersonaId>(DEFAULT_PERSONA);
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
+  const personaPicker = useRef<HTMLDivElement>(null);
+  const personaTrigger = useRef<HTMLButtonElement>(null);
+  const greeted = useRef(false);
+  /** Bumped when speech is interrupted, so a greeting in progress stops. */
+  const greetingRun = useRef(0);
+  const greetOnLaunch = useRef<((id: PersonaId) => void) | undefined>(undefined);
+  const assistantName = PERSONAS[persona].name;
+  /** Words of the spoken turn in progress, shown live in the message box. */
+  const [liveTurn, setLiveTurn] = useState('');
+  const speakingRef = useRef(false);
+  /** Settles when the current spoken reply has fully stopped. */
+  const speechDone = useRef<Promise<void>>(Promise.resolve());
+  const handleTurn = useRef<((text: string) => void) | undefined>(undefined);
+  /** Joins the phrases of one spoken request and waits until the speaker has finished. */
+  const turn = useRef(new TurnCollector(text => handleTurn.current?.(text)));
+  const dictationRef = useRef<'main' | 'pip' | undefined>(undefined);
+  const pendingTranscriptions = useRef(new Set<Promise<unknown>>());
+  /** Whether the request in progress was spoken (only spoken requests get spoken replies). */
+  const currentVoiceRequest = useRef(false);
+  const currentRequestPending = useRef(requestPending);
+  currentRequestPending.current = requestPending;
+  const activeChatRequestId = useRef<string | undefined>(undefined);
+  const submitVoicePrompt = useRef<((value: string, speakResponse?: boolean) => Promise<void>) | undefined>(undefined);
+  const messageList = useRef<HTMLDivElement>(null);
+  /** False while the user has scrolled up to read; new text then does not pull the view down. */
+  const followLatest = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const promptInput = useRef<HTMLTextAreaElement>(null);
+  const topbar = useRef<HTMLElement>(null);
+  const conversation = useRef<HTMLElement>(null);
+  const orbitalHeaderRails = useRef<SVGSVGElement>(null);
+  const shouldRestoreComposerFocus = useRef(false);
   const historyTrigger = useRef<HTMLButtonElement>(null);
-  const permissionsTrigger = useRef<HTMLButtonElement>(null);
-  const memoryTrigger = useRef<HTMLButtonElement>(null);
-  const checksTrigger = useRef<HTMLButtonElement>(null);
-  const settingsHeading = useRef<HTMLHeadingElement>(null);
+  const activityHeading = useRef<HTMLHeadingElement>(null);
   const historyHeading = useRef<HTMLHeadingElement>(null);
+  const fileOperationReview = useRef<HTMLElement>(null);
+  const actionReview = useRef<HTMLElement>(null);
+  const modelsTrigger = useRef<HTMLButtonElement>(null);
+  const modelsHeading = useRef<HTMLHeadingElement>(null);
+  const permissionsTrigger = useRef<HTMLButtonElement>(null);
+  const memoriesTrigger = useRef<HTMLButtonElement>(null);
+  const memoriesHeading = useRef<HTMLHeadingElement>(null);
   const permissionsHeading = useRef<HTMLHeadingElement>(null);
-  const memoryHeading = useRef<HTMLHeadingElement>(null);
-  const checksHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     let mounted = true;
     void window.vyomara.getProviderStatus().then(status => {
       if (mounted) setProvider(status);
     }).catch(() => {
-      if (mounted) setProviderError('Provider settings could not be loaded.');
+      if (mounted) setProviderError('Assistant configuration could not be loaded.');
     });
     const unsubscribe = window.vyomara.onActivity(event => {
       const label = activityLabel(event);
       if (label) setActivity(current => [...current, label].slice(-12));
     });
+    const unsubscribeFileOperations = window.vyomara.onFileOperationProposal(proposal => {
+      setFileOperationProposals(current =>
+        current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
+      requestAnimationFrame(() => fileOperationReview.current?.scrollIntoView({ block: 'nearest' }));
+      askByVoice.current?.(
+        approvalQuestion({ kind: 'file', operation: proposal.operation, path: proposal.path }),
+        proposal.operation === 'delete' ? 'delete' : 'other',
+      );
+    });
+    const unsubscribeActions = window.vyomara.onActionProposal(proposal => {
+      setActionProposals(current =>
+        current.some(item => item.id === proposal.id) ? current : [...current, proposal]);
+      requestAnimationFrame(() => actionReview.current?.scrollIntoView({ block: 'nearest' }));
+      askByVoice.current?.(approvalQuestion(proposal), 'other');
+    });
+    const unsubscribePip = window.vyomara.onPipCommand(command => handlePipCommand.current?.(command));
+    const unsubscribePlan = window.vyomara.onPlan(update => {
+      if (activeChatRequestId.current === update.requestId) setPlan(update.steps);
+    });
+    const unsubscribeToolActivity = window.vyomara.onToolActivity(activity => {
+      if (activity.toolId === 'update_plan') return;
+      if (activeChatRequestId.current !== activity.requestId) return;
+      setToolActivities(current => {
+        const index = current.findIndex(item => item.id === activity.id);
+        if (index === -1) return [...current, activity].slice(-60);
+        const next = [...current];
+        next[index] = activity;
+        return next;
+      });
+    });
+    const unsubscribeSpeech = window.vyomara.onSpeechRecognition(event => {
+      if (event.type === 'partial') setVoiceTranscript(event.transcript);
+      if (event.type === 'model-progress' && event.total > 0) {
+        setVoiceDownloadProgress(Math.min(100, Math.round(event.received / event.total * 100)));
+      }
+      if (event.type === 'model-ready') {
+        setSpeechSetup(current => current ? { ...current, modelReady: true } : current);
+        setVoiceDownloading(false);
+        setVoiceDownloadProgress(undefined);
+      }
+      if (event.type === 'listening') {
+        setVoiceStarting(false);
+        setVoiceListening(true);
+        voiceListeningRef.current = true;
+        // Pressing the orb opens a conversation: everything said is for Vyom.
+        voiceSession.current.setOpen(true);
+        turn.current.reset();
+        void playEarcon('start').then(() => startCapture.current?.());
+      }
+      if (event.type === 'stopped' || event.type === 'error') {
+        const wasListening = voiceListeningRef.current;
+        voiceListeningRef.current = false;
+        voiceSession.current.setOpen(false);
+        turn.current.reset();
+        setVoiceTranscript('');
+        setLiveTurn('');
+        releaseCapture.current?.();
+        if (wasListening) void playEarcon('end');
+      }
+      if (event.type === 'stopped') {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+      }
+      if (event.type === 'error') {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+        setVoiceDownloading(false);
+        setVoiceError(event.message);
+      }
+      if (event.type === 'command') handleHeard.current?.(event.transcript);
+    });
+    void window.vyomara.getPipEnabled().then(enabled => {
+      if (mounted) setPipEnabledState(enabled);
+    }).catch(() => undefined);
+    void window.vyomara.getPersona().then(id => {
+      if (!mounted) return;
+      setPersonaState(id);
+      // Opening on the welcome screen: the assistant introduces itself once per launch.
+      setTimeout(() => greetOnLaunch.current?.(id), 700);
+    }).catch(() => undefined);
+    void window.vyomara.getSpeechSetupStatus().then(status => {
+      if (!mounted) return;
+      setSpeechSetup(status);
+      if (status.listeningEnabled && status.modelReady && status.runtimeAvailable) {
+        setVoiceStarting(true);
+        void window.vyomara.setSpeechListening(true).then(setSpeechSetup).catch(error => {
+          setVoiceStarting(false);
+          setVoiceError(error instanceof Error ? error.message : 'Voice listening could not start.');
+        });
+      }
+    }).catch(error => {
+      if (mounted) setVoiceError(error instanceof Error ? error.message : 'Voice setup could not be loaded.');
+    });
     return () => {
       mounted = false;
       unsubscribe();
+      unsubscribeFileOperations();
+      unsubscribeActions();
+      unsubscribeToolActivity();
+      unsubscribePlan();
+      unsubscribePip();
+      unsubscribeSpeech();
     };
   }, []);
 
   useEffect(() => {
-    endOfMessages.current?.scrollIntoView({
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-      block: 'end',
+    const list = messageList.current;
+    if (!list || !followLatest.current) return;
+    list.scrollTo({
+      top: list.scrollHeight,
+      behavior: requestPending || window.matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
     });
   }, [messages, requestPending]);
 
+  useEffect(() => window.vyomara.onChatText(({ requestId, text }) => {
+    if (activeChatRequestId.current !== requestId) return;
+    setMessages(current => {
+      const existing = current.some(message => message.id === requestId);
+      return existing
+        ? current.map(message => message.id === requestId
+          ? { ...message, content: message.content + text }
+          : message)
+        : [...current, { id: requestId, role: 'assistant', content: text }];
+    });
+  }), []);
+
   useEffect(() => {
-    if (settingsOpen) settingsHeading.current?.focus();
-    else if (historyOpen) historyHeading.current?.focus();
-    else if (permissionsOpen) permissionsHeading.current?.focus();
-    else if (memoryOpen) memoryHeading.current?.focus();
-    else if (checksOpen) checksHeading.current?.focus();
-  }, [checksOpen, historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
+    if (messages.length === 0) {
+      setOrbRailGeometry(undefined);
+      return;
+    }
+
+    const header = topbar.current;
+    const conversationSection = conversation.current;
+    const rails = orbitalHeaderRails.current;
+    if (!header || !conversationSection || !rails) return;
+
+    let frame = 0;
+    const updateGeometry = (): void => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const bounds = rails.getBoundingClientRect();
+        const conversationBounds = conversationSection.getBoundingClientRect();
+        const width = bounds.width;
+        const center = conversationBounds.left + conversationBounds.width / 2 - bounds.left;
+        const span = Math.min(108, center - 8, width - center - 8);
+        if (width <= 0 || span <= 0) return;
+
+        const next = {
+          width: Math.round(width * 100) / 100,
+          center: Math.round(center * 100) / 100,
+          span: Math.round(span * 100) / 100,
+        };
+        setOrbRailGeometry(current =>
+          current?.width === next.width && current.center === next.center && current.span === next.span
+            ? current
+            : next,
+        );
+      });
+    };
+
+    const observer = new ResizeObserver(updateGeometry);
+    observer.observe(header);
+    observer.observe(conversationSection);
+    window.addEventListener('resize', updateGeometry);
+    updateGeometry();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener('resize', updateGeometry);
+    };
+  }, [messages.length]);
+
+  // An open conversation ends by itself after two quiet minutes, so the
+  // microphone is not left hearing everything in the room.
+  useEffect(() => {
+    if (!voiceListening || voiceHearing || vyomSpeaking || requestPending) return;
+    const timer = setTimeout(() => {
+      if (voiceListeningRef.current && !speakingRef.current && !turn.current.active) void toggleVoiceListening();
+    }, 120_000);
+    return () => clearTimeout(timer);
+  }, [voiceListening, voiceHearing, vyomSpeaking, requestPending, voiceTranscript]);
+
+  useEffect(() => {
+    if (
+      requestPending ||
+      queuedVoiceCommands.current.length === 0
+    ) return;
+    const transcript = queuedVoiceCommands.current.shift();
+    if (!transcript) return;
+    void submitPrompt(transcript, true);
+  }, [requestPending]);
+
+  useEffect(() => {
+    const input = promptInput.current;
+    if (!input) return;
+    const maxHeight = Math.round(window.innerHeight * 0.28);
+    input.style.height = '36px';
+    const contentHeight = input.scrollHeight;
+    input.style.height = `${Math.min(Math.max(contentHeight, 36), maxHeight)}px`;
+    input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+  }, [prompt]);
+
+  useEffect(() => {
+    if (requestPending || !shouldRestoreComposerFocus.current) return;
+    shouldRestoreComposerFocus.current = false;
+    promptInput.current?.focus();
+  }, [composerFocusRequest, requestPending]);
+
+  useEffect(() => {
+    if (historyOpen) historyHeading.current?.focus();
+  }, [historyOpen]);
+
+  useEffect(() => {
+    if (modelsOpen) modelsHeading.current?.focus();
+  }, [modelsOpen]);
+
+  useEffect(() => {
+    if (permissionsOpen) permissionsHeading.current?.focus();
+  }, [permissionsOpen]);
 
   useEffect(() => {
     function handleEscape(event: KeyboardEvent): void {
       if (event.key !== 'Escape') return;
-      if (settingsOpen) {
-        setSettingsOpen(false);
-        settingsTrigger.current?.focus();
-      } else if (historyOpen) {
+      if (historyOpen) {
         setHistoryOpen(false);
         historyTrigger.current?.focus();
-      } else if (permissionsOpen) {
+      }
+      if (modelsOpen) {
+        setModelsOpen(false);
+        modelsTrigger.current?.focus();
+      }
+      if (permissionsOpen) {
         setPermissionsOpen(false);
         permissionsTrigger.current?.focus();
-      } else if (memoryOpen) {
-        setMemoryOpen(false);
-        memoryTrigger.current?.focus();
-      } else if (checksOpen) {
-        setChecksOpen(false);
-        checksTrigger.current?.focus();
+      }
+      if (memoriesOpen) {
+        setMemoriesOpen(false);
+        memoriesTrigger.current?.focus();
       }
     }
 
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [checksOpen, historyOpen, memoryOpen, permissionsOpen, settingsOpen]);
+  }, [historyOpen, modelsOpen, permissionsOpen, memoriesOpen]);
 
-  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    const value = prompt.trim();
-    if (!value || requestPending || checkLoading) return;
-
+  async function submitPrompt(value: string, speakResponse = false): Promise<void> {
+    const trimmed = value.trim();
+    if (!trimmed || requestPending) return;
     setPrompt('');
     setRequestError(undefined);
-    setRequestPending(true);
+    // Sending a message returns to the latest reply.
+    followLatest.current = true;
+    setShowJumpToLatest(false);
     setMessages(current => [...current, {
       id: Date.now(),
       role: 'user',
-      content: value,
+      content: trimmed,
     }]);
 
+    // "undo karo": the app puts back the last changes itself; the model is not asked.
+    if (isUndoRequest(trimmed)) {
+      await undoLastChange(speakResponse);
+      return;
+    }
+
+    setRequestPending(true);
+    currentVoiceRequest.current = speakResponse;
+    setToolActivities([]);
+    setPlan([]);
+    const requestId = crypto.randomUUID();
+    activeChatRequestId.current = requestId;
     try {
       const result = await window.vyomara.sendMessage({
-        prompt: value,
+        prompt: trimmed,
+        requestId,
         ...(sessionId ? { sessionId } : {}),
+        ...(speakResponse ? { voice: true } : {}),
       });
       setSessionId(result.sessionId);
-      setMessages(current => [...current, {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: result.response,
-      }]);
+      setMessages(current => current.some(message => message.id === requestId)
+        ? current.map(message => message.id === requestId
+          ? { ...message, content: result.response }
+          : message)
+        : [...current, {
+          id: requestId,
+          role: 'assistant',
+          content: result.response,
+        }]);
+      if (speakResponse) speak(speechText(result.response));
     } catch (error) {
       const message = error instanceof Error
         ? error.message
         : 'Request failed safely. No success is implied.';
       setRequestError(message);
-      setMessages(current => [...current, {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: message,
-        failed: true,
-      }]);
+      setMessages(current => current.some(item => item.id === requestId)
+        ? current.map(item => item.id === requestId
+          ? { ...item, content: message, failed: true }
+          : item)
+        : [...current, {
+          id: requestId,
+          role: 'assistant',
+          content: message,
+          failed: true,
+        }]);
+      setFileOperationProposals([]);
+      setFileOperationConfirmations({});
     } finally {
+      if (activeChatRequestId.current === requestId) activeChatRequestId.current = undefined;
+      setActionProposals([]);
+      setActionPendingId(undefined);
       setRequestPending(false);
+      void refreshUndoStatus();
+    }
+
+  }
+
+  submitVoicePrompt.current = submitPrompt;
+
+  // Keep refs in sync for listeners registered once at mount.
+  voiceListeningRef.current = voiceListening;
+  pendingFileProposals.current = fileOperationProposals;
+  pendingActionProposals.current = actionProposals;
+
+  handleHeard.current = transcript => {
+    setVoiceTranscript(transcript);
+    handleVoiceCommand.current?.(transcript);
+  };
+
+  /** Send a recorded phrase to the dictation box in use, or treat it as a hands-free command. */
+  function routePhrase(wav: Uint8Array): void {
+    const target = dictationRef.current;
+    // In conversation, phrases are collected into one turn (see handleTurn).
+    const fillTurn = target ? undefined : turn.current.addPhrase();
+    if (!target && !turn.current.text) setVoiceTranscript('…');
+    const job = window.vyomara.transcribeSpeech(wav)
+      .then(text => {
+        const heard = text && !isLikelyNoise(text) ? text : undefined;
+        // "bas" ends the conversation at once, even if room noise follows it.
+        if (fillTurn && heard && voiceSession.current.open && !voiceSession.current.awaitingApproval &&
+          !currentRequestPending.current && isGoodbye(heard)) {
+          turn.current.reset();
+          handleHeard.current?.(heard);
+          return;
+        }
+        if (fillTurn) {
+          fillTurn(heard);
+          setVoiceTranscript(turn.current.text);
+          setLiveTurn(turn.current.text);
+          return;
+        }
+        if (!heard) return;
+        if (target === 'main') setPrompt(current => appendVoiceDraft(current.trimEnd(), heard));
+        else if (target === 'pip') setPipDraft(current => ({ text: appendVoiceDraft(current.text, heard), seq: current.seq + 1 }));
+      })
+      .catch(error => {
+        fillTurn?.(undefined);
+        setVoiceError(error instanceof Error ? error.message : 'The phrase could not be transcribed.');
+      })
+      .finally(() => pendingTranscriptions.current.delete(job));
+    pendingTranscriptions.current.add(job);
+  }
+
+  /** The speaker finished a turn in conversation: decide what it means. */
+  handleTurn.current = text => {
+    setLiveTurn('');
+    setVoiceTranscript(text);
+    handleHeard.current?.(text);
+  };
+
+  startCapture.current = () => voiceCapture.current.start({
+    onSpeech: speaking => {
+      setVoiceHearing(speaking);
+      if (dictationRef.current) return;
+      if (speaking) turn.current.speechStarted();
+      else turn.current.speechEnded();
+    },
+    onPhrase: routePhrase,
+    onError: message => setVoiceError(message),
+  });
+
+  releaseCapture.current = () => {
+    if (voiceListeningRef.current || dictationRef.current) return;
+    voiceCapture.current.stop();
+    setVoiceHearing(false);
+  };
+
+  /** Tap-to-dictate: record into a message box until tapped again. Never sends by itself. */
+  async function startDictation(target: 'main' | 'pip'): Promise<void> {
+    if (dictationRef.current) return;
+    if (!speechSetup?.modelReady || !speechSetup.runtimeAvailable) {
+      setVoiceError('Set up voice first: Models panel → Voice.');
+      return;
+    }
+    setVoiceError(undefined);
+    dictationRef.current = target;
+    setDictation(target);
+    if (target === 'pip') setPipDraft(current => ({ text: '', seq: current.seq + 1 }));
+    voiceCapture.current.setMuted(false);
+    try {
+      await window.vyomara.setDictation(true);
+      await startCapture.current?.();
+    } catch (error) {
+      dictationRef.current = undefined;
+      setDictation(undefined);
+      releaseCapture.current?.();
+      setVoiceError(error instanceof Error ? error.message : 'Dictation could not start.');
     }
   }
+
+  async function stopDictation(): Promise<void> {
+    const target = dictationRef.current;
+    if (!target) return;
+    setDictation(undefined);
+    // The last ~0.4 s of speech is still in the microphone pipeline when people
+    // tap stop right after speaking; keep recording briefly so it is not cut off.
+    await new Promise(resolve => setTimeout(resolve, 450));
+    const rest = voiceCapture.current.flush();
+    if (rest) routePhrase(rest);
+    dictationRef.current = undefined;
+    setVoiceHearing(false);
+    releaseCapture.current?.();
+    await Promise.allSettled([...pendingTranscriptions.current]);
+    await window.vyomara.setDictation(false).catch(() => undefined);
+    if (!voiceListeningRef.current) promptInput.current?.focus();
+  }
+
+  function speak(text: string): Promise<void> {
+    if (!text) return Promise.resolve();
+    // Do not record Vyom's own voice as a command.
+    voiceCapture.current.setMuted(true);
+    turn.current.reset();
+    setLiveTurn('');
+    setVoiceHearing(false);
+    speakingRef.current = true;
+    setVyomSpeaking(true);
+    const done = window.vyomara.speakText(text)
+      .then(() => voiceSession.current.extend())
+      .catch(error => {
+        // Interrupted on purpose (orb pressed) is not an error.
+        if (speakingRef.current) setSpeechError(error instanceof Error ? error.message : 'Local speech output failed.');
+      })
+      .finally(() => {
+        speakingRef.current = false;
+        setVyomSpeaking(false);
+        setVoiceTranscript('');
+        setTimeout(() => {
+          if (!speakingRef.current) voiceCapture.current.setMuted(false);
+        }, 250);
+      });
+    speechDone.current = done;
+    return done;
+  }
+
+  /** Stop Vyom mid-sentence and listen again (the orb was pressed while it spoke). */
+  function interruptSpeaking(): void {
+    greetingRun.current += 1;
+    speakingRef.current = false;
+    setVyomSpeaking(false);
+    void window.vyomara.stopSpeaking().catch(() => undefined);
+    voiceCapture.current.setMuted(false);
+  }
+
+  /** A quiet tone; the microphone ignores it so it is not taken as speech. */
+  function cue(kind: 'sent'): void {
+    voiceCapture.current.setMuted(true);
+    void playEarcon(kind).then(() => {
+      if (!speakingRef.current) voiceCapture.current.setMuted(false);
+    });
+  }
+
+  askByVoice.current = (question, kind) => {
+    // Typed requests get answers on screen only.
+    if (!voiceListeningRef.current || !currentVoiceRequest.current) return;
+    lastVoiceQuestion.current = question;
+    voiceSession.current.awaitApproval(kind);
+    speak(question);
+  };
+
+  async function answerByVoice(approve: boolean): Promise<void> {
+    voiceSession.current.clearApproval();
+    const file = pendingFileProposals.current[0];
+    if (file) {
+      setFileOperationProposals(current => current.filter(item => item.id !== file.id));
+      try {
+        if (approve) await window.vyomara.approveFileOperation(file.id, file.operation === 'delete' ? 'DELETE' : undefined);
+        else await window.vyomara.rejectFileOperation(file.id);
+      } catch (error) {
+        setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+      }
+      return;
+    }
+    const action = pendingActionProposals.current[0];
+    if (action) await decideAction(action, approve);
+  }
+
+  handleVoiceCommand.current = transcript => {
+    const decision = voiceSession.current.decide(transcript, currentRequestPending.current);
+    switch (decision.type) {
+      case 'greet':
+        speak('Haan, boliye.');
+        break;
+      case 'submit':
+        cue('sent');
+        void submitPrompt(decision.text, true);
+        break;
+      case 'queue':
+        cue('sent');
+        queuedVoiceCommands.current.push(decision.text);
+        break;
+      case 'end':
+        void speak('Theek hai. Jab zarurat ho, orb dabaiye.').then(() => {
+          if (voiceListeningRef.current) void toggleVoiceListening();
+        });
+        break;
+      case 'cancel':
+        void cancel();
+        speak('Theek hai, rok diya.');
+        break;
+      case 'answer':
+        void answerByVoice(decision.approve);
+        break;
+      case 'reask':
+        speak(`${lastVoiceQuestion.current} Haan ya na boliye.`);
+        break;
+      default:
+        break;
+    }
+  };
+
+  async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (dictationRef.current) await stopDictation();
+    const trimmed = prompt.trim();
+    const restoreFocus = Boolean(trimmed);
+    shouldRestoreComposerFocus.current = restoreFocus;
+    setComposerFocusRequest(current => current + 1);
+    await submitPrompt(prompt);
+    if (restoreFocus) {
+      shouldRestoreComposerFocus.current = false;
+      window.requestAnimationFrame(() => promptInput.current?.focus());
+    }
+  }
+
+  async function downloadVoiceModel(): Promise<void> {
+    if (voiceDownloading || voiceListening) return;
+    setVoiceDownloading(true);
+    setVoiceDownloadProgress(0);
+    setVoiceError(undefined);
+    try {
+      await window.vyomara.downloadSpeechModel();
+      const status = await window.vyomara.getSpeechSetupStatus();
+      setSpeechSetup(status);
+      setVoiceStarting(true);
+      setSpeechSetup(await window.vyomara.setSpeechListening(true));
+    } catch (error) {
+      setVoiceDownloading(false);
+      setVoiceStarting(false);
+      setVoiceError(error instanceof Error ? error.message : 'The offline speech model could not be installed.');
+    }
+  }
+
+  async function toggleVoiceListening(): Promise<void> {
+    // While Vyom is talking, the orb means "stop talking, I want to speak".
+    if (speakingRef.current) {
+      interruptSpeaking();
+      // In a conversation the orb only interrupts; otherwise it also starts listening.
+      if (voiceListeningRef.current) return;
+    }
+    if (!speechSetup || voiceStarting) return;
+    setVoiceError(undefined);
+    setVoiceTranscript('');
+    if (!voiceListening && !speechSetup.modelReady) return;
+    setVoiceStarting(true);
+    try {
+      const status = await window.vyomara.setSpeechListening(!voiceListening);
+      setSpeechSetup(status);
+      if (!status.listeningEnabled) {
+        setVoiceStarting(false);
+        setVoiceListening(false);
+      }
+    } catch (error) {
+      setVoiceStarting(false);
+      setVoiceError(error instanceof Error ? error.message : 'Voice listening could not be changed.');
+    }
+  }
+
+  function toggleComposerDictation(): void {
+    if (dictationRef.current) void stopDictation();
+    else void startDictation('main');
+  }
+
+  async function changePipEnabled(enabled: boolean): Promise<void> {
+    setPipEnabledState(enabled);
+    try {
+      setPipEnabledState(await window.vyomara.setPipEnabled(enabled));
+    } catch {
+      setPipEnabledState(!enabled);
+    }
+  }
+
+  async function refreshUndoStatus(): Promise<void> {
+    try {
+      setUndoStatus(await window.vyomara.getUndoStatus());
+    } catch {
+      setUndoStatus({ available: false, paths: [] });
+    }
+  }
+
+  /** Put back the last request's file changes and say what happened. */
+  async function undoLastChange(speakResponse = false): Promise<void> {
+    if (undoing || requestPending) return;
+    setUndoing(true);
+    const name = (path: string): string => path.split('/').at(-1) ?? path;
+    let reply: string;
+    let spoken: string;
+    try {
+      const result = await window.vyomara.undoLastChange();
+      if (result.restored.length === 0 && result.skipped.length === 0) {
+        reply = 'There are no changes to undo.';
+        spoken = 'Wapas karne ke liye koi badlaav nahi hai.';
+      } else {
+        const lines = [
+          ...(result.restored.length > 0 ? [`↶ Undid the last changes: ${result.restored.map(path => `\`${name(path)}\``).join(', ')}.`] : []),
+          ...(result.movedToTrash.length > 0 ? [`New files ${assistantName} had created are in the Trash: ${result.movedToTrash.map(path => `\`${name(path)}\``).join(', ')}.`] : []),
+          ...result.skipped.map(item => `- Left \`${name(item.path)}\` alone: ${item.reason}.`),
+        ];
+        reply = lines.join('\n\n');
+        spoken = result.restored.length > 0
+          ? `Theek hai, pichhle badlaav wapas kar diye.${result.skipped.length > 0 ? ' Kuch files nahi badli, screen par dekhiye.' : ''}`
+          : 'Ye files baad mein badli gayi thi, isliye wapas nahi ki. Screen par dekhiye.';
+      }
+    } catch (error) {
+      reply = error instanceof Error ? error.message : 'The changes could not be undone.';
+      spoken = 'Badlaav wapas nahi ho paaye.';
+    } finally {
+      setUndoing(false);
+    }
+    setMessages(current => [...current, { id: `undo-${Date.now()}`, role: 'assistant', content: reply }]);
+    if (speakResponse) void speak(spoken);
+    void refreshUndoStatus();
+  }
+
+  /** Switch between Vyom and Vyomara; the new assistant greets in its own voice. */
+  async function choosePersona(id: PersonaId): Promise<void> {
+    if (id === persona || personaSaving || requestPending) return;
+    setPersonaSaving(true);
+    try {
+      const saved = await window.vyomara.setPersona(id);
+      setPersonaState(saved);
+      // Stop the previous assistant's voice fully before the new one speaks.
+      if (speakingRef.current) {
+        interruptSpeaking();
+        await speechDone.current;
+      }
+      greeted.current = true;
+      void speakGreeting(saved);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The assistant could not be changed.');
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
+  greetOnLaunch.current = id => {
+    if (greeted.current || messages.length > 0 || speakingRef.current) return;
+    greeted.current = true;
+    void speakGreeting(id);
+  };
+
+  /** The introduction, then the brand chime; pressing the orb (an interruption) skips the chime. */
+  async function speakGreeting(id: PersonaId): Promise<void> {
+    const run = ++greetingRun.current;
+    await speak(PERSONAS[id].greeting);
+    if (run !== greetingRun.current) return;
+    voiceCapture.current.setMuted(true);
+    await playEarcon('brand');
+    if (!speakingRef.current) voiceCapture.current.setMuted(false);
+  }
+
+  // The assistant menu closes on Escape or a click elsewhere.
+  useEffect(() => {
+    if (!personaMenuOpen) return;
+    const onPointer = (event: MouseEvent): void => {
+      if (!personaPicker.current?.contains(event.target as Node)) setPersonaMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setPersonaMenuOpen(false);
+      personaTrigger.current?.focus();
+    };
+    document.addEventListener('mousedown', onPointer);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [personaMenuOpen]);
 
   async function cancel(): Promise<void> {
     await window.vyomara.cancelRequest();
   }
 
-  async function selectCheckProject(): Promise<void> {
-    setCheckError(undefined);
-    setCheckResult(undefined);
-    try {
-      const directory = await window.vyomara.selectCheckProject();
-      if (directory) setCheckProjectDirectory(directory);
-    } catch (error) {
-      setCheckError(error instanceof Error ? error.message : 'The project folder could not be selected.');
-    }
-  }
-
-  async function runCheck(checkId: DesktopApprovedCheckId): Promise<void> {
-    if (!checkProjectDirectory || checkLoading || requestPending) return;
-    setCheckLoading(true);
-    setCheckError(undefined);
-    setCheckResult(undefined);
-    try {
-      setCheckResult(await window.vyomara.runApprovedCheck(checkId));
-    } catch (error) {
-      setCheckError(error instanceof Error ? error.message : 'The approved check failed safely.');
-    } finally {
-      setCheckLoading(false);
-    }
-  }
-
-  async function cancelCheck(): Promise<void> {
-    try {
-      await window.vyomara.cancelApprovedCheck();
-    } catch (error) {
-      setCheckError(error instanceof Error ? error.message : 'The project check could not be cancelled.');
-    }
-  }
-
-  function toggleChecks(): void {
-    if (checksOpen) {
-      closePanel('checks');
-      return;
-    }
-    setSettingsOpen(false);
+  function closePanel(): void {
     setHistoryOpen(false);
-    setPermissionsOpen(false);
-    setMemoryOpen(false);
-    setChecksOpen(true);
-    setCheckError(undefined);
-  }
-
-  async function checkProviderConnection(): Promise<void> {
-    if (
-      connectionCheck === 'checking' ||
-      settingsLoading ||
-      requestPending ||
-      provider?.provider !== 'ollama'
-    ) return;
-    setConnectionCheck('checking');
-    setConnectionMessage(undefined);
-    try {
-      const result: DesktopProviderConnectionResult = await window.vyomara.checkProviderConnection();
-      setConnectionCheck(result.status);
-      if (result.status === 'unavailable') setConnectionMessage(result.message);
-    } catch (error) {
-      setConnectionCheck('unavailable');
-      setConnectionMessage(error instanceof Error ? error.message : 'The local provider check failed.');
-    }
-  }
-
-  function toggleSettings(): void {
-    if (settingsOpen) {
-      closePanel('settings');
-      return;
-    }
-    setHistoryOpen(false);
-    setPermissionsOpen(false);
-    setMemoryOpen(false);
-    setChecksOpen(false);
-    setProviderDraft(provider?.provider ?? 'ollama');
-    setModelDraft(provider?.model ?? 'llama3.2');
-    setSettingsError(undefined);
-    setSettingsNotice(undefined);
-    setModelCheck(undefined);
-    setSettingsOpen(true);
-  }
-
-  function closePanel(panel: 'checks' | 'history' | 'memory' | 'permissions' | 'settings'): void {
-    if (panel === 'settings') {
-      setSettingsOpen(false);
-      settingsTrigger.current?.focus();
-    } else if (panel === 'history') {
-      setHistoryOpen(false);
-      historyTrigger.current?.focus();
-    } else if (panel === 'permissions') {
-      setPermissionsOpen(false);
-      permissionsTrigger.current?.focus();
-    } else if (panel === 'checks') {
-      setChecksOpen(false);
-      checksTrigger.current?.focus();
-    } else {
-      setMemoryOpen(false);
-      memoryTrigger.current?.focus();
-    }
-  }
-
-  async function checkModelAvailability(): Promise<void> {
-    if (
-      modelCheckLoading ||
-      settingsLoading ||
-      requestPending ||
-      providerDraft !== 'ollama' ||
-      provider?.provider !== 'ollama'
-    ) return;
-    setModelCheckLoading(true);
-    setModelCheck(undefined);
-    setSettingsError(undefined);
-    try {
-      setModelCheck(await window.vyomara.checkProviderModel(modelDraft));
-    } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'The local model check failed.');
-    } finally {
-      setModelCheckLoading(false);
-    }
-  }
-
-  async function saveSettings(): Promise<void> {
-    if (settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending) return;
-    setSettingsLoading(true);
-    setSettingsError(undefined);
-    setSettingsNotice(undefined);
-    try {
-      const saved = await window.vyomara.saveProviderSettings({
-        provider: providerDraft,
-        model: modelDraft,
-      });
-      setProvider(saved);
-      setConnectionCheck('not-checked');
-      setConnectionMessage(undefined);
-      setModelCheck(undefined);
-      setSettingsNotice('Provider settings saved locally. New requests use this provider.');
-    } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Provider settings could not be saved.');
-    } finally {
-      setSettingsLoading(false);
-    }
-  }
-
-  async function resetSettings(): Promise<void> {
-    if (settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending) return;
-    setSettingsLoading(true);
-    setSettingsError(undefined);
-    setSettingsNotice(undefined);
-    try {
-      const restored = await window.vyomara.resetProviderSettings();
-      setProvider(restored);
-      setProviderDraft(restored.provider);
-      setModelDraft(restored.model);
-      setConnectionCheck('not-checked');
-      setConnectionMessage(undefined);
-      setModelCheck(undefined);
-      setSettingsNotice('Saved provider overrides were removed. Environment defaults are active.');
-    } catch (error) {
-      setSettingsError(error instanceof Error ? error.message : 'Provider settings could not be reset.');
-    } finally {
-      setSettingsLoading(false);
-    }
+    historyTrigger.current?.focus();
   }
 
   function startNewChat(): void {
     if (requestPending) return;
     setSessionId(undefined);
     setMessages([]);
+    setPrompt('');
     setActivity([]);
     setRequestError(undefined);
+    setFileOperationProposals([]);
+    setActionProposals([]);
+    setToolActivities([]);
+    setPlan([]);
+    setFileOperationConfirmations({});
+    setActionPendingId(undefined);
     setHistoryOpen(false);
-    setSettingsOpen(false);
-    setChecksOpen(false);
-    setSelectedHistorySession(undefined);
-    setHistoryDeleteConfirmation('');
+  }
+
+  async function approveFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (
+      fileOperationActionPending ||
+      (proposal.operation === 'delete' && fileOperationConfirmations[proposal.id] !== 'DELETE')
+    ) return;
+    setFileOperationActionPending(proposal.id);
+    setRequestError(undefined);
+    try {
+      await window.vyomara.approveFileOperation(
+        proposal.id,
+        proposal.operation === 'delete' ? fileOperationConfirmations[proposal.id] : undefined,
+      );
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setFileOperationConfirmations(current => {
+        const next = { ...current };
+        delete next[proposal.id];
+        return next;
+      });
+    } catch (error) {
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+    } finally {
+      setFileOperationActionPending(undefined);
+    }
+  }
+
+  /** Approve this change and the rest of the task's edits (deletions still ask). */
+  async function approveAllFileOperations(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (fileOperationActionPending || proposal.operation === 'delete') return;
+    setFileOperationActionPending(proposal.id);
+    setRequestError(undefined);
+    try {
+      await window.vyomara.approveAllFileOperations(proposal.id);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+    } finally {
+      // Every edit waiting now was applied with it; only deletions keep their cards.
+      setFileOperationProposals(current => current.filter(item => item.operation === 'delete'));
+      setFileOperationActionPending(undefined);
+    }
+  }
+
+  async function rejectFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (fileOperationActionPending) return;
+    setFileOperationActionPending(proposal.id);
+    try {
+      await window.vyomara.rejectFileOperation(proposal.id);
+      setFileOperationProposals(current => current.filter(item => item.id !== proposal.id));
+      setFileOperationConfirmations(current => {
+        const next = { ...current };
+        delete next[proposal.id];
+        return next;
+      });
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The file review could not be dismissed.');
+    } finally {
+      setFileOperationActionPending(undefined);
+    }
+  }
+
+  async function decideAction(proposal: DesktopActionProposal, approve: boolean, always = false): Promise<void> {
+    if (actionPendingId) return;
+    setActionPendingId(proposal.id);
+    setRequestError(undefined);
+    try {
+      if (approve) await window.vyomara.approveAction(proposal.id, always);
+      else await window.vyomara.rejectAction(proposal.id);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The approval could not be recorded.');
+    } finally {
+      setActionProposals(current => current.filter(item => item.id !== proposal.id));
+      setActionPendingId(undefined);
+    }
+  }
+
+  async function toggleModels(): Promise<void> {
+    if (modelsOpen) {
+      setModelsOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setPermissionsOpen(false);
+    setMemoriesOpen(false);
+    setModelsOpen(true);
+  }
+
+  function togglePermissions(): void {
+    if (permissionsOpen) {
+      setPermissionsOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setModelsOpen(false);
+    setMemoriesOpen(false);
+    setPermissionsOpen(true);
+  }
+
+  function toggleMemories(): void {
+    if (memoriesOpen) {
+      setMemoriesOpen(false);
+      return;
+    }
+    setHistoryOpen(false);
+    setModelsOpen(false);
+    setPermissionsOpen(false);
+    setMemoriesOpen(true);
   }
 
   async function toggleHistory(): Promise<void> {
@@ -402,16 +1032,13 @@ export function App() {
       return;
     }
 
+    setModelsOpen(false);
     setPermissionsOpen(false);
-    setMemoryOpen(false);
-    setSettingsOpen(false);
-    setChecksOpen(false);
+    setMemoriesOpen(false);
     setHistoryOpen(true);
     setHistoryLoading(true);
     setHistoryError(undefined);
     setHistoryNotice(undefined);
-    setSelectedHistorySession(undefined);
-    setHistoryDeleteConfirmation('');
     try {
       setSessions(await window.vyomara.listSessions());
     } catch (error) {
@@ -435,8 +1062,8 @@ export function App() {
       setActivity([]);
       setRequestError(undefined);
       setHistoryOpen(false);
-      setSelectedHistorySession(undefined);
-      setHistoryDeleteConfirmation('');
+      // Ready to continue: the next message is added to this same conversation.
+      requestAnimationFrame(() => promptInput.current?.focus());
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The saved session could not be opened.');
     } finally {
@@ -444,400 +1071,406 @@ export function App() {
     }
   }
 
-  async function reviewSessionForDeletion(id: string): Promise<void> {
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    setHistoryDeleteConfirmation('');
-    setSelectedHistorySession(undefined);
-    try {
-      setSelectedHistorySession(await window.vyomara.loadSession(id));
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The selected conversation could not be reviewed.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function exportReviewedSession(): Promise<void> {
-    if (!selectedHistorySession || historyLoading || requestPending) return;
+  /** Delete conversations after the in-place confirmation (two clicks, no typing). */
+  async function deleteSessions(ids: readonly string[]): Promise<void> {
+    if (ids.length === 0 || historyLoading || requestPending) return;
     setHistoryLoading(true);
     setHistoryError(undefined);
     setHistoryNotice(undefined);
     try {
-      const result = await window.vyomara.exportSession(selectedHistorySession.sessionId);
-      if (result.status === 'exported') setHistoryNotice('Conversation exported. The JSON file includes complete raw history.');
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The conversation could not be exported.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function deleteReviewedSession(): Promise<void> {
-    const selected = selectedHistorySession;
-    if (!selected || historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    try {
-      const deleted = await window.vyomara.deleteSession(selected.sessionId, historyDeleteConfirmation);
-      if (!deleted) throw new Error('The selected conversation no longer exists.');
+      for (const id of ids) await window.vyomara.deleteSession(id, 'DELETE');
       setSessions(await window.vyomara.listSessions());
-      setSelectedHistorySession(undefined);
-      setHistoryDeleteConfirmation('');
-      if (sessionId === selected.sessionId) {
+      if (sessionId !== undefined && ids.includes(sessionId)) {
         setSessionId(undefined);
         setMessages([]);
         setActivity([]);
         setRequestError(undefined);
       }
-      setHistoryNotice('Conversation deleted from this Mac.');
+      setHistoryNotice(ids.length === 1 ? 'Conversation deleted.' : `${ids.length} conversations deleted.`);
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : 'The conversation could not be deleted.');
     } finally {
+      setHistoryConfirm(undefined);
       setHistoryLoading(false);
     }
   }
 
-  async function deleteAllSavedHistoryAndMemories(): Promise<void> {
-    if (historyDeleteAllConfirmation !== 'DELETE ALL' || historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    try {
-      const result = await window.vyomara.deleteAllHistoryAndMemories(historyDeleteAllConfirmation);
-      setSessions([]);
-      setSelectedHistorySession(undefined);
-      setHistoryDeleteConfirmation('');
-      setHistoryDeleteAllConfirmation('');
-      setSessionId(undefined);
-      setMessages([]);
-      setActivity([]);
-      setRequestError(undefined);
-      setHistoryNotice(
-        `Deleted ${result.sessionsDeleted} saved conversation(s) and ${result.memoriesDeleted} saved memor${result.memoriesDeleted === 1 ? 'y' : 'ies'}. Provider settings and folder permissions were kept.`,
-      );
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'Saved conversations and memories could not be deleted.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function createLocalBackup(): Promise<void> {
-    if (historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    try {
-      const result = await window.vyomara.backupLocalData();
-      if (result.status === 'exported') {
-        setHistoryNotice('Local backup created. It is unencrypted; keep the file somewhere protected.');
-      }
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The local backup could not be created.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function selectBackupForRestore(): Promise<void> {
-    if (historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    setBackupRestorePreview(undefined);
-    setBackupRestoreConfirmation('');
-    try {
-      const preview = await window.vyomara.selectBackupForRestore();
-      if (preview) setBackupRestorePreview(preview);
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The selected backup could not be reviewed.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function restoreLocalData(): Promise<void> {
-    if (backupRestoreConfirmation !== 'RESTORE' || historyLoading || requestPending) return;
-    setHistoryLoading(true);
-    setHistoryError(undefined);
-    setHistoryNotice(undefined);
-    try {
-      const result = await window.vyomara.restoreLocalData(backupRestoreConfirmation);
-      setBackupRestorePreview(undefined);
-      setBackupRestoreConfirmation('');
-      setSessions(await window.vyomara.listSessions());
-      setMemories(await window.vyomara.listMemories());
-      setAllowedRoots(await window.vyomara.listFilesystemRoots());
-      setProvider(await window.vyomara.getProviderStatus());
-      setSelectedHistorySession(undefined);
-      setSelectedMemory(undefined);
-      setSessionId(undefined);
-      setMessages([]);
-      setActivity([]);
-      setRequestError(undefined);
-      setHistoryNotice(
-        `Restored ${result.sessions} conversation(s) and ${result.memories} memory item(s) from ${result.fileName}. A pre-restore safety copy was saved as ${result.safetyBackupName}.`,
-      );
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : 'The selected backup could not be restored.');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function togglePermissions(): Promise<void> {
-    if (permissionsOpen) {
-      setPermissionsOpen(false);
-      return;
-    }
-
-    setHistoryOpen(false);
-    setMemoryOpen(false);
-    setSettingsOpen(false);
-    setChecksOpen(false);
-    setPermissionsOpen(true);
-    setPermissionsLoading(true);
-    setPermissionsError(undefined);
-    try {
-      setAllowedRoots(await window.vyomara.listFilesystemRoots());
-    } catch (error) {
-      setPermissionsError(error instanceof Error ? error.message : 'Filesystem permissions could not be loaded.');
-    } finally {
-      setPermissionsLoading(false);
-    }
-  }
-
-  async function grantFolderAccess(): Promise<void> {
-    setPermissionsLoading(true);
-    setPermissionsError(undefined);
-    try {
-      const result = await window.vyomara.grantFilesystemRoot();
-      setAllowedRoots(result.roots);
-    } catch (error) {
-      setPermissionsError(error instanceof Error ? error.message : 'Folder access could not be granted.');
-    } finally {
-      setPermissionsLoading(false);
-    }
-  }
-
-  async function revokeFolderAccess(root: string): Promise<void> {
-    setPermissionsLoading(true);
-    setPermissionsError(undefined);
-    try {
-      setAllowedRoots(await window.vyomara.revokeFilesystemRoot(root));
-    } catch (error) {
-      setPermissionsError(error instanceof Error ? error.message : 'Folder access could not be revoked.');
-    } finally {
-      setPermissionsLoading(false);
-    }
-  }
-
-  async function toggleMemory(): Promise<void> {
-    if (memoryOpen) {
-      setMemoryOpen(false);
-      return;
-    }
-
-    setHistoryOpen(false);
-    setPermissionsOpen(false);
-    setSettingsOpen(false);
-    setChecksOpen(false);
-    setMemoryOpen(true);
-    setMemoryLoading(true);
-    setMemoryError(undefined);
-    setMemoryNotice(undefined);
-    try {
-      setMemories(await window.vyomara.listMemories());
-    } catch (error) {
-      setMemoryError(error instanceof Error ? error.message : 'Saved memory could not be loaded.');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
-
-  async function openMemory(id: string): Promise<void> {
-    setMemoryLoading(true);
-    setMemoryError(undefined);
-    setMemoryNotice(undefined);
-    setMemoryDeleteConfirmation('');
-    try {
-      setSelectedMemory({ id, content: await window.vyomara.readMemory(id) });
-    } catch (error) {
-      setMemoryError(error instanceof Error ? error.message : 'The selected memory could not be read.');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
-
-  async function saveReviewedMemory(): Promise<void> {
-    if (memoryConfirmation !== 'SAVE' || memoryDraft.trim() === '' || memoryLoading) return;
-    setMemoryLoading(true);
-    setMemoryError(undefined);
-    try {
-      await window.vyomara.saveMemory(memoryDraft, memoryConfirmation);
-      setMemories(await window.vyomara.listMemories());
-      setMemoryDraft('');
-      setMemoryConfirmation('');
-      setMemoryPreviewOpen(false);
-      setMemoryNotice('Memory saved locally.');
-    } catch (error) {
-      setMemoryError(error instanceof Error ? error.message : 'Memory could not be saved.');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
-
-  async function deleteReviewedMemory(): Promise<void> {
-    if (!selectedMemory || memoryDeleteConfirmation !== 'DELETE' || memoryLoading) return;
-    setMemoryLoading(true);
-    setMemoryError(undefined);
-    try {
-      const deleted = await window.vyomara.deleteMemory(selectedMemory.id, memoryDeleteConfirmation);
-      if (!deleted) throw new Error('The selected memory no longer exists.');
-      setMemories(await window.vyomara.listMemories());
-      setSelectedMemory(undefined);
-      setMemoryDeleteConfirmation('');
-      setMemoryNotice('Memory deleted.');
-    } catch (error) {
-      setMemoryError(error instanceof Error ? error.message : 'Memory could not be deleted.');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
-
-  async function exportReviewedMemory(): Promise<void> {
-    if (!selectedMemory || memoryLoading) return;
-    setMemoryLoading(true);
-    setMemoryError(undefined);
-    setMemoryNotice(undefined);
-    try {
-      const result = await window.vyomara.exportMemory(selectedMemory.id);
-      if (result.status === 'exported') {
-        setMemoryNotice('Memory exported. The JSON file contains its complete content.');
-      }
-    } catch (error) {
-      setMemoryError(error instanceof Error ? error.message : 'The selected memory could not be exported.');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }
 
   const providerTitle = provider
     ? provider.provider === 'ollama'
       ? `Local Ollama · ${provider.model}`
       : 'Deterministic placeholder'
     : 'Loading provider…';
+  const taskIsRunning = requestPending;
+  const runningActivity = [...toolActivities].reverse().find(item => item.status === 'running');
+  const currentTaskState = requestPending
+    ? actionProposals.length + fileOperationProposals.length > 0
+      ? 'Waiting for your approval'
+      : runningActivity?.label ?? 'Thinking…'
+    : 'No task running';
+  const currentTaskDetail = taskIsRunning
+    ? `${toolActivities.length} step${toolActivities.length === 1 ? '' : 's'} so far. Stop cancels the task safely.`
+    : 'When a task starts, every step it takes appears here.';
+  const pendingApprovals = fileOperationProposals.length + actionProposals.length;
+  const voiceOrbAction = speechSetup?.modelReady ? toggleVoiceListening : downloadVoiceModel;
+
+  // Commands from the mini window (PiP) act exactly like the main window's buttons.
+  handlePipCommand.current = command => {
+    switch (command.type) {
+      case 'toggle-listening':
+        if (speechSetup?.modelReady) void toggleVoiceListening();
+        break;
+      case 'stop':
+        void cancel();
+        break;
+      case 'dictation':
+        if (command.recording) void startDictation('pip');
+        else if (dictationRef.current === 'pip') void stopDictation();
+        break;
+      case 'submit':
+        if (dictationRef.current === 'pip') void stopDictation();
+        void submitPrompt(command.text);
+        break;
+      case 'approve':
+      case 'reject': {
+        const approve = command.type === 'approve';
+        voiceSession.current.clearApproval();
+        const file = fileOperationProposals.find(item => item.id === command.id);
+        if (file) {
+          if (file.operation === 'delete') return; // needs the typed DELETE in this window
+          void (approve ? approveFileOperation(file) : rejectFileOperation(file));
+          return;
+        }
+        const action = actionProposals.find(item => item.id === command.id);
+        if (action) void decideAction(action, approve);
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  const lastReply = [...messages].reverse().find(message => message.role === 'assistant' && !message.failed)?.content;
+  const pipFile = fileOperationProposals[0];
+  const pipAction = actionProposals[0];
+  const pipState: DesktopPipState = {
+    listening: voiceListening,
+    voiceReady: speechSetup?.modelReady === true && speechSetup.runtimeAvailable,
+    busy: requestPending,
+    speaking: vyomSpeaking,
+    assistantName,
+    status: pipFile || pipAction
+      ? 'Waiting for your answer'
+      : vyomSpeaking
+        ? `${assistantName} is speaking · tap the orb to interrupt`
+      : requestPending
+        ? runningActivity ? `${runningActivity.label}…` : 'Thinking…'
+        : dictation === 'pip'
+          ? 'Recording… tap ■ to stop'
+        : voiceStarting
+          ? 'Starting microphone…'
+          : voiceHearing
+            ? 'Listening…'
+            : voiceListening
+            ? 'Listening… speak when ready'
+            : speechSetup?.modelReady ? 'Listening off · ⌥Space to talk' : 'Voice not set up',
+    dictation: { recording: dictation === 'pip', text: pipDraft.text, seq: pipDraft.seq },
+    ...(voiceTranscript && dictation !== 'pip' ? { heard: voiceTranscript } : {}),
+    ...(lastReply ? { reply: speechText(lastReply, 160) } : {}),
+    ...(plan.length > 0 ? { plan: { done: plan.filter(step => step.status === 'done').length, total: plan.length } } : {}),
+    ...(pipFile
+      ? { approval: { id: pipFile.id, question: approvalQuestion({ kind: 'file', operation: pipFile.operation, path: pipFile.path }), needsMainWindow: pipFile.operation === 'delete' } }
+      : pipAction
+        ? { approval: { id: pipAction.id, question: approvalQuestion(pipAction), needsMainWindow: false } }
+        : {}),
+  };
+  const pipStateJson = JSON.stringify(pipState);
+  useEffect(() => {
+    window.vyomara.publishPipState(JSON.parse(pipStateJson) as DesktopPipState);
+  }, [pipStateJson]);
+  const voiceOrbLabel = vyomSpeaking && voiceListening
+    ? `Interrupt ${assistantName}`
+    : voiceListening
+    ? 'End the conversation'
+    : speechSetup?.modelReady
+      ? `Talk to ${assistantName}`
+      : 'Download offline voice model and start listening';
+  // The message box shows what voice is doing: no separate status lines.
+  const inConversation = voiceListening && dictation !== 'main';
+  const composerMood = dictation === 'main'
+    ? 'recording'
+    : inConversation
+      ? vyomSpeaking ? 'speaking' : 'listening'
+      : undefined;
+  const composerPlaceholder = dictation === 'main'
+    ? voiceHearing ? 'Recording… tap ■ to stop' : 'Recording… speak, then tap ■ to stop'
+    : voiceStarting
+      ? 'Starting the microphone…'
+      : inConversation
+        ? liveTurn || (vyomSpeaking
+          ? `${assistantName} is speaking… tap the orb to interrupt`
+          : requestPending
+            ? 'Working on it… say “stop” to cancel'
+            : voiceHearing
+              ? 'Listening…'
+              : 'Listening… speak whenever you’re ready')
+        : `Message ${assistantName}…`;
+  const voiceOrbDisabled = !speechSetup?.runtimeAvailable || voiceStarting || voiceDownloading;
+  const voiceOrbTitle = speechSetup?.runtimeAvailable === false
+    ? 'Install whisper.cpp to enable offline voice'
+    : voiceOrbLabel;
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#" aria-label="Vyomara home">
-          <span className="brand-mark" aria-hidden="true">V</span>
-          <span>Vyomara</span>
+    <main className={`app-shell${messages.length > 0 ? ' app-shell-chat-active' : ' app-shell-welcome'}`}>
+      <header className="topbar" ref={topbar}>
+        <a className="brand topbar-brand" href="#" aria-label="Vyomara home">
+          <span className="brand-mark"><BrandMark active={requestPending || voiceListening || vyomSpeaking} /></span>
+          <span className="topbar-brand-copy">
+            <img className="topbar-wordmark" src={vyomaraWordmark} alt="Vyomara" />
+            <small>AI Twins. One Orbit. Your Control.</small>
+          </span>
         </a>
-        <div className="provider-status" title="Only a local Ollama endpoint is checked">
-          <span className={`status-dot ${providerError || connectionCheck === 'unavailable' ? 'status-dot-error' : connectionCheck === 'available' ? 'status-dot-available' : ''}`} />
+        {messages.length > 0 && (
+          <svg
+            ref={orbitalHeaderRails}
+            className={`orbital-header-rails${orbRailGeometry ? '' : ' orbital-header-rails-pending'}`}
+            viewBox={`0 0 ${orbRailGeometry?.width ?? 1000} 40`}
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient id="orbital-header-gradient">
+                <stop offset="0%" stopColor="#278bff" stopOpacity=".78" />
+                <stop offset="50%" stopColor="#6476ff" stopOpacity=".52" />
+                <stop offset="100%" stopColor="#b84aff" stopOpacity=".78" />
+              </linearGradient>
+            </defs>
+            {orbRailGeometry && (
+              <path
+                className="orbital-header-rail"
+                d={`M0 5 H${orbRailGeometry.center - orbRailGeometry.span} C${orbRailGeometry.center - orbRailGeometry.span / 2} 5 ${orbRailGeometry.center - orbRailGeometry.span / 2} 32 ${orbRailGeometry.center} 32 C${orbRailGeometry.center + orbRailGeometry.span / 2} 32 ${orbRailGeometry.center + orbRailGeometry.span / 2} 5 ${orbRailGeometry.center + orbRailGeometry.span} 5 H${orbRailGeometry.width}`}
+              />
+            )}
+          </svg>
+        )}
+        {messages.length > 0 && (
+          <div className="topbar-orbit">
+            <VoiceOrb
+              listening={voiceListening || vyomSpeaking}
+              pressed={voiceListening || voiceStarting}
+              disabled={voiceOrbDisabled}
+              label={voiceOrbLabel}
+              title={voiceOrbTitle}
+              compact
+              twin={persona}
+              onActivate={() => void voiceOrbAction()}
+            />
+          </div>
+        )}
+        <button
+          ref={modelsTrigger}
+          className="provider-status provider-status-button"
+          type="button"
+          title="Choose the local model"
+          onClick={() => void toggleModels()}
+          disabled={requestPending}
+          aria-expanded={modelsOpen}
+          aria-controls={modelsOpen ? 'models-panel' : undefined}
+        >
+          <span className={`status-dot ${providerError ? 'status-dot-error' : ''}`} />
           <span>{providerError ?? providerTitle}</span>
-          {provider?.provider === 'ollama' && (
-            <span className="status-note" role={connectionMessage ? 'alert' : 'status'}>
-              {connectionMessage ?? (connectionCheck === 'available'
-                ? 'local service reachable'
-                : connectionCheck === 'checking'
-                  ? 'checking local service…'
-                  : connectionCheck === 'unavailable'
-                    ? 'local check failed'
-                    : 'connection not checked')}
-            </span>
-          )}
-        </div>
-        <button
-          ref={settingsTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={toggleSettings}
-          disabled={requestPending}
-          aria-expanded={settingsOpen}
-          aria-controls={settingsOpen ? 'settings-panel' : undefined}
-        >
-          Settings
-        </button>
-        <button
-          ref={historyTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void toggleHistory()}
-          disabled={requestPending}
-          aria-expanded={historyOpen}
-          aria-controls={historyOpen ? 'history-panel' : undefined}
-        >
-          History
-        </button>
-        <button
-          ref={permissionsTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void togglePermissions()}
-          disabled={requestPending}
-          aria-expanded={permissionsOpen}
-          aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
-        >
-          Folders
-        </button>
-        <button
-          ref={memoryTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={() => void toggleMemory()}
-          disabled={requestPending}
-          aria-expanded={memoryOpen}
-          aria-controls={memoryOpen ? 'memory-panel' : undefined}
-        >
-          Memory
-        </button>
-        <button
-          ref={checksTrigger}
-          className="new-chat-button"
-          type="button"
-          onClick={toggleChecks}
-          disabled={requestPending}
-          aria-expanded={checksOpen}
-          aria-controls={checksOpen ? 'checks-panel' : undefined}
-        >
-          Checks
-        </button>
-        <button className="new-chat-button" type="button" onClick={startNewChat} disabled={requestPending}>
-          <span aria-hidden="true">＋</span> New chat
+          <span aria-hidden="true">▾</span>
         </button>
       </header>
 
       <div className="workspace">
-        <section className="conversation" aria-label="Conversation">
-          <div className="conversation-heading">
-            <div>
-              <p className="eyebrow">PERSONAL AI ASSISTANT</p>
-              <h1>What can I help with?</h1>
-              <p className="intro">Ask Vyom about your project or request a read-only workspace check.</p>
-            </div>
-            {sessionId && <span className="session-badge">Session saved locally</span>}
-          </div>
-
-          <div className="message-list" aria-live="polite">
-            {messages.length === 0 ? (
-              <div className="welcome-card">
-                <div className="welcome-icon" aria-hidden="true">✦</div>
-                <h2>Start with a question</h2>
-                <p>Vyom can answer and use configured read-only filesystem tools. Unsupported actions stay unavailable.</p>
-                <div className="suggestions" aria-label="Example prompts">
-                  <button type="button" onClick={() => setPrompt('Explain what Vyomara can do.')}>
-                    What can Vyom do?
-                  </button>
-                  <button type="button" onClick={() => setPrompt('Help me understand this project.')}>
-                    Understand my project
-                  </button>
+        <nav className="side-nav" aria-label="Main navigation">
+          <div className="side-nav-group">
+            <p className="side-nav-label">ASSISTANT</p>
+            {/* One tab: the current assistant; tap it to switch between Vyom and Vyomara. */}
+            <div className="persona-picker" ref={personaPicker}>
+              <button
+                ref={personaTrigger}
+                className="side-nav-item side-nav-item-active persona-current"
+                type="button"
+                aria-current="page"
+                aria-haspopup="menu"
+                aria-expanded={personaMenuOpen}
+                aria-controls={personaMenuOpen ? 'persona-menu' : undefined}
+                onClick={() => setPersonaMenuOpen(open => !open)}
+                disabled={personaSaving}
+                title="Switch assistant"
+              >
+                <span className={`persona-avatar persona-avatar-${persona}`} aria-hidden="true">{assistantName.charAt(0)}</span>
+                <span className="persona-current-name">{assistantName}</span>
+                <svg className="persona-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 6.5 8 3.5l3 3M5 9.5l3 3 3-3" /></svg>
+              </button>
+              {personaMenuOpen && (
+                <div id="persona-menu" className="persona-menu" role="menu" aria-label="Switch assistant">
+                  {Object.values(PERSONAS).map(option => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={persona === option.id}
+                      className={`persona-menu-item${persona === option.id ? ' persona-menu-item-active' : ''}`}
+                      disabled={requestPending && persona !== option.id}
+                      onClick={event => {
+                        setPersonaMenuOpen(false);
+                        // Keyboard users get focus back on the tab; a mouse click leaves no ring.
+                        if (event.detail === 0) personaTrigger.current?.focus();
+                        void choosePersona(option.id);
+                      }}
+                    >
+                      <span className={`persona-avatar persona-avatar-${option.id}`} aria-hidden="true">{option.name.charAt(0)}</span>
+                      <span className="persona-menu-text">
+                        <strong>{option.name}</strong>
+                        <small>{option.gender === 'male' ? 'Male voice' : 'Female voice'}</small>
+                      </span>
+                      {persona === option.id && <span className="persona-check" aria-hidden="true">✓</span>}
+                    </button>
+                  ))}
+                  {requestPending && <p className="persona-menu-note">Switch after the current task finishes.</p>}
                 </div>
+              )}
+            </div>
+            <button className="side-nav-item" type="button" onClick={() => activityHeading.current?.focus()}>
+              <span aria-hidden="true">▤</span> Tasks &amp; Activity
+              {requestPending && <span className="nav-indicator" aria-label="Task running">●</span>}
+            </button>
+            <button
+              className={`side-nav-item${pendingApprovals > 0 ? ' side-nav-item-review' : ''}`}
+              type="button"
+              onClick={() => {
+                const review = fileOperationProposals.length > 0
+                  ? fileOperationReview.current
+                  : actionReview.current;
+                review?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              disabled={pendingApprovals === 0}
+              aria-label={pendingApprovals > 0
+                ? `Review ${pendingApprovals} pending approval${pendingApprovals === 1 ? '' : 's'}`
+                : 'No pending approvals'}
+            >
+              <span aria-hidden="true">◇</span> Approvals
+              {pendingApprovals > 0 &&
+                <span className="nav-indicator" aria-label={`${pendingApprovals} pending`}>●</span>}
+            </button>
+          </div>
+          <div className="side-nav-group">
+            <p className="side-nav-label">YOUR DATA</p>
+            <button
+              className="side-nav-item"
+              type="button"
+              onClick={() => void toggleModels()}
+              disabled={requestPending}
+              aria-expanded={modelsOpen}
+            >
+              <span aria-hidden="true">◎</span> Models
+            </button>
+            <button
+              ref={permissionsTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={togglePermissions}
+              aria-expanded={permissionsOpen}
+              aria-controls={permissionsOpen ? 'permissions-panel' : undefined}
+            >
+              <span aria-hidden="true">✓</span> Permissions
+            </button>
+            <button
+              ref={memoriesTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={toggleMemories}
+              aria-expanded={memoriesOpen}
+              aria-controls={memoriesOpen ? 'memories-panel' : undefined}
+            >
+              <span aria-hidden="true">✦</span> Memories
+            </button>
+            <button
+              ref={historyTrigger}
+              className="side-nav-item"
+              type="button"
+              onClick={() => void toggleHistory()}
+              disabled={requestPending}
+              aria-expanded={historyOpen}
+              aria-controls={historyOpen ? 'history-panel' : undefined}
+            >
+              <span aria-hidden="true">◷</span> History
+            </button>
+          </div>
+          <label className="pip-toggle" title={`When on, a small ${assistantName} floats over other apps (VS Code, Chrome …) whenever you leave this window.`}>
+            <span className="pip-toggle-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="2.5" /><rect x="10" y="10" width="6" height="4.5" rx="1.2" className="pip-toggle-icon-fill" /></svg>
+            </span>
+            <span className="pip-toggle-text">
+              <strong>Mini {assistantName}</strong>
+              <small>{pipEnabled ? 'Over all apps' : 'Off'}</small>
+            </span>
+            <input
+              className="pip-toggle-input"
+              type="checkbox"
+              role="switch"
+              checked={pipEnabled}
+              onChange={event => void changePipEnabled(event.target.checked)}
+              aria-label={`Show Mini ${assistantName} over other apps`}
+            />
+            <span className="pip-toggle-switch" aria-hidden="true" />
+          </label>
+          <button className="new-chat-button side-nav-new-chat" type="button" onClick={startNewChat} disabled={requestPending}>
+            <span aria-hidden="true">＋</span> New conversation
+          </button>
+        </nav>
+
+        <section className="conversation" aria-label="Conversation" ref={conversation}>
+          <div
+            className="message-list"
+            ref={messageList}
+            aria-live="polite"
+            onScroll={event => {
+              // Follow new text only while the user is at the bottom; scrolling up pauses it.
+              const list = event.currentTarget;
+              const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+              followLatest.current = atBottom;
+              setShowJumpToLatest(!atBottom);
+            }}
+          >
+            <div className="message-list-content">
+            {messages.length === 0 ? (
+              <div className="welcome-card" aria-label="Vyomara voice orb">
+                <div className="welcome-intro">
+                  <p className="welcome-kicker">YOUR PERSONAL AI ASSISTANT</p>
+                  <h2>Tell {assistantName} what you need.</h2>
+                  <p className="welcome-copy">
+                    Ask a question, plan your next move, or get help with a task—by voice or text. {assistantName} keeps you in control and shows its work.
+                  </p>
+                  <p className="welcome-brand-line">AI Twins. One Orbit. Your Control.</p>
+                </div>
+                <VoiceOrb
+                  listening={voiceListening || vyomSpeaking}
+                  pressed={voiceListening || voiceStarting}
+                  disabled={voiceOrbDisabled}
+                  label={voiceOrbLabel}
+                  title={voiceOrbTitle}
+                  twin={persona}
+              onActivate={() => void voiceOrbAction()}
+                />
+                {/* Voice state is shown in the message box; this stays for screen readers. */}
+                <p className="visually-hidden voice-orbit-status" role="status" aria-live="polite">
+                  {voiceError
+                    ? voiceError
+                    : voiceDownloading
+                      ? `Preparing offline voice… ${voiceDownloadProgress ?? 0}%`
+                      : voiceStarting
+                        ? 'Starting local microphone…'
+                        : voiceListening
+                          ? vyomSpeaking
+                            ? `${assistantName} is speaking · tap the orb to interrupt`
+                            : voiceTranscript || 'Listening… speak whenever you’re ready'
+                          : speechSetup?.runtimeAvailable === false
+                            ? 'Offline voice unavailable—type below.'
+                            : ''}
+                </p>
               </div>
             ) : messages.map(message => (
               <article
@@ -848,310 +1481,168 @@ export function App() {
                   {message.role === 'user' ? 'Y' : 'V'}
                 </div>
                 <div className="message-content">
-                  <p className="message-author">{message.role === 'user' ? 'You' : 'Vyom'}</p>
-                  <p className="message-text">{message.content}</p>
+                  {message.role === 'assistant' && !message.failed
+                    ? <MessageContent text={message.content} />
+                    : <p className="message-text">{message.content}</p>}
+                  {undoStatus.available && undoStatus.requestId === message.id && !requestPending && (
+                    <button
+                      type="button"
+                      className="undo-button"
+                      onClick={() => void undoLastChange()}
+                      disabled={undoing}
+                      title={undoStatus.paths.map(path => path.split('/').at(-1) ?? path).join(', ')}
+                    >
+                      <span aria-hidden="true">↶</span> Undo these changes
+                      <small>{undoStatus.paths.length} file{undoStatus.paths.length === 1 ? '' : 's'} · or say “undo karo”</small>
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
             {requestPending && (
-              <div className="pending-state" role="status">
-                <span className="thinking-indicator"><i /><i /><i /></span>
-                <span>Vyom is working…</span>
-                <button type="button" onClick={() => void cancel()}>Cancel</button>
+              <div className="pending-state" role="status" aria-live="polite">
+                <ThinkingMark />
+                <span className="thinking-text">{pendingApprovals > 0
+                  ? 'Waiting for your approval…'
+                  : runningActivity ? `${runningActivity.label}…` : `${assistantName} is thinking…`}</span>
+                <button type="button" onClick={() => void cancel()}>Stop</button>
               </div>
             )}
-            <div ref={endOfMessages} />
+            {fileOperationProposals.map((proposal, index) => (
+              <FileOperationCard
+                key={proposal.id}
+                proposal={proposal}
+                confirmation={fileOperationConfirmations[proposal.id] ?? ''}
+                busy={fileOperationActionPending === proposal.id}
+                anyBusy={fileOperationActionPending !== undefined}
+                cardRef={index === 0 ? fileOperationReview : undefined}
+                onConfirmationChange={value => setFileOperationConfirmations(current => ({ ...current, [proposal.id]: value }))}
+                onApprove={() => void approveFileOperation(proposal)}
+                onReject={() => void rejectFileOperation(proposal)}
+                onApproveAll={() => void approveAllFileOperations(proposal)}
+                onOpenDiff={() => void window.vyomara.openFileDiff(proposal.id).catch(error => {
+                  setRequestError(error instanceof Error ? error.message : 'VS Code could not show the diff.');
+                })}
+              />
+            ))}
+            {actionProposals.map((proposal, index) => (
+              <ActionApprovalCard
+                key={proposal.id}
+                assistantName={assistantName}
+                proposal={proposal}
+                busy={actionPendingId !== undefined}
+                cardRef={index === 0 ? actionReview : undefined}
+                onDecide={(approve, always) => void decideAction(proposal, approve, always)}
+              />
+            ))}
+            </div>
           </div>
-
-          <form className="composer" onSubmit={event => void submit(event)}>
-            <label className="visually-hidden" htmlFor="prompt">Message Vyom</label>
+          {showJumpToLatest && (
+            <button
+              className="jump-to-latest"
+              type="button"
+              onClick={() => {
+                followLatest.current = true;
+                setShowJumpToLatest(false);
+                messageList.current?.scrollTo({ top: messageList.current.scrollHeight, behavior: 'smooth' });
+              }}
+            >
+              ↓ Latest
+            </button>
+          )}
+          <form className={`composer${composerMood ? ` composer-${composerMood}` : ''}${liveTurn && !prompt ? ' composer-hearing' : ''}`} onSubmit={event => void submit(event)}>
+            <label className="visually-hidden" htmlFor="prompt">Message {assistantName}</label>
             <textarea
+              ref={promptInput}
               id="prompt"
               value={prompt}
-              onChange={event => setPrompt(event.target.value)}
-              placeholder="Message Vyom…"
-              rows={2}
-              maxLength={8000}
+              onChange={event => {
+                setPrompt(event.target.value);
+              }}
+              placeholder={composerPlaceholder}
+              rows={1}
+              maxLength={32000}
               disabled={requestPending}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
+                  if (dictationRef.current) {
+                    void stopDictation();
+                    return;
+                  }
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
             />
-            <div className="composer-footer">
-              <span>Enter to send · Shift + Enter for a new line</span>
-              <button
-                className="send-button"
-                type="submit"
-                disabled={requestPending || prompt.trim() === ''}
-                aria-label="Send message"
-              >
-                <span aria-hidden="true">↑</span>
-              </button>
+            <div className="composer-rail">
+                <button
+                  className={`voice-input-button${dictation === 'main' ? ' voice-input-dictating' : ''}`}
+                  type="button"
+                  onClick={toggleComposerDictation}
+                  disabled={!speechSetup?.runtimeAvailable || voiceDownloading || requestPending || dictation === 'pip'}
+                  aria-label={dictation === 'main' ? 'Stop recording' : 'Record a message'}
+                  aria-pressed={dictation === 'main'}
+                  title={speechSetup?.runtimeAvailable === false
+                    ? 'Install whisper.cpp to enable offline voice input'
+                    : dictation === 'main'
+                      ? 'Stop recording; the text stays in the box to edit before sending'
+                      : 'Record: tap to start, tap again to stop'}
+                >
+                  {dictation === 'main' ? (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3.5M9 21.5h6" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  className="send-button"
+                  type="submit"
+                  disabled={requestPending || !prompt.trim()}
+                  aria-label="Send message"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 19V5m-7 7 7-7 7 7" />
+                  </svg>
+                </button>
             </div>
+            {(voiceError || voiceDownloading) && (
+              <p className={`composer-voice-status${voiceError ? ' composer-voice-error' : ''}`} role={voiceError ? 'alert' : 'status'}>
+                {voiceError ?? `Downloading offline voice model… ${voiceDownloadProgress ?? 0}%`}
+              </p>
+            )}
           </form>
-          <p className="privacy-note">
-            {requestError ? 'Request failed; no success is implied.' : 'Your conversation is stored locally on this Mac.'}
+          <p className={`privacy-note${messages.length === 0 && !requestError && !speechError ? ' visually-hidden' : ''}`} role={requestError || speechError ? 'alert' : 'status'}>
+            {requestError
+              ? requestError
+              : speechError ?? 'Conversations and voice stay on this Mac.'}
           </p>
         </section>
 
-        {checksOpen ? (
-        <aside id="checks-panel" className="activity-panel history-panel checks-panel" aria-label="Approved project checks">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">FIXED COMMANDS ONLY</p>
-              <h2 ref={checksHeading} tabIndex={-1}>Project checks</h2>
-            </div>
-            <button className="history-close" type="button" onClick={() => closePanel('checks')}>
-              Close
-            </button>
-          </div>
-          <p className="permissions-disclosure">
-            Choose a project you trust. Its pnpm scripts may execute code.
-            Vyomara invokes only the listed commands without a shell; pnpm may run project-defined lifecycle scripts.
-            Runs have a five-minute timeout and bounded output.
-          </p>
-          <button
-            className="permission-add"
-            type="button"
-            onClick={() => void selectCheckProject()}
-            disabled={checkLoading || requestPending}
-          >
-            Choose project folder…
-          </button>
-          {checkProjectDirectory && <p className="permission-path">Project: {checkProjectDirectory}</p>}
-          <div className="check-actions" aria-label="Available project checks">
-            {([
-              ['test', 'Run pnpm test'],
-              ['typecheck', 'Run pnpm typecheck'],
-              ['build:desktop', 'Run pnpm build:desktop'],
-              ['test:desktop-ui', 'Run pnpm test:desktop-ui'],
-            ] as const).map(([checkId, label]) => (
-              <button
-                className="permission-add"
-                key={checkId}
-                type="button"
-                onClick={() => void runCheck(checkId)}
-                disabled={!checkProjectDirectory || checkLoading || requestPending}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {checkLoading && (
-            <div className="check-running" role="status">
-              <span>Project check is running…</span>
-              <button className="permission-revoke" type="button" onClick={() => void cancelCheck()}>
-                Cancel check
-              </button>
-            </div>
-          )}
-          {checkError && <p className="history-message history-error" role="alert">{checkError}</p>}
-          {checkResult && (
-            <section className="session-review" aria-label="Project check result">
-              <p className="memory-review-title">
-                {checkResult.command} · {checkResult.status} · exit {checkResult.exitCode ?? 'unavailable'}
-              </p>
-              <p className="history-privacy">Completed in {checkResult.durationMs} ms. Output is capped at 64,000 characters.</p>
-              <pre className="check-output">{checkResult.output || 'No output.'}</pre>
-            </section>
-          )}
-        </aside>
-        ) : memoryOpen ? (
-        <aside id="memory-panel" className="activity-panel history-panel memory-panel" aria-label="Explicit memory">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">USER CONTROLLED</p>
-              <h2 ref={memoryHeading} tabIndex={-1}>Memory</h2>
-            </div>
-            <button className="history-close" type="button" onClick={() => closePanel('memory')}>
-              Close
-            </button>
-          </div>
-          <p className="memory-disclosure">
-            Memory is separate from chat history and is never created from conversation automatically.
-            Saved memories are local and are not currently added to Vyom&apos;s context.
-          </p>
-          <div className="memory-create">
-            <label className="memory-label" htmlFor="memory-draft">Save a memory</label>
-            <textarea
-              id="memory-draft"
-              className="memory-draft"
-              value={memoryDraft}
-              onChange={event => {
-                setMemoryDraft(event.target.value);
-                setMemoryPreviewOpen(false);
-                setMemoryConfirmation('');
-              }}
-              maxLength={32000}
-              rows={3}
-              placeholder="Write only what you want saved…"
-              disabled={memoryPreviewOpen || memoryLoading}
-            />
-            <button
-              className="permission-add"
-              type="button"
-              onClick={() => {
-                setMemoryError(undefined);
-                setMemoryConfirmation('');
-                setMemoryPreviewOpen(true);
-              }}
-              disabled={memoryDraft.trim() === '' || memoryLoading || memoryPreviewOpen}
-            >
-              Review before saving
-            </button>
-          </div>
-          {memoryPreviewOpen && (
-            <div className="memory-review" aria-label="Review memory before saving">
-              <p className="memory-review-title">Review the exact content to save</p>
-              <pre className="memory-content">{memoryDraft}</pre>
-              <label className="memory-label" htmlFor="memory-save-confirm">Type SAVE to confirm</label>
-              <input
-                id="memory-save-confirm"
-                className="memory-confirm-input"
-                value={memoryConfirmation}
-                onChange={event => setMemoryConfirmation(event.target.value)}
-                autoComplete="off"
-                disabled={memoryLoading}
-              />
-              <div className="memory-actions">
-                <button
-                  className="history-close"
-                  type="button"
-                  onClick={() => {
-                    setMemoryPreviewOpen(false);
-                    setMemoryConfirmation('');
-                  }}
-                  disabled={memoryLoading}
-                >
-                  Back
-                </button>
-                <button
-                  className="permission-add"
-                  type="button"
-                  onClick={() => void saveReviewedMemory()}
-                  disabled={memoryConfirmation !== 'SAVE' || memoryLoading}
-                >
-                  Save memory
-                </button>
-              </div>
-            </div>
-          )}
-          {selectedMemory && (
-            <div className="memory-review" aria-label="Selected saved memory">
-              <p className="memory-review-title">Saved content</p>
-              <pre className="memory-content">{selectedMemory.content}</pre>
-              <p className="history-privacy">
-                Export creates a new, unencrypted JSON file containing this memory. It uses owner-only file permissions and will not overwrite an existing file.
-              </p>
-              <button
-                className="permission-add"
-                type="button"
-                onClick={() => void exportReviewedMemory()}
-                disabled={memoryLoading}
-              >
-                {memoryLoading ? 'Preparing export…' : 'Export this memory as JSON'}
-              </button>
-              <label className="memory-label" htmlFor="memory-delete-confirm">
-                Review the content, then type DELETE to remove it
-              </label>
-              <input
-                id="memory-delete-confirm"
-                className="memory-confirm-input"
-                value={memoryDeleteConfirmation}
-                onChange={event => setMemoryDeleteConfirmation(event.target.value)}
-                autoComplete="off"
-                disabled={memoryLoading}
-              />
-              <button
-                className="permission-revoke"
-                type="button"
-                onClick={() => void deleteReviewedMemory()}
-                disabled={memoryDeleteConfirmation !== 'DELETE' || memoryLoading}
-              >
-                Delete this memory
-              </button>
-            </div>
-          )}
-          {memoryNotice && <p className="memory-notice" role="status">{memoryNotice}</p>}
-          {memoryError && <p className="history-message history-error" role="alert">{memoryError}</p>}
-          <div className="history-content" aria-live="polite">
-            {memoryLoading ? (
-              <p className="history-message" role="status">Loading saved memories…</p>
-            ) : memories.length === 0 ? (
-              <p className="history-message">No explicit memories saved.</p>
-            ) : (
-              <ol className="history-list">
-                {memories.map(memory => (
-                  <li key={memory.id}>
-                    <button
-                      className={`history-item${memory.id === selectedMemory?.id ? ' history-item-current' : ''}`}
-                      type="button"
-                      onClick={() => void openMemory(memory.id)}
-                      disabled={memoryLoading}
-                    >
-                      <span>{new Date(memory.updatedAt).toLocaleString()}</span>
-                      <span>Review saved memory</span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-          <p className="history-privacy">Only the exact content you review and confirm is saved. Deletion requires reviewing the target and typing DELETE.</p>
-        </aside>
+        {memoriesOpen ? (
+          <MemoriesPanel
+            assistantName={assistantName}
+            headingRef={memoriesHeading}
+            onClose={() => { setMemoriesOpen(false); memoriesTrigger.current?.focus(); }}
+          />
         ) : permissionsOpen ? (
-        <aside id="permissions-panel" className="activity-panel history-panel" aria-label="Filesystem permissions">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">READ ONLY</p>
-              <h2 ref={permissionsHeading} tabIndex={-1}>Folders</h2>
-            </div>
-            <button className="history-close" type="button" onClick={() => closePanel('permissions')}>
-              Close
-            </button>
-          </div>
-          <p className="permissions-disclosure">
-            Vyom can read files only inside folders listed here. File contents may be sent to your configured
-            provider when you ask about them. Access is stored locally on this Mac.
-          </p>
-          <button
-            className="permission-add"
-            type="button"
-            onClick={() => void grantFolderAccess()}
-            disabled={permissionsLoading || requestPending}
-          >
-            Choose folder…
-          </button>
-          <div className="history-content" aria-live="polite">
-            {permissionsLoading ? (
-              <p className="history-message" role="status">Updating folder access…</p>
-            ) : permissionsError ? (
-              <p className="history-message history-error" role="alert">{permissionsError}</p>
-            ) : allowedRoots.length === 0 ? (
-              <p className="history-message">No folders are allowed. Filesystem tools cannot access any files.</p>
-            ) : (
-              <ol className="history-list">
-                {allowedRoots.map(root => (
-                  <li className="permission-item" key={root}>
-                    <span className="permission-path">{root}</span>
-                    <button
-                      className="permission-revoke"
-                      type="button"
-                      onClick={() => void revokeFolderAccess(root)}
-                      disabled={permissionsLoading || requestPending}
-                    >
-                      Revoke
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-          <p className="history-privacy">Revoking access applies to the next request. Current requests cannot change permissions.</p>
-        </aside>
+          <PermissionsPanel
+            assistantName={assistantName}
+            headingRef={permissionsHeading}
+            onClose={() => { setPermissionsOpen(false); permissionsTrigger.current?.focus(); }}
+          />
+        ) : modelsOpen ? (
+          <ModelsPanel
+            assistantName={assistantName}
+            headingRef={modelsHeading}
+            disabled={requestPending}
+            onSelected={setProvider}
+            onClose={() => { setModelsOpen(false); modelsTrigger.current?.focus(); }}
+          />
         ) : historyOpen ? (
         <aside id="history-panel" className="activity-panel history-panel" aria-label="Saved conversations">
           <div className="panel-heading">
@@ -1159,339 +1650,142 @@ export function App() {
               <p className="eyebrow">ON THIS MAC</p>
               <h2 ref={historyHeading} tabIndex={-1}>History</h2>
             </div>
-            <button className="history-close" type="button" onClick={() => closePanel('history')}>
+            <button className="history-close" type="button" onClick={() => closePanel()}>
               Close
             </button>
           </div>
           <div className="history-content" aria-live="polite">
-            {historyLoading ? (
+            {historyLoading && sessions.length === 0 ? (
               <p className="history-message" role="status">Loading saved conversations…</p>
             ) : historyError ? (
               <p className="history-message history-error" role="alert">{historyError}</p>
             ) : sessions.length === 0 ? (
-              <p className="history-message">No saved conversations yet.</p>
+              <div className="history-empty">
+                <span aria-hidden="true">✦</span>
+                <p>No conversations yet.</p>
+                <small>Type below or press the orb. Every conversation is saved here, on this Mac.</small>
+              </div>
             ) : (
-              <ol className="history-list">
-                {sessions.map(session => (
-                  <li key={session.id}>
-                    <div className="history-row">
-                      <button
-                        className={`history-item${session.id === sessionId ? ' history-item-current' : ''}`}
-                        type="button"
-                        onClick={() => void openSession(session.id)}
-                        disabled={historyLoading || requestPending}
-                      >
-                        <span>{new Date(session.updatedAt).toLocaleString()}</span>
-                        <span>{session.messageCount} messages · Open conversation</span>
-                      </button>
-                      <button
-                        className="history-delete"
-                        type="button"
-                        onClick={() => void reviewSessionForDeletion(session.id)}
-                        disabled={historyLoading || requestPending}
-                      >
-                        Review options
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
-            <section className="session-review" aria-label="Create a local data backup">
-              <p className="memory-review-title">Back up local data</p>
-              <p className="history-privacy">
-                The SQLite backup includes complete conversations (including raw tool calls and results),
-                explicit memories, provider settings, and allowed folder paths. It is unencrypted, saved
-                with owner-only permissions, and will not overwrite an existing file.
-              </p>
-              <button
-                className="permission-add"
-                type="button"
-                onClick={() => void createLocalBackup()}
-                disabled={historyLoading || requestPending}
-              >
-                {historyLoading ? 'Creating backup…' : 'Create local backup'}
-              </button>
-            </section>
-            <section className="session-review" aria-label="Restore a local data backup">
-              <p className="memory-review-title">Restore a local backup</p>
-              <p className="history-privacy">
-                Restore replaces all current local conversations, memories, provider settings, and folder permissions.
-                Vyomara first creates a safety backup in its local data folder. Backup contents are unencrypted.
-              </p>
-              <button
-                className="permission-add"
-                type="button"
-                onClick={() => void selectBackupForRestore()}
-                disabled={historyLoading || requestPending}
-              >
-                Select backup to review…
-              </button>
-              {backupRestorePreview && (
-                <div className="session-review" aria-label="Review selected backup">
-                  <p className="memory-review-title">Selected backup: {backupRestorePreview.fileName}</p>
-                  <p className="history-privacy">
-                    Contains {backupRestorePreview.sessions} conversation(s) and {backupRestorePreview.memories} memory item(s).
-                    Current saved data will be replaced after you confirm.
-                  </p>
-                  <label className="memory-label" htmlFor="backup-restore-confirm">
-                    Type RESTORE to replace current local data
-                  </label>
-                  <input
-                    id="backup-restore-confirm"
-                    className="memory-confirm-input"
-                    value={backupRestoreConfirmation}
-                    onChange={event => setBackupRestoreConfirmation(event.target.value)}
-                    autoComplete="off"
-                    disabled={historyLoading || requestPending}
-                  />
-                  <button
-                    className="permission-revoke"
-                    type="button"
-                    onClick={() => void restoreLocalData()}
-                    disabled={backupRestoreConfirmation !== 'RESTORE' || historyLoading || requestPending}
-                  >
-                    {historyLoading ? 'Restoring local data…' : 'Restore this backup'}
-                  </button>
-                </div>
-              )}
-            </section>
-            {selectedHistorySession && (
-              <section className="session-review" aria-label="Review saved conversation">
-                <p className="memory-review-title">Review conversation</p>
-                <ol className="session-review-messages">
-                  {selectedHistorySession.messages.length === 0 ? (
-                    <li>No user or assistant messages are available to review.</li>
-                  ) : selectedHistorySession.messages.map((message, index) => (
-                    <li key={`${index}-${message.role}`}>
-                      <strong>{message.role === 'user' ? 'You' : 'Vyom'}</strong>
-                      <pre className="memory-content">{message.content}</pre>
-                    </li>
-                  ))}
-                </ol>
-                <p className="history-privacy">
-                  Export includes all stored messages, including raw tool calls and results that may contain private file content.
-                  The JSON export is not encrypted; Vyomara will create a new file with owner-only permissions and will not overwrite an existing file.
-                </p>
-                <button
-                  className="permission-add"
-                  type="button"
-                  onClick={() => void exportReviewedSession()}
-                  disabled={historyLoading || requestPending}
-                >
-                  {historyLoading ? 'Preparing export…' : 'Export complete conversation as JSON'}
-                </button>
-                <label className="memory-label" htmlFor="history-delete-confirm">
-                  Type DELETE to permanently remove this conversation
-                </label>
-                <input
-                  id="history-delete-confirm"
-                  className="memory-confirm-input"
-                  value={historyDeleteConfirmation}
-                  onChange={event => setHistoryDeleteConfirmation(event.target.value)}
-                  autoComplete="off"
-                  disabled={historyLoading || requestPending}
-                />
-                <button
-                  className="permission-revoke"
-                  type="button"
-                  onClick={() => void deleteReviewedSession()}
-                  disabled={historyDeleteConfirmation !== 'DELETE' || historyLoading || requestPending}
-                >
-                  Delete this conversation
-                </button>
-              </section>
-            )}
-            <section className="session-review" aria-label="Delete all saved conversations and memories">
-              <p className="memory-review-title">Delete all saved data</p>
-              <p className="history-privacy">
-                This permanently deletes every saved conversation and explicit memory from this Mac.
-                Provider settings and allowed folders are kept.
-              </p>
-              <label className="memory-label" htmlFor="history-delete-all-confirm">
-                Type DELETE ALL to confirm
-              </label>
-              <input
-                id="history-delete-all-confirm"
-                className="memory-confirm-input"
-                value={historyDeleteAllConfirmation}
-                onChange={event => setHistoryDeleteAllConfirmation(event.target.value)}
-                autoComplete="off"
-                disabled={historyLoading || requestPending}
-              />
-              <button
-                className="permission-revoke"
-                type="button"
-                onClick={() => void deleteAllSavedHistoryAndMemories()}
-                disabled={historyDeleteAllConfirmation !== 'DELETE ALL' || historyLoading || requestPending}
-              >
-                {historyLoading ? 'Deleting saved data…' : 'Delete all conversations and memories'}
-              </button>
-            </section>
-            {historyNotice && <p className="memory-notice" role="status">{historyNotice}</p>}
-          </div>
-          <p className="history-privacy">
-            Saved locally until deleted. Review shows user and final assistant messages; raw tool calls and results are also stored and removed with the session.
-          </p>
-        </aside>
-        ) : settingsOpen ? (
-        <aside id="settings-panel" className="activity-panel history-panel settings-panel" aria-label="Provider settings">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">LOCAL CONFIGURATION</p>
-              <h2 ref={settingsHeading} tabIndex={-1}>Settings</h2>
-            </div>
-            <button className="history-close" type="button" onClick={() => closePanel('settings')}>
-              Close
-            </button>
-          </div>
-          <p className="permissions-disclosure">
-            Vyomara supports local Ollama or a deterministic placeholder. There is no cloud provider or silent fallback.
-            Ollama connections are limited to the configured loopback endpoint.
-          </p>
-          <section className="settings-status" aria-label="Current provider status">
-            <p className="memory-review-title">Current provider</p>
-            <strong>{providerError ?? providerTitle}</strong>
-            {provider?.provider === 'ollama' ? (
               <>
-                <div className="settings-status-row">
-                  <span>Local Ollama service</span>
-                  <span role={connectionCheck === 'unavailable' ? 'alert' : 'status'}>
-                    {connectionCheck === 'available'
-                      ? 'Reachable'
-                      : connectionCheck === 'checking'
-                        ? 'Checking…'
-                        : connectionCheck === 'unavailable'
-                          ? 'Unavailable'
-                          : 'Not checked'}
-                  </span>
+                <input
+                  className="history-search"
+                  type="search"
+                  value={historySearch}
+                  onChange={event => setHistorySearch(event.target.value)}
+                  placeholder={`Search ${sessions.length} conversation${sessions.length === 1 ? '' : 's'}…`}
+                  aria-label="Search conversations"
+                />
+                {groupSessions(sessions.filter(item => matchesSearch(item, historySearch))).map(group => (
+                  <section key={group.label} className="history-group" aria-label={group.label}>
+                    <p className="history-group-title">{group.label}</p>
+                    <ol className="history-list">
+                      {group.sessions.map(session => (
+                        <li key={session.id} className={`history-card${session.id === sessionId ? ' history-card-current' : ''}`}>
+                          {historyConfirm === session.id ? (
+                            <div className="history-card-confirm">
+                              <span>Delete “{session.title ?? 'this conversation'}”?</span>
+                              <div>
+                                <button className="history-danger" type="button" onClick={() => void deleteSessions([session.id])} disabled={historyLoading || requestPending}>Delete</button>
+                                <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                className="history-card-open"
+                                type="button"
+                                onClick={() => void openSession(session.id)}
+                                disabled={historyLoading || requestPending}
+                                title="Open and continue this conversation"
+                              >
+                                <span className="history-card-title">
+                                  <span className="history-card-title-text">{session.title ?? 'Untitled conversation'}</span>
+                                  {session.id === sessionId && <span className="history-card-badge">Open now</span>}
+                                </span>
+                                {session.preview && <span className="history-card-preview">{session.preview}</span>}
+                                <span className="history-card-meta">{relativeTime(session.updatedAt)} · {session.messageCount} messages</span>
+                              </button>
+                              <button
+                                className="history-card-delete"
+                                type="button"
+                                onClick={() => setHistoryConfirm(session.id)}
+                                disabled={historyLoading || requestPending}
+                                aria-label={`Delete: ${session.title ?? 'conversation'}`}
+                                title="Delete this conversation"
+                              >
+                                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5" /></svg>
+                              </button>
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ))}
+                {historySearch && !sessions.some(item => matchesSearch(item, historySearch)) && (
+                  <p className="history-message">Nothing matches “{historySearch}”.</p>
+                )}
+                <div className="history-clear">
+                  {historyConfirm === 'all' ? (
+                    <>
+                      <span>Delete all {sessions.length} conversations?</span>
+                      <button className="history-danger" type="button" onClick={() => void deleteSessions(sessions.map(item => item.id))} disabled={historyLoading || requestPending}>Delete all</button>
+                      <button className="file-operation-reject" type="button" onClick={() => setHistoryConfirm(undefined)}>Cancel</button>
+                    </>
+                  ) : (
+                    <button className="history-clear-button" type="button" onClick={() => setHistoryConfirm('all')} disabled={historyLoading || requestPending}>
+                      Delete all history
+                    </button>
+                  )}
                 </div>
-                {connectionCheck === 'unavailable' && connectionMessage && (
-                  <p className="history-message history-error" role="alert">{connectionMessage}</p>
-                )}
-                <button
-                  className="history-close"
-                  type="button"
-                  onClick={() => void checkProviderConnection()}
-                  disabled={connectionCheck === 'checking' || settingsLoading || requestPending}
-                >
-                  {connectionCheck === 'checking' ? 'Checking local service…' : 'Check local Ollama connection'}
-                </button>
-                <div className="settings-status-row">
-                  <span>Model availability · {modelDraft}</span>
-                  <span role={modelCheck?.status === 'unavailable' ? 'alert' : 'status'}>
-                    {modelCheckLoading
-                      ? 'Checking…'
-                      : modelCheck?.status === 'installed'
-                        ? 'Installed'
-                        : modelCheck?.status === 'not-installed'
-                          ? 'Not installed'
-                          : modelCheck?.status === 'unavailable'
-                            ? 'Check unavailable'
-                            : 'Not checked'}
-                  </span>
-                </div>
-                {modelCheck?.status === 'not-installed' && (
-                  <p className="history-message" role="status">{modelCheck.message}</p>
-                )}
-                {modelCheck?.status === 'unavailable' && (
-                  <p className="history-message history-error" role="alert">{modelCheck.message}</p>
-                )}
-                <p className="history-privacy">
-                  Connection reachability and model installation are checked separately. Both checks use local Ollama only.
-                </p>
               </>
-            ) : provider?.provider === 'placeholder' ? (
-              <p className="history-privacy">The deterministic placeholder uses no model or Ollama connection.</p>
-            ) : (
-              <p className="history-message history-error" role="alert">Provider status could not be loaded.</p>
             )}
-          </section>
-          <label className="memory-label" htmlFor="provider-select">Provider</label>
-          <select
-            id="provider-select"
-            className="settings-input"
-            value={providerDraft}
-            onChange={event => {
-              setProviderDraft(event.target.value === 'placeholder' ? 'placeholder' : 'ollama');
-              setModelCheck(undefined);
-            }}
-            disabled={settingsLoading || requestPending}
-          >
-            <option value="ollama">Local Ollama</option>
-            <option value="placeholder">Deterministic placeholder</option>
-          </select>
-          <label className="memory-label" htmlFor="model-name">Ollama model name</label>
-          <input
-            id="model-name"
-            className="settings-input"
-            value={modelDraft}
-            onChange={event => {
-              setModelDraft(event.target.value);
-              setModelCheck(undefined);
-            }}
-            maxLength={128}
-            autoComplete="off"
-            disabled={settingsLoading || requestPending}
-          />
-          <p className="history-privacy">
-            Model names must use letters, numbers, `.`, `_`, `:`, `/`, or `-`. The model is not downloaded or checked when settings are saved.
-            {providerDraft === 'placeholder' ? ' The placeholder does not use a model.' : ''}
-          </p>
-          {providerDraft === 'ollama' && (
-            <>
-              <button
-                className="history-close"
-                type="button"
-                onClick={() => void checkModelAvailability()}
-                disabled={modelCheckLoading || settingsLoading || requestPending || provider?.provider !== 'ollama' || modelDraft.trim() === ''}
-              >
-                {modelCheckLoading ? 'Checking local model…' : 'Check model availability'}
-              </button>
-              {provider?.provider !== 'ollama' && (
-                <p className="history-privacy">Save Local Ollama as the current provider before checking model availability.</p>
-              )}
-            </>
-          )}
-          <button
-            className="permission-add"
-            type="button"
-            onClick={() => void saveSettings()}
-            disabled={settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending || modelDraft.trim() === ''}
-          >
-            {settingsLoading ? 'Saving…' : 'Save settings'}
-          </button>
-          <button
-            className="history-close"
-            type="button"
-            onClick={() => void resetSettings()}
-            disabled={settingsLoading || modelCheckLoading || connectionCheck === 'checking' || requestPending}
-          >
-            Reset to environment defaults
-          </button>
-          {settingsError && <p className="history-message history-error" role="alert">{settingsError}</p>}
-          {settingsNotice && <p className="memory-notice" role="status">{settingsNotice}</p>}
+            {historyNotice && <p className="history-notice" role="status">{historyNotice}</p>}
+          </div>
+          <p className="history-privacy">Saved on this Mac until you delete it.</p>
         </aside>
         ) : (
         <aside className="activity-panel" aria-label="Task activity">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">LIVE</p>
-              <h2>Activity</h2>
+              <p className="eyebrow">TASK STATUS</p>
+              <h2 ref={activityHeading} tabIndex={-1}>Recent Activity</h2>
             </div>
-            <span className={requestPending ? 'activity-state activity-running' : 'activity-state'}>
-              {requestPending ? 'Working' : 'Ready'}
+            <span className={`activity-state${taskIsRunning ? ' activity-running' : ''}`}>
+              {taskIsRunning ? 'Working' : 'Ready'}
             </span>
           </div>
+          {plan.length > 0 && (
+            <section className="plan-card" aria-label={`${assistantName}’s plan`}>
+              <h3>Plan · {plan.filter(step => step.status === 'done').length}/{plan.length}</h3>
+              <ol className="plan-list">
+                {plan.map((step, index) => (
+                  <li key={`${index}-${step.text}`} className={`plan-step plan-step-${step.status}`}>
+                    <span aria-hidden="true">{step.status === 'done' ? '✓' : step.status === 'in_progress' ? '▸' : '○'}</span>
+                    <span>{step.text}<span className="visually-hidden"> ({step.status.replace('_', ' ')})</span></span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
           <div className="activity-content" aria-live="polite">
-            {activity.length === 0 ? (
+            {activity.length === 0 && toolActivities.length === 0 ? (
               <div className="activity-empty">
                 <span aria-hidden="true">◷</span>
-                <p>Task updates appear here while Vyom works.</p>
+                <p>Every step {assistantName} takes appears here while it works.</p>
               </div>
             ) : (
               <ol className="activity-list">
-                {activity.map((item, index) => (
+                {toolActivities.map(item => (
+                  <li key={item.id} className={`tool-activity tool-activity-${item.status}`}>
+                    <span className="activity-check" aria-hidden="true">{activityIcon(item.status)}</span>
+                    <span>
+                      {item.label}
+                      {item.detail && item.status !== 'done' && <small>{item.detail}</small>}
+                    </span>
+                  </li>
+                ))}
+                {activity.slice(-4).map((item, index) => (
                   <li key={`${index}-${item}`}>
                     <span className="activity-check" aria-hidden="true">·</span>
                     <span>{item}</span>
@@ -1500,16 +1794,33 @@ export function App() {
               </ol>
             )}
           </div>
+          <section className="tool-execution-card" aria-label="Current task status">
+            <div className="tool-execution-heading">
+              <span aria-hidden="true">▣</span>
+              <h3>Current Task</h3>
+            </div>
+            <p className="tool-execution-state">{currentTaskState}</p>
+            <p className="tool-execution-detail">{currentTaskDetail}</p>
+            {requestPending && <button className="activity-cancel" type="button" onClick={() => void cancel()}>Stop task</button>}
+          </section>
           <div className="privacy-card">
             <span className="privacy-icon" aria-hidden="true">⌂</span>
             <div>
               <h3>Local-first</h3>
               <p>{provider?.provider === 'ollama'
-                  ? 'Ollama is configured on this device. Connection checks are user-triggered and stay on this Mac.'
+                  ? 'Ollama is configured on this device. Requests stay on this Mac.'
                 : 'No cloud provider is used by this placeholder.'}</p>
             </div>
           </div>
-          <p className="planned-note">Project, files, Git, web research, and voice views are planned and not available yet.</p>
+          <div className="voice-status-card" aria-label="Voice status">
+            <span aria-hidden="true">♩</span>
+            <div>
+              <strong>{voiceStarting ? 'Starting local voice' : voiceListening ? `In conversation with ${assistantName}` : speechSetup?.modelReady ? 'Offline voice ready' : 'Voice setup required'}</strong>
+              <small>{voiceListening ? 'Microphone on · tap the orb or say “bas” to end' : speechSetup?.runtimeAvailable === false ? 'Install whisper.cpp to enable local recognition' : speechSetup?.modelReady ? 'Local multilingual model · on-device audio' : 'Select the voice orb to download the local model'}</small>
+              {voiceTranscript && <small className="voice-live-transcript" aria-live="polite">Heard: {voiceTranscript}</small>}
+            </div>
+          </div>
+          <p className="planned-note">Speech recognition stays on this Mac.</p>
         </aside>
         )}
       </div>

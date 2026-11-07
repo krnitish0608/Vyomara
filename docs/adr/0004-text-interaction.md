@@ -1,6 +1,8 @@
 # ADR-0004: First text interaction interface
 
-- **Status:** Accepted
+- **Status:** Accepted; amended by [ADR-0015](./0015-coding-agent-loop-and-approved-actions.md) — the CLI now uses the full agent
+  (interactive chat, terminal diff/command approvals). The "no write/delete/shell"
+  statement below describes the original MVP.
 
 ## Context and problem
 

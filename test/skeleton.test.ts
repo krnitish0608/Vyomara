@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { AgentError, runAgent } from '../src/agent/agent.ts';
 import { loadConfig } from '../src/config/config.ts';
@@ -78,11 +81,16 @@ function agentOptions(
 test('configuration uses safe defaults and rejects invalid values without echoing them', () => {
   assert.equal(loadConfig({}).provider, 'ollama');
   assert.equal(loadConfig({}).ollamaBaseUrl, 'http://127.0.0.1:11434');
-  assert.equal(loadConfig({}).ollamaModel, 'llama3.2');
-  assert.deepEqual(loadConfig({}).filesystemAllowedRoots, []);
-  assert.equal(loadConfig({}).maxFileBytes, 65_536);
-  assert.equal(loadConfig({}).maxDirectoryEntries, 100);
-  assert.equal(loadConfig({}).maxTreeDepth, 3);
+  assert.equal(loadConfig({}).ollamaModel, 'qwen3:14b');
+  assert.equal(loadConfig({}).ollamaNumCtx, 32_768);
+  assert.equal(loadConfig({}).ollamaThink, false);
+  assert.equal(loadConfig({ VYOM_OLLAMA_THINK: 'true' }).ollamaThink, true);
+  assert.throws(() => loadConfig({ VYOM_OLLAMA_THINK: 'maybe' }), /VYOM_OLLAMA_THINK/);
+  assert.deepEqual(loadConfig({}).filesystemAllowedRoots, ['/']);
+  assert.deepEqual(loadConfig({ VYOM_ALLOWED_ROOTS: '[]' }).filesystemAllowedRoots, []);
+  assert.equal(loadConfig({}).maxFileBytes, 2_097_152);
+  assert.equal(loadConfig({}).maxDirectoryEntries, 300);
+  assert.equal(loadConfig({}).maxTreeDepth, 4);
   assert.equal(loadConfig({ VYOM_PROVIDER: 'placeholder' }).provider, 'placeholder');
   assert.equal(
     loadConfig({
@@ -90,9 +98,10 @@ test('configuration uses safe defaults and rejects invalid values without echoin
       VYOM_OLLAMA_BASE_URL: 'https://unused.invalid',
       VYOM_OLLAMA_MODEL: '   ',
     }).ollamaModel,
-    'llama3.2',
+    'qwen3:14b',
   );
-  assert.equal(loadConfig({}).maxAgentIterations, 3);
+  assert.equal(loadConfig({}).maxAgentIterations, 40);
+  assert.equal(loadConfig({}).maxToolCalls, 80);
   assert.throws(
     () => loadConfig({ VYOM_PROVIDER: 'secret-provider-token' }),
     error => error instanceof Error &&
@@ -118,8 +127,15 @@ test('configuration uses safe defaults and rejects invalid values without echoin
     /at most 32/,
   );
   assert.throws(() => loadConfig({ VYOM_MAX_FILE_BYTES: '0' }), /VYOM_MAX_FILE_BYTES/);
-  assert.throws(() => loadConfig({ VYOM_MAX_TREE_DEPTH: '11' }), /VYOM_MAX_TREE_DEPTH/);
+  assert.throws(() => loadConfig({ VYOM_MAX_TREE_DEPTH: '13' }), /VYOM_MAX_TREE_DEPTH/);
 });
+
+/** A private, temporary data folder for CLI runs, removed when the tests end. */
+function cliDataDir(): string {
+  const directory = mkdtempSync(join(tmpdir(), 'vyomara-cli-test-'));
+  process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+}
 
 test('CLI discloses the configured provider before processing a request', () => {
   const result = spawnSync(process.execPath, [
@@ -136,37 +152,41 @@ test('CLI discloses the configured provider before processing a request', () => 
       ...process.env,
       VYOM_PROVIDER: 'placeholder',
       VYOM_ALLOWED_ROOTS: '[]',
+      // Never write test conversations into the user's real history.
+      VYOM_DATA_DIR: cliDataDir(),
     },
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Provider: deterministic placeholder; no model service is contacted\./);
-  assert.ok(result.stdout.indexOf('Provider:') < result.stdout.indexOf('[Placeholder provider]'));
+  assert.match(result.stderr, /deterministic placeholder \(no model service is contacted\)/);
+  assert.match(result.stdout, /\[Placeholder provider\]/);
 });
 
-test('CLI refuses unsupported shell requests without contacting the configured Ollama service', () => {
+test('CLI reports an unavailable local model service without falling back to another provider', () => {
   const result = spawnSync(process.execPath, [
     '--disable-warning=ExperimentalWarning',
     '--experimental-strip-types',
     'src/cli.ts',
     '--',
-    'Run the harmless command echo audit-check.',
+    'Say hello',
   ], {
     cwd: process.cwd(),
     encoding: 'utf8',
-    timeout: 10_000,
+    timeout: 20_000,
     env: {
       ...process.env,
       VYOM_PROVIDER: 'ollama',
+      VYOM_OLLAMA_MODEL: 'qwen3:14b',
+      VYOM_OLLAMA_BASE_URL: 'http://127.0.0.1:9',
       VYOM_ALLOWED_ROOTS: '[]',
+      VYOM_DATA_DIR: cliDataDir(),
     },
   });
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /supported requests are sent to the configured local service/);
-  assert.match(result.stdout, /cannot run shell or terminal commands/i);
-  assert.match(result.stdout, /No command was executed/);
-  assert.doesNotMatch(result.stdout, /tool\.completed|audit-check passed/i);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /local Ollama · qwen3:14b/);
+  assert.match(result.stderr, /Ollama is unavailable/);
+  assert.equal(result.stdout.trim(), '');
 });
 
 test('placeholder provider is deterministic and clearly not an LLM', async () => {
@@ -249,7 +269,7 @@ test('tool inputs are bounded before execution', async () => {
     },
   }));
   await assert.rejects(
-    executor(registry, config({ maxToolOutputChars: 16 }))
+    executor(registry, config({ maxToolInputChars: 16 }))
       .execute('test.echo', { value: 'too long' }, new AbortController().signal),
     (error: unknown) => error instanceof ToolExecutionError && error.code === 'input-too-large',
   );
@@ -312,7 +332,7 @@ test('agent rejects malformed provider responses', async () => {
     },
   };
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(provider)),
+    runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(provider)),
     (error: unknown) => error instanceof AgentError && error.code === 'invalid-provider-response',
   );
 });
@@ -335,16 +355,16 @@ test('agent enforces the iteration limit', async () => {
       };
     },
   };
-  await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(
-      provider,
-      config({ maxAgentIterations: 1 }),
-      createLogger(() => {}),
-      registry,
-    )),
-    (error: unknown) => error instanceof AgentError && error.code === 'iteration-limit',
-  );
-  assert.equal(executed, false);
+  const response = await runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(
+    provider,
+    config({ maxAgentIterations: 2 }),
+    createLogger(() => {}),
+    registry,
+  ));
+  // The loop stops honestly instead of running forever, and says how to continue.
+  assert.match(response, /used all 2 steps/);
+  assert.match(response, /Ask me to continue/);
+  assert.equal(executed, true);
 });
 
 test('provider timeout is enforced even if a provider ignores its signal', async () => {
@@ -355,7 +375,7 @@ test('provider timeout is enforced even if a provider ignores its signal', async
     },
   };
   await assert.rejects(
-    runAgent('hello', new AbortController().signal, agentOptions(
+    runAgent('Tell me a fun fact.', new AbortController().signal, agentOptions(
       provider,
       config({ requestTimeoutMs: 100 }),
     )),
@@ -401,7 +421,7 @@ test('cancellation stops a pending provider request', async () => {
       });
     },
   };
-  const pending = runAgent('hello', controller.signal, agentOptions(provider));
+  const pending = runAgent('Tell me a fun fact.', controller.signal, agentOptions(provider));
   controller.abort();
   await assert.rejects(
     pending,

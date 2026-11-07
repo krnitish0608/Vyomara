@@ -1,150 +1,263 @@
 # Vyomara
 
-Vyomara is a local-first personal AI assistant for macOS. Its spoken assistant
-name is **Vyom**.
+Vyomara is a local-first AI agent for macOS. Its assistant is called **Vyom**.
+You describe what you want in plain language — English, Hindi, or Hinglish —
+and Vyom finds the right project and files on your Mac, reads and changes code,
+runs tests, and opens apps or web pages. Everything runs on your Mac through
+[Ollama](https://ollama.com); nothing is sent to a cloud model.
 
-## Development status
+Typing is the main way to work today. Offline voice input already exists and
+will become the primary interface later. See
+[the product direction](./docs/product-direction.md).
 
-Initial implementation is in progress. The CLI and early Electron desktop
-shell can use the local Ollama provider or an explicit deterministic
-placeholder. The desktop shell has text chat, request cancellation, and a
-task-activity panel. Provider identity, local service reachability, and selected
-model availability are shown separately in Settings; checks are user-triggered
-and contact only the configured local Ollama `/api/tags` endpoint.
-Requests have correlated
-task/run lifecycle events and are stored as local, inspectable sessions. The
-session history includes user prompts, assistant replies, tool calls, and
-returned tool data, which may contain private file contents. Ollama can request
-registered read-only tools; filesystem access remains disabled unless allowed
-roots are explicitly configured.
-Each session is capped at 1,000 messages or 8 MiB; start another session when
-that limit is reached.
-Unsupported shell, web-search, and file-mutation requests are not executed.
-Tool arguments are strictly validated, with at most one bounded correction
-attempt; a model claim is not evidence that an action succeeded.
-Saved memory is separate from session history and is never extracted
-automatically. A save displays the exact memory content before asking you to
-type `SAVE`; deletion requires typing `DELETE` after reviewing the target.
-The `--confirm` flag enables these interactive confirmation prompts. Data is
-retained until explicitly deleted. The
-application does not encrypt the database. History offers manual unencrypted
-SQLite backup and a validated restore workflow that first saves a safety copy
-of current data. macOS FileVault is recommended, and OS backups may include
-the data.
+## What Vyom can do
 
-## Prerequisites
+| Ask for… | What happens |
+|---|---|
+| "vyomara project mein num_ctx kaha set hota hai?" | Finds the project by name, searches the code, and answers with file and line. |
+| "shop project ka failing test fix karo" | Runs the tests, reads the failing test and code, proposes an edit (you review a diff), re-runs the tests. |
+| "open my shop project in VS Code" | Opens VS Code with that folder, after you approve. |
+| "Chrome mein React Native search karo" | Opens a Google search in Chrome, after you approve. |
+| "react.dev/blog padh ke batao latest post kya hai" | Reads the page itself (after you approve) and answers with a link. |
+| "src/agent ka structure samjhao" | Maps the folder, reads key files, and explains. |
+| "keylessrn project VS Code mein kholo" | Finds the project even when it is nested (`~/Projects/openSpace/KeylessRN`) and opens it. |
+| "VS Code full screen karo" / "maximize karo" / "hide karo" | Focuses, hides, minimizes, restores, maximizes, full-screens, or quits a running app. Quitting always asks. |
+| "cart.js mein applyDiscount VS Code mein kholo" | Finds the definition and opens VS Code at that line, after you approve. |
+| "undo karo" | Puts back the last request's approved file changes. |
+| "yaad rakhna: mera main project KeylessRN hai" | Remembers it for future conversations. See or delete memories in the **Memories** panel. |
+
+**You approve every action.**
+- **File edits:** shown as a diff, in Vyomara and, when it is open, in VS
+  Code. **Approve all edits in this task** applies the rest of the task's
+  edits without asking again; deletions still ask.
+- **Deletions:** require typing `DELETE`, and the item goes to Trash.
+- **Shell commands:** shown exactly, with the folder they run in.
+- **App launches and web pages:** shown before they open. Pages Vyom reads
+  show which website receives the request. Choose **Always allow**, or use
+  the **Permissions** panel, so VS Code, Chrome, or a docs site stop asking.
+  You can revoke a permission there at any time.
+- **Repeated commands:** for `pnpm test` and similar, "Always allow here"
+  skips the prompt for that exact command in that folder until you quit.
+
+**Project instructions:** Vyom follows a project's own notes for coding
+agents, in `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md` or
+`.cursorrules`. For example, it runs the check command those files name. The
+project is the one you name or give a path to, or the one the conversation is
+working in.
+
+Each reply ends with a **Verified actions** list built only from real tool
+results, so Vyom never claims work it did not do.
+
+## Requirements
 
 - macOS on Apple Silicon
-- Node.js >=22.22.1
-- pnpm 12.16.1
+- Node.js >=22.22.1 and pnpm 12.16.1 (use pnpm only)
+- [Ollama](https://ollama.com) running locally, with a model that supports
+  tool calling. The default is `qwen3:14b` (about 9 GB; 24 GB RAM recommended):
 
-## Package manager
+```sh
+ollama pull qwen3:14b
+```
 
-Use pnpm only. Do not mix npm and pnpm lockfiles in this project.
+Any local model can be run from the app's **Models** panel without changing
+code or configuration. In the panel you can:
 
-## Safety principles
+- download any model from the Ollama library, or GGUF models from Hugging Face
+  (`hf.co/…`);
+- see each model's capabilities (Tools / Thinking / Vision / Chat only);
+- switch the model in use;
+- set the context window and thinking;
+- remove models you no longer need;
+- start Ollama if it is not running.
 
-- Default to read-only behavior.
-- Require approval before sensitive or destructive actions.
-- Never commit secrets.
-- Test changes before marking work complete.
+See [the Ollama guide](./docs/ollama.md#running-any-local-model-from-the-app).
 
-See [the Ollama setup and troubleshooting guide](./docs/ollama.md).
-See [the read-only filesystem tool guide](./docs/filesystem-tools.md).
-
-## Desktop application
-
-Install the pinned dependencies once, then launch the app:
+## Desktop app
 
 ```sh
 pnpm install
 pnpm desktop
 ```
 
-By default, the app uses local Ollama. Start Ollama separately; use the
-provider status controls in **Settings** to check local service reachability
-and model availability. To run the UI without a model provider, use
-`VYOM_PROVIDER=placeholder pnpm desktop`.
+The launcher builds the app and opens a local, ad-hoc-signed `Vyomara.app`
+through macOS LaunchServices. This makes macOS attribute microphone and speech
+permissions to Vyomara rather than to your terminal. Launching again brings the
+existing window forward. Release signing and `.dmg` distribution are not
+implemented.
 
-Create a local production build or preview it with:
+The desktop has these parts:
+- **Chat** with Markdown replies.
+- **Live checklist** of the agent's plan for multi-step tasks.
+- **Live step list** showing each tool call ("Reading …", "Running `pnpm test`").
+- **Approval cards** for every edit, command, app launch, and web page.
+- **History** to search past conversations, open one and keep talking in it, or delete it (two clicks; **Delete all history** clears everything). The most recently used conversation is on top.
+- **Models**, where you pick an installed model or download a new one.
+- **Offline voice input.**
 
-```sh
-pnpm build:desktop
-pnpm preview:desktop
-```
+Stop cancels a running task at any time.
 
-The app uses the current process environment. Vyomara does not automatically
-load `.env` files. Use **Folders** to grant and revoke read-only access to
-specific directories; permissions are stored locally. `VYOM_ALLOWED_ROOTS`
-seeds the desktop permissions on first launch. Filesystem tools remain
-unavailable until a folder is allowed. App signing, `.app`/`.dmg` distribution,
-voice, and remote providers are not implemented. The desktop Settings panel
-lets you switch between local Ollama and a deterministic placeholder and set
-the Ollama model tag. These choices are stored locally and override
-`VYOM_PROVIDER` and `VYOM_OLLAMA_MODEL` after you save them; the Ollama
-endpoint remains configured through `VYOM_OLLAMA_BASE_URL` and must be
-loopback-only. Saving a model tag does not download it or check its
-availability. **Check model availability** performs a read-only request to
-Ollama's local tags endpoint and reports whether the selected model is already
-installed; it never downloads a model. **Reset to environment defaults**
-removes the saved provider/model overrides and restores the current process
-environment configuration without changing filesystem permissions or other
-local data. Provider identity, local Ollama reachability, and selected-model
-availability are shown together in Settings; reachability and model checks are
-separate. Saved sessions can be reviewed and
-continued from History; the desktop view displays user and final assistant
-messages, not raw tool calls or tool results. The Memory panel supports
-explicit review, save, inspection, and typed-confirmation deletion; saved
-memory is not automatically inserted into model context. Reviewed memories
-can also be exported individually as unencrypted JSON to new owner-only files;
-existing files are never overwritten. History entries can
-be reviewed and deleted from the desktop after typing `DELETE`;
-deleting the active conversation also clears it from the current view.
-History conversations can also be exported individually as JSON after review.
-The export contains complete raw history, including tool calls and results;
-Vyomara writes a new owner-only file and does not overwrite existing files.
-The exported JSON is not encrypted, so protect or delete the chosen file as
-appropriate. The History panel also supports clearing all saved conversations
-and explicit memories after typing `DELETE ALL`; provider settings and allowed
-folders are kept.
-All desktop controls are keyboard reachable, visible focus is preserved, and
-Escape closes the open side panel and returns focus to its toolbar button.
-Reduced-motion preferences disable animated progress and smooth scrolling.
-Run `pnpm test:desktop-ui` on macOS Apple Silicon to build the desktop shell
-and exercise its keyboard panel, focus, and reduced-motion behavior in Electron.
-The **Checks** panel can run only the fixed project scripts `pnpm test`,
-`pnpm typecheck`, `pnpm build:desktop`, and `pnpm test:desktop-ui` in a project
-folder you select. Each run is explicit, cancelable, limited to five minutes
-and 64,000 output characters, and Vyomara invokes pnpm without a shell. pnpm
-may run project-defined lifecycle scripts, which can execute arbitrary code;
-only select a project you trust.
-
-## Local history and memory
-
-The database defaults to `~/Library/Application Support/Vyomara`; override it
-with an absolute `VYOM_DATA_DIR`. Inspect session IDs and content with:
+Other commands:
 
 ```sh
-pnpm dev -- --sessions list
-pnpm dev -- --sessions show <session-id>
-pnpm dev -- --session <session-id> "continue this conversation"
-pnpm dev -- --sessions delete <session-id> --confirm
+pnpm build:desktop     # production build
+pnpm preview:desktop   # build and open the app
+pnpm test:desktop-ui   # Electron keyboard/focus/reduced-motion smoke test
 ```
 
-Memory can be managed explicitly in the desktop Memory panel or through the CLI:
+### Mini Vyom
+
+When you switch to VS Code, Chrome, or any other app, a small Vyom stays on
+top in the screen corner. It shows:
+
+- whether it is listening;
+- what it heard;
+- what it is doing;
+- any approval question, with **Haan / Nahi** buttons.
+
+You can use it like this:
+
+- Press **⌥Space** anywhere to turn listening on or off.
+- Type in its message box, or tap its mic to dictate, then send.
+- Drag it wherever you like.
+- Click ↗ to open the full window.
+
+Closing the main window keeps Vyom running in the mini window; ⌘Q quits.
+
+### Voice
+
+Speak in Hindi, English, or a mix of the two:
+
+1. Install the speech runtime once with `brew install whisper.cpp`.
+2. Choose a speech model in **Models → Voice**:
+   - **Best** (574 MB) understands Hindi, English, and Hinglish.
+   - **Fast** (148 MB) suits English and romanized Hinglish.
+3. Turn listening on with the orb.
+
+There are two ways to talk:
+
+- **Tap to record (main window or mini window):**
+  1. Tap the mic and speak.
+  2. Tap ■ to stop. The words appear in the message box.
+  3. Edit them if you like, then send.
+
+  Typed or dictated messages are answered on screen only, without speech.
+- **Conversation:** press the orb (or ⌥Space) and just talk, as you would
+  to a person. Vyom answers on screen and aloud.
+
+In a conversation:
+
+- No wake phrase is needed. Vyom waits until you have finished speaking
+  (about 1.5 seconds of quiet), so short pauses mid-sentence are fine.
+- After answering, Vyom listens again by itself. A soft tone marks when it
+  starts listening, takes your request, and stops.
+- Press the orb while Vyom is talking to interrupt it and speak.
+- While Vyom works, only “ruko / stop” (or a request that starts with
+  “Vyom …”) is taken, so room noise does not become a new request.
+- Say **“bas”** (or “okay bye”, “band karo”) or press the orb to end. The
+  conversation also ends after two quiet minutes and never resumes by itself
+  when Vyomara starts.
+- When Vyom needs approval, it asks aloud, for example “cart.js mein badlaav
+  ready hai… Apply karun?”. Answer **“haan / kar do / yes”** or **“nahi /
+  rehne do”**.
+- Deleting needs “haan, delete karo”.
+- “Ruko” or “stop” cancels a running task.
+- Replies are spoken briefly, always in the chosen assistant's voice.
+
+Choose the assistant from the Assistant tab at the top of the sidebar (tap it to switch):
+
+| Assistant | Voice | Notes |
+|---|---|---|
+| **Vyom** | male: Aman (Indian English) | macOS has no male Hindi voice, so Vyom answers aloud in Roman-letter Hinglish |
+| **Vyomara** | female: Lekha (Hindi), who also reads English |  |
+
+For more natural speech, download the Enhanced or Premium versions of Aman
+and Lekha. Go to System Settings → Accessibility → Spoken Content →
+System Voice → Manage Voices. Vyomara uses them automatically within two
+minutes.
+
+Recognition runs entirely on this Mac, and audio never leaves it. A finished
+phrase becomes text in about one second, and the reply arrives about three
+seconds after you stop speaking. See
+[ADR-0018](./docs/adr/0018-voice-wake-phrase-spoken-approvals.md).
+
+## Command line
+
+The CLI uses the same agent, tools, and approvals. It shows diffs and asks
+`y/N` in the terminal.
 
 ```sh
-pnpm dev -- --memory save "content to remember" --confirm
-pnpm dev -- --memory list
-pnpm dev -- --memory show <memory-id>
-pnpm dev -- --memory delete <memory-id> --confirm
+pnpm dev                                     # interactive chat
+pnpm dev -- "find where the cart total is computed in my shop project"
+pnpm dev -- --model qwen2.5-coder:14b "explain src/agent/agent.ts"
+pnpm dev -- --session <session-id> "continue"
 ```
 
-Memory is not currently injected into model context. No interactive approval
-flow or automatic backup is provided. Use the desktop History panel to create
-a manual unencrypted backup; it contains complete session history, saved
-memories, provider settings, and allowed folder paths. To restore, select a
-backup from History, review its conversation/memory counts, and type `RESTORE`.
-Vyomara validates the database schema and integrity and saves a pre-restore
-copy in its local data folder before replacing current local data. Both backup
-files are unencrypted; protect them accordingly.
+Set `VYOM_DEBUG=1` to print diagnostic events. Saved sessions and explicit
+memory are managed with:
+
+```sh
+pnpm dev -- --sessions list | show <id> | delete <id> --confirm
+pnpm dev -- --memory list | show <id> | save "text" --confirm | delete <id> --confirm
+```
+
+Memory is explicit only and is not yet given to the model.
+
+## Configuration
+
+Vyomara reads environment variables at startup and does not load `.env` files.
+[`.env.example`](./.env.example) lists every setting. The most useful are:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VYOM_OLLAMA_MODEL` | `qwen3:14b` | Model (the desktop Models panel overrides it) |
+| `VYOM_OLLAMA_NUM_CTX` | `32768` | Context window requested from Ollama |
+| `VYOM_OLLAMA_THINK` | `false` | Let thinking models reason first (slower) |
+| `VYOM_MAX_AGENT_ITERATIONS` | `40` | Model steps per request |
+| `VYOM_MAX_TOOL_CALLS` | `80` | Tool calls per request |
+| `VYOM_COMMAND_TIMEOUT_MS` | `120000` | Maximum command run time |
+| `VYOM_ALLOWED_ROOTS` | whole Mac | JSON array to restrict file access; `[]` disables it |
+| `VYOM_SEARXNG_URL` | unset | Your SearXNG instance; enables `web_search` |
+| `VYOM_PROVIDER` | `ollama` | `placeholder` runs without a model |
+
+The Ollama URL must be loopback (`localhost`, `127.0.0.1`, or `::1`).
+
+## Safety model
+
+- **Files:** Protected system and credential locations are blocked, including
+  `/System`, `/usr`, `~/.ssh`, keychains, and cloud credentials. Symlinks are
+  never followed.
+- **Edits:** Edits are atomic and fail if the file changed after you reviewed
+  it.
+- **Diffs in VS Code:** When VS Code is open, each proposed edit or new file
+  also opens there as a side-by-side diff: the real file on the left, the
+  proposal on the right. **⇄ Open in VS Code** on the review card does the
+  same at any time. Nothing is applied until you approve it in Vyomara.
+- **Undo:** Press **↶ Undo these changes** under a reply, or say or type
+  "undo karo", to put back the last request's approved file changes.
+  - Edited files get their exact earlier contents back.
+  - New files go to the Trash.
+  - A file you changed afterwards is left alone, and the reply says so.
+  - Deleted items are already in the Trash; restore them from Finder.
+  - Undo history lasts until Vyomara quits.
+- **Commands:** Commands run with your user permissions after you approve
+  them. There is no sandbox, so read the command before approving.
+  Interactive commands are not supported.
+- **Data:** Conversations, including tool calls and file contents the agent
+  read, are stored locally until you delete them. The database is not
+  application-encrypted, so use FileVault.
+- **Instruction-like content:** Text in tool results and files is treated as
+  data, not instructions.
+
+Details:
+- [Agent tools](./docs/tools.md)
+- [ADR-0015](./docs/adr/0015-coding-agent-loop-and-approved-actions.md)
+- [Architecture](./docs/architecture.md)
+
+## Development
+
+```sh
+pnpm typecheck
+pnpm test
+```
+
+Never commit secrets. Test changes before marking work complete.

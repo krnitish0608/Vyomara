@@ -22,6 +22,8 @@ type ToolExecutionErrorCode =
   | 'unsupported-operation'
   | 'tool-failed';
 
+const APPROVAL_GATED_TIMEOUT_MS = 30 * 60 * 1000;
+
 export class ToolExecutionError extends Error {
   readonly code: ToolExecutionErrorCode;
 
@@ -60,7 +62,14 @@ export class ToolExecutor {
     context?: ToolInvocationContext,
   ): Promise<unknown> {
     const tool = this.options.registry.get(toolId);
-    if (!tool) throw new ToolExecutionError('This capability is not available.', 'unknown-tool');
+    if (!tool) {
+      const available = this.modelTools().map(candidate => candidate.id).join(', ');
+      throw new ToolExecutionError(
+        `There is no tool named "${toolId}". Available tools: ${available || 'none'}.`,
+        'unknown-tool',
+      );
+    }
+    if (tool.normalizeInput) input = tool.normalizeInput(input);
     if (!tool.validateInput(input)) {
       throw new ToolExecutionError(
         tool.inputError?.(input) ?? 'Tool arguments were invalid; no operation was performed.',
@@ -73,14 +82,14 @@ export class ToolExecutor {
     } catch {
       throw new ToolExecutionError('Tool input could not be serialized.', 'invalid-input');
     }
-    if (serializedInput === undefined || serializedInput.length > this.options.config.maxToolOutputChars) {
+    if (serializedInput === undefined || serializedInput.length > this.options.config.maxToolInputChars) {
       throw new ToolExecutionError(
         'Tool arguments exceeded the configured limit; no operation was performed.',
         'input-too-large',
       );
     }
 
-    const decision = this.options.policy.authorize(tool.effect);
+    const decision = this.options.policy.authorize(tool.effect, toolId, input);
     if (!decision.allowed) {
       this.options.logger.emit({
         event: 'tool.denied',
@@ -100,7 +109,11 @@ export class ToolExecutor {
     try {
       const result = await runBounded(
         toolSignal => tool.run(input, toolSignal),
-        this.options.config.toolTimeoutMs,
+        // Tools that wait for a human decision get a long ceiling; Stop still
+        // cancels them immediately. Commands enforce their own run timeout.
+        tool.effect === 'read'
+          ? this.options.config.toolTimeoutMs
+          : APPROVAL_GATED_TIMEOUT_MS,
         signal,
       );
       if (!tool.validateOutput(result)) {
