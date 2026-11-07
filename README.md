@@ -23,9 +23,12 @@ will become the primary interface later. See
 | "keylessrn project VS Code mein kholo" | Finds the project even when it is nested (`~/Projects/openSpace/KeylessRN`) and opens it. |
 | "VS Code full screen karo" / "maximize karo" / "hide karo" | Focuses, hides, minimizes, restores, maximizes, full-screens, or quits a running app. Quitting always asks. |
 | "cart.js mein applyDiscount VS Code mein kholo" | Finds the definition and opens VS Code at that line, after you approve. |
+| "undo karo" | Puts back the last request's approved file changes. |
 
 **You approve every action.**
-- **File edits:** shown as a diff.
+- **File edits:** shown as a diff, in Vyomara and, when it is open, in VS
+  Code. **Approve all edits in this task** applies the rest of the task's
+  edits without asking again; deletions still ask.
 - **Deletions:** require typing `DELETE`, and the item goes to Trash.
 - **Shell commands:** shown exactly, with the folder they run in.
 - **App launches and web pages:** shown before they open. Pages Vyom reads
@@ -34,6 +37,12 @@ will become the primary interface later. See
   You can revoke a permission there at any time.
 - **Repeated commands:** for `pnpm test` and similar, "Always allow here"
   skips the prompt for that exact command in that folder until you quit.
+
+**Project instructions:** Vyom follows a project's own notes for coding
+agents, in `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md` or
+`.cursorrules`. For example, it runs the check command those files name. The
+project is the one you name or give a path to, or the one the conversation is
+working in.
 
 Each reply ends with a **Verified actions** list built only from real tool
 results, so Vyom never claims work it did not do.

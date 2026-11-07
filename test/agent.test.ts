@@ -347,6 +347,10 @@ test('search_text supports regex, case-insensitive search, file globs, and liter
   ]);
   // An invalid regex is treated as literal text instead of failing.
   assert.deepEqual((await search({ pattern: 'reduce((' })).matches.map(match => match.line), [3]);
+  // No matches: a hint says how to widen the search instead of a bare "nothing found".
+  const empty = await search({ pattern: 'reduce', glob: '*.md' }) as { matches: unknown[]; hint?: string };
+  assert.equal(empty.matches.length, 0);
+  assert.match(empty.hint ?? '', /retry without glob/);
 });
 
 test('system prompt describes the environment and only the capabilities that exist', () => {
@@ -879,9 +883,41 @@ test('the system prompt names the chosen assistant and its grammatical gender', 
   const female = buildSystemPrompt(environment, [], { persona: 'vyomara', voice: true });
   assert.match(female, /You are Vyomara, the female AI assistant/);
   assert.match(female, /main kar rahi hoon/);
-  assert.doesNotMatch(female, /never Devanagari/);
+  assert.doesNotMatch(female, /your voice can only read Roman letters/);
   const male = buildSystemPrompt(environment, [], { voice: true });
   assert.match(male, /You are Vyom, the male AI assistant/);
   assert.match(male, /main kar raha hoon/);
-  assert.match(male, /never Devanagari/);
+  assert.match(male, /your voice can only read Roman letters/);
+});
+
+test('the active project comes from the user\'s message, and its agent notes are loaded', async t => {
+  const { activeProjectFromSession, readProjectInstructions } = await import('../src/agent/system-prompt.ts');
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'vyomara-home-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const shop = join(home, 'Projects', 'shop');
+  await mkdir(join(shop, 'src'), { recursive: true });
+  await writeFile(join(shop, 'package.json'), '{}');
+  await writeFile(join(shop, 'AGENTS.md'), 'Run checks with `npm run check`.\n');
+  const folders = [{ folder: join(home, 'Projects'), projects: ['shop'] }];
+  assert.equal(activeProjectFromSession([{ role: 'user', content: `fix the bug in ${shop}/src/cart.js` }], home, folders), shop);
+  assert.equal(activeProjectFromSession([{ role: 'user', content: 'shop project mein test chalao' }], home, folders), shop);
+  assert.equal(activeProjectFromSession([{ role: 'user', content: 'hello' }], home, folders), undefined);
+  assert.deepEqual(readProjectInstructions(shop), [{ file: 'AGENTS.md', text: 'Run checks with `npm run check`.' }]);
+});
+
+test('a reply that is only an open checklist counts as unfinished work', async () => {
+  const { isUnfinishedPlan } = await import('../src/agent/agent.ts');
+  assert.equal(isUnfinishedPlan("- [> ] Test failed.\n- [ ] Check cartTotal.\n- [ ] Fix it.\n- [ ] Run the tests."), true);
+  assert.equal(isUnfinishedPlan('Fixed `src/cart.js:5`: cartTotal now multiplies by quantity. Tests pass.'), false);
+  assert.equal(isUnfinishedPlan('Done.\n- [x] Fixed the bug\n- [x] Ran the tests'), false);
+});
+
+test('requests that forbid changes are recognised in English and Hinglish', async () => {
+  const { forbidsChanges } = await import('../src/agent/agent.ts');
+  for (const prompt of ["Is there a bug in cartTotal? Just tell me, don't change anything.", 'do not edit the files, explain the error', 'cart.js mein bug hai kya? kuch mat badlo', 'sirf batao kya galat hai', 'fix mat karo, bas samjhao']) {
+    assert.equal(forbidsChanges(prompt), true, prompt);
+  }
+  for (const prompt of ['fix the failing test', 'cartTotal ka bug fix karo', 'add a formatPrice function']) {
+    assert.equal(forbidsChanges(prompt), false, prompt);
+  }
 });

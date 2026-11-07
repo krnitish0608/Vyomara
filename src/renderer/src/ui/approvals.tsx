@@ -41,9 +41,12 @@ export function FileOperationCard({
   onApprove,
   onReject,
   onOpenDiff,
+  onApproveAll,
 }: {
   /** Show this change as a side-by-side diff in VS Code. */
   readonly onOpenDiff?: () => void;
+  /** Approve this and every later edit in the task. */
+  readonly onApproveAll?: () => void;
   readonly proposal: DesktopFileOperationProposal;
   readonly confirmation: string;
   readonly busy: boolean;
@@ -90,6 +93,17 @@ export function FileOperationCard({
         >
           {busy ? 'Applying…' : isDelete ? 'Move to Trash' : 'Approve and apply'}
         </button>
+        {onApproveAll && !isDelete && (
+          <button
+            className="file-operation-approve-all"
+            type="button"
+            onClick={onApproveAll}
+            disabled={busy || anyBusy}
+            title="Apply this change and the rest of this task's edits without asking again. Deletions still need DELETE."
+          >
+            Approve all edits in this task
+          </button>
+        )}
         <button className="file-operation-reject" type="button" onClick={onReject} disabled={busy || anyBusy}>
           Reject
         </button>

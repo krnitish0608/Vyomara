@@ -254,6 +254,8 @@ export interface VyomaraDesktopApi {
   onSpeechRecognition(listener: (event: DesktopSpeechRecognitionEvent) => void): () => void;
   speakText(text: string): Promise<DesktopSpeechResult>;
   stopSpeaking(): Promise<boolean>;
+  /** Approve this change and all later edits in the current task (not deletions). */
+  approveAllFileOperations(id: string): Promise<void>;
   /** Show a file change waiting for review as a diff in VS Code. */
   openFileDiff(id: string): Promise<void>;
   /** The newest request's file changes that can still be undone. */

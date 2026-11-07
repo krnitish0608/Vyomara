@@ -540,6 +540,25 @@ export class OllamaProvider implements ModelProvider {
     }
   }
 
+  /**
+   * Free the model's memory now instead of waiting for keep_alive to expire
+   * (Ollama unloads a model when asked with keep_alive 0). Best effort.
+   */
+  async unload(signal: AbortSignal = AbortSignal.timeout(3_000)): Promise<void> {
+    try {
+      const response = await this.fetchImplementation(new URL(`${this.baseUrl}/api/generate`), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        redirect: 'error',
+        signal,
+        body: JSON.stringify({ model: this.model, keep_alive: 0 }),
+      });
+      await response.body?.cancel().catch(() => undefined);
+    } catch {
+      // Ollama may already be stopped; nothing to free then.
+    }
+  }
+
   /** Remove an installed model from Ollama to free disk space. */
   async deleteModel(name: string): Promise<void> {
     let response: Response;

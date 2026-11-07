@@ -46,7 +46,8 @@ test('local voice sends an arbitrary first transcription without requiring a wak
     runner.start(event => {
       if (event.type === 'command') events.push(event.transcript);
     });
-    for (let attempt = 0; attempt < 50 && events.length === 0; attempt++) {
+    // Starting the fake binary (a Node process) can take over a second on a busy machine.
+    for (let attempt = 0; attempt < 250 && events.length === 0; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.deepEqual(events, [transcript]);

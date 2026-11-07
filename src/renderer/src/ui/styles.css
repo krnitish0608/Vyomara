@@ -242,6 +242,8 @@ h1 { color: #f0edf5; font-size: clamp(24px, 3vw, 32px); line-height: 1.2; }
 .file-operation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .file-operation-approve, .file-operation-reject { padding: 7px 10px; border: 1px solid #514679; border-radius: 7px; background: #211c3a; color: #d5ccff; font-size: 10px; cursor: pointer; }
 .file-operation-reject { border-color: #394352; background: #171d27; color: #b8c2d0; }
+.file-operation-approve-all { padding: 7px 10px; border: 1px solid rgba(110, 200, 150, .4); border-radius: 7px; background: rgba(40, 120, 80, .16); color: #bfeccf; font-size: 10px; cursor: pointer; }
+.file-operation-approve-all:hover:not(:disabled) { border-color: rgba(130, 220, 170, .7); background: rgba(50, 140, 95, .26); color: #fff; }
 .file-operation-diff { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid rgba(80, 150, 230, .45); border-radius: 7px; background: rgba(30, 90, 170, .18); color: #bcd8ff; font-size: 10px; cursor: pointer; }
 .file-operation-diff:hover { border-color: rgba(110, 175, 250, .75); background: rgba(40, 110, 200, .3); color: #fff; }
 .file-operation-diff:focus-visible { outline: 2px solid #9ab6ff; outline-offset: 2px; }

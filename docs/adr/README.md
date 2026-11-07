@@ -33,6 +33,7 @@ proposed decisions must not be presented as current implementation choices.
 | [0021](./0021-two-assistants-vyom-and-vyomara.md) | Two assistants: Vyom (male) and Vyomara (female) | Accepted |
 | [0022](./0022-undo-approved-file-changes.md) | Undo approved file changes | Accepted |
 | [0023](./0023-proposed-changes-as-vs-code-diffs.md) | Show proposed file changes as VS Code diffs | Accepted |
+| [0024](./0024-coding-agent-project-context.md) | Project instructions, language, and batch edit approval | Accepted |
 
 ## Open decisions
 

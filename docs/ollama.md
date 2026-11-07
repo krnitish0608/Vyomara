@@ -139,7 +139,7 @@ kept.
 |---|---|
 | "Ollama is unavailable" | Start Ollama (`ollama serve` or the app). Check `VYOM_OLLAMA_BASE_URL`. |
 | "model is not installed" | `ollama pull <model>` or download it in **Models**. |
-| Very slow first reply | The model is loading into memory. Vyomara keeps it loaded for 30 minutes. |
+| Very slow first reply | The model is loading into memory. Vyomara keeps it loaded for 30 minutes while the app runs, unloads it when you quit, and unloads the old model when you switch. Check with `ollama ps`. |
 | Replies ignore files or forget earlier steps | Raise `VYOM_OLLAMA_NUM_CTX` (memory permitting) or use a stronger model. |
 | "took too long to respond" | Raise `VYOM_REQUEST_TIMEOUT_MS` (default 300,000 ms per model call). |
 | Agent stops early | Ask it to continue. Raise `VYOM_MAX_AGENT_ITERATIONS` or `VYOM_MAX_TOOL_CALLS` for very large tasks. |

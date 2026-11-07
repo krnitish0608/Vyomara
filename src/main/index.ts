@@ -597,8 +597,15 @@ ipcMain.handle('vyomara:model-select', async (_event, input: unknown) => {
   } catch (error) {
     throw new Error(error instanceof Error && !(error instanceof ProviderError) ? error.message : publicErrorMessage(error));
   }
+  const previous = config;
   config = candidate;
-  warmUpModel(config);
+  // Free the old model's memory right away (it would otherwise stay loaded for
+  // 30 minutes), then load the new one.
+  const next = config;
+  void (previous.provider === 'ollama' && previous.ollamaModel !== model
+    ? ollamaProvider(previous).unload()
+    : Promise.resolve()
+  ).then(() => warmUpModel(next));
   return providerStatus(config);
 });
 
@@ -710,6 +717,17 @@ ipcMain.handle('vyomara:chat-send', async (_event, input: unknown) => {
     activeFileOperationApproval = undefined;
     activeActionApproval = undefined;
     activeProposals.clear();
+  }
+});
+
+ipcMain.handle('vyomara:file-operation-approve-all', async (event, input: unknown) => {
+  if (event.sender !== mainWindow?.webContents) throw new Error('File review request is invalid.');
+  if (!activeRequest || !activeFileOperationApproval) throw new Error('There is no active file operation to approve.');
+  if (typeof input !== 'string') throw new Error('File review request is invalid.');
+  try {
+    await activeFileOperationApproval.approveAllEdits(input);
+  } catch (error) {
+    throw new Error(publicErrorMessage(error));
   }
 });
 
@@ -1091,7 +1109,18 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('will-quit', () => {
+/** Set once the model has been asked to leave memory on quit. */
+let modelReleased = false;
+
+app.on('will-quit', event => {
+  // With Vyomara closed, the model should not keep its memory (it is kept
+  // loaded for 30 minutes while the app runs). Wait up to 2 s for Ollama.
+  if (!modelReleased && config?.provider === 'ollama') {
+    modelReleased = true;
+    event.preventDefault();
+    void ollamaProvider(config).unload(AbortSignal.timeout(2_000)).finally(() => app.quit());
+    return;
+  }
   globalShortcut.unregisterAll();
   void diffPreview?.clear().catch(() => undefined);
 });

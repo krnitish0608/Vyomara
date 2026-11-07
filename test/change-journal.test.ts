@@ -119,3 +119,32 @@ test('undo restores the exact original bytes, including a byte-order mark', asyn
   await journal.undoLast();
   assert.equal(sha256(await readFile(file)), sha256(original));
 });
+
+test('approve all edits applies this and later edits, but deletions still ask', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'vyomara-all-'));
+  await mkdir(join(parent, 'p'));
+  const root = await realpath(join(parent, 'p'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const config = loadConfig({ VYOM_PROVIDER: 'placeholder', VYOM_ALLOWED_ROOTS: JSON.stringify([root]), VYOM_TOOL_TIMEOUT_MS: '10000' });
+  const shown: string[] = [];
+  let approvals!: FileOperationApprovalManager;
+  approvals = new FileOperationApprovalManager({
+    config,
+    onProposal: proposal => {
+      shown.push(proposal.operation);
+      if (shown.length === 1) queueMicrotask(() => { void approvals.approveAllEdits(proposal.id); });
+    },
+    moveToTrash: async () => undefined,
+  });
+  const signal = new AbortController().signal;
+  await writeFile(join(root, 'a.txt'), 'a\n');
+  assert.deepEqual(await approvals.request({ operation: 'edit-file', path: join(root, 'a.txt'), content: 'A\n' }, signal), { status: 'applied' });
+  assert.deepEqual(await approvals.request({ operation: 'create-file', path: join(root, 'b.txt'), content: 'b\n' }, signal), { status: 'applied' });
+  assert.equal(await readFile(join(root, 'b.txt'), 'utf8'), 'b\n');
+  // Only the first edit was shown for review; the delete is shown again.
+  const deletion = approvals.request({ operation: 'delete', path: join(root, 'a.txt') }, signal);
+  // The delete proposal is prepared asynchronously; wait until it is shown.
+  for (let attempt = 0; attempt < 100 && shown.length < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(shown, ['edit-file', 'delete']);
+  void deletion.catch(() => undefined);
+});

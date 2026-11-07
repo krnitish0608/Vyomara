@@ -163,6 +163,8 @@ async function pathSnapshot(path: string): Promise<FileSnapshot> {
 export class FileOperationApprovalManager implements FileOperationApprovalPort {
   readonly #options: FileOperationApprovalOptions;
   readonly #pending = new Map<string, PendingOperation>();
+  /** The user chose "approve all edits" for this task; deletions still need DELETE. */
+  #approveEdits = false;
 
   constructor(options: FileOperationApprovalOptions) {
     this.#options = options;
@@ -232,6 +234,10 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
       };
       this.#pending.set(id, pending);
       signal.addEventListener('abort', onAbort, { once: true });
+      if (this.#approveEdits && request.operation !== 'delete') {
+        queueMicrotask(() => { void this.approve(id).catch(() => undefined); });
+        return;
+      }
       try {
         this.#options.onProposal(proposal);
       } catch (error) {
@@ -260,6 +266,22 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
       ));
       throw safeError;
     }
+  }
+
+  /**
+   * Approve this change and every later edit, new file, and new folder in the
+   * same task. Deletions still need their own typed confirmation.
+   */
+  async approveAllEdits(id: string): Promise<void> {
+    const pending = this.#pending.get(id);
+    if (!pending) throw new Error('This file review is no longer active.');
+    if (pending.request.operation === 'delete') throw new FileOperationApprovalError('Deletions are confirmed one by one.');
+    this.#approveEdits = true;
+    const others = [...this.#pending.entries()]
+      .filter(([otherId, other]) => otherId !== id && other.request.operation !== 'delete' && !other.applying)
+      .map(([otherId]) => otherId);
+    await this.approve(id);
+    for (const otherId of others) await this.approve(otherId).catch(() => undefined);
   }
 
   reject(id: string): void {

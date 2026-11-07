@@ -883,6 +883,22 @@ export function App() {
     }
   }
 
+  /** Approve this change and the rest of the task's edits (deletions still ask). */
+  async function approveAllFileOperations(proposal: DesktopFileOperationProposal): Promise<void> {
+    if (fileOperationActionPending || proposal.operation === 'delete') return;
+    setFileOperationActionPending(proposal.id);
+    setRequestError(undefined);
+    try {
+      await window.vyomara.approveAllFileOperations(proposal.id);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : 'The reviewed file operation failed safely.');
+    } finally {
+      // Every edit waiting now was applied with it; only deletions keep their cards.
+      setFileOperationProposals(current => current.filter(item => item.operation === 'delete'));
+      setFileOperationActionPending(undefined);
+    }
+  }
+
   async function rejectFileOperation(proposal: DesktopFileOperationProposal): Promise<void> {
     if (fileOperationActionPending) return;
     setFileOperationActionPending(proposal.id);
@@ -1420,6 +1436,7 @@ export function App() {
                 onConfirmationChange={value => setFileOperationConfirmations(current => ({ ...current, [proposal.id]: value }))}
                 onApprove={() => void approveFileOperation(proposal)}
                 onReject={() => void rejectFileOperation(proposal)}
+                onApproveAll={() => void approveAllFileOperations(proposal)}
                 onOpenDiff={() => void window.vyomara.openFileDiff(proposal.id).catch(error => {
                   setRequestError(error instanceof Error ? error.message : 'VS Code could not show the diff.');
                 })}

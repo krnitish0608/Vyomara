@@ -196,9 +196,37 @@ const CONTINUE_NUDGE =
 const APPLY_CHANGE_NUDGE =
   'You described a code change but did not apply it. Do not ask the user to paste code: make the change yourself with edit_file (the user reviews it before it is written), then verify it. If you have not reproduced the problem yet, do that first.';
 
+/** Tools that change files; withheld when the user asked for no changes. */
+const FILE_CHANGE_TOOLS = new Set(['edit_file', 'write_file', 'create_directory', 'delete_path']);
+
+/**
+ * "don't change anything", "just tell me", "kuch mat badlo", "sirf batao":
+ * the user wants an answer, not edits. Such a request gets no file-changing
+ * tools at all, so a model that ignores the instruction still cannot edit.
+ */
+export function forbidsChanges(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /\b(?:don'?t|do not|dont|never|without)\s+(?:change|changing|edit|editing|modify|modifying|touch|touching|fix|fixing|write|writing)\b/u.test(text) ||
+    /\b(?:no|without)\s+(?:changes|edits)\b|\bread[- ]only\b|\bjust\s+(?:tell|explain|show)\b/u.test(text) ||
+    /\bmat\s+(?:badlo|badalna|chhedo|chhuo|chhuna|chhona|karo\s+change|change\s+karo|edit\s+karo|fix\s+karo)\b|\b(?:change|edit|fix)\s+mat\s+karo\b|\b(?:sirf|bas|bus)\s+batao\b/u.test(text);
+}
+
 /** Whether the request asks for code to be changed (English or Hinglish). */
 export function asksForCodeChange(prompt: string): boolean {
   return /\b(?:fix|bug|implement|change|update|add|refactor|rename|remove|replace|edit|modify|write|create|make)\b|\b(?:karo|kar do|kardo|banao|bana do|likho|likh do|sudhaaro|sudharo|hatao|badlo|badal do|thik karo|theek karo)\b/iu.test(prompt);
+}
+
+const UNFINISHED_PLAN_NUDGE =
+  'Your reply is a checklist with steps still open. Do not stop at the plan: carry out the next open step now with tools, then keep going until every step is done, and only then give your final answer.';
+
+/**
+ * True when a final answer is mostly a checklist with open steps ("- [ ] Fix
+ * cartTotal") rather than a report of finished work.
+ */
+export function isUnfinishedPlan(text: string): boolean {
+  const lines = text.trim().split(/\n+/u).filter(line => line.trim() !== '');
+  const open = lines.filter(line => /^\s*(?:[-*]\s*)?\[\s*(?:>\s*)?\]/u.test(line)).length;
+  return open >= 2 && open >= lines.length / 2;
 }
 
 /** True when a final answer only announces a next step ("Let me search…") instead of finishing. */
@@ -310,7 +338,9 @@ async function runAgentTask(
 
   // Models without tool support still chat; they are told what they cannot do.
   const toolCapable = await checkToolSupport(options.provider, config, signal);
-  const modelTools = toolCapable ? tools.modelTools() : [];
+  const readOnlyRequest = forbidsChanges(prompt);
+  const modelTools = (toolCapable ? tools.modelTools() : [])
+    .filter(tool => !readOnlyRequest || !FILE_CHANGE_TOOLS.has(tool.id));
   const environment = options.environment ?? detectEnvironment(session.messages());
   const system = buildSystemPrompt(environment, modelTools, {
     chatOnly: !toolCapable,
@@ -417,10 +447,11 @@ async function runAgentTask(
         !attemptedEdit &&
         asksForCodeChange(prompt) &&
         /```[\s\S]*\n[\s\S]*```/u.test(response.text);
-      if (canNudge && (unappliedChange || announcesNextStep(response.text))) {
+      const unfinishedPlan = isUnfinishedPlan(response.text);
+      if (canNudge && (unappliedChange || unfinishedPlan || announcesNextStep(response.text))) {
         continuationNudges += 1;
         session.add({ role: 'assistant', content: response.text });
-        pendingNudge = unappliedChange ? APPLY_CHANGE_NUDGE : CONTINUE_NUDGE;
+        pendingNudge = unappliedChange ? APPLY_CHANGE_NUDGE : unfinishedPlan ? UNFINISHED_PLAN_NUDGE : CONTINUE_NUDGE;
         continue;
       }
       return finish(response.text, iteration);
@@ -463,6 +494,15 @@ async function runAgentTask(
             ok: false,
             error: 'You already made this exact call. Use the earlier result above, or try a different approach.',
           }),
+        });
+        continue;
+      }
+
+      if (readOnlyRequest && FILE_CHANGE_TOOLS.has(call.toolId)) {
+        session.add({
+          role: 'tool',
+          toolId: call.toolId,
+          content: JSON.stringify({ ok: false, error: 'The user asked not to change anything in this request. Answer in words; describe the fix instead of making it.' }),
         });
         continue;
       }

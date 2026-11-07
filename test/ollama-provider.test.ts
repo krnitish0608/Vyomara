@@ -545,3 +545,23 @@ test('agent timeout bounds an Ollama request even if fetch does not settle', asy
     (error: unknown) => error instanceof AgentError && error.code === 'timeout',
   );
 });
+
+test('unload asks Ollama to free the model now and never throws', async () => {
+  const requests: { url: string; body: unknown }[] = [];
+  const provider = new OllamaProvider({
+    baseUrl: 'http://127.0.0.1:11434',
+    model: 'qwen3:14b',
+    fetchImplementation: async (url, init) => {
+      requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response('{}');
+    },
+  });
+  await provider.unload();
+  assert.deepEqual(requests, [{ url: 'http://127.0.0.1:11434/api/generate', body: { model: 'qwen3:14b', keep_alive: 0 } }]);
+  const offline = new OllamaProvider({
+    baseUrl: 'http://127.0.0.1:11434',
+    model: 'qwen3:14b',
+    fetchImplementation: async () => { throw new Error('connection refused'); },
+  });
+  await offline.unload();
+});

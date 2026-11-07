@@ -250,7 +250,7 @@ function publicFilesystemError(error: unknown): FilesystemToolError {
     ? error.code
     : undefined;
   if (code === 'ENOENT' || code === 'ENOTDIR') {
-    return new FilesystemToolError('The requested file or directory was not found. Do not guess paths: use find_files with its name to locate it.', 'not-found');
+    return new FilesystemToolError('The requested file or directory was not found. Do not guess paths: use find_files with its name to locate it. To find a function, class, or variable, use search_text with its name; it is usually not a file name.', 'not-found');
   }
   if (code === 'EACCES' || code === 'EPERM') {
     return new FilesystemToolError('The filesystem path is not accessible.', 'permission-denied');
@@ -896,6 +896,8 @@ interface TextSearchOutput {
   readonly matches: readonly TextSearchMatch[];
   readonly filesScanned: number;
   readonly truncated: boolean;
+  /** Set when nothing matched: how to search more widely. */
+  readonly hint?: string;
 }
 
 const TEXT_SEARCH_MAX_FILE_BYTES = 1_048_576;
@@ -1014,7 +1016,18 @@ async function searchText(
       if (!await scanFile(childPath)) return { matches, filesScanned, truncated: true };
     }
   }
-  return { matches, filesScanned, truncated };
+  return withSearchHint({ matches, filesScanned, truncated }, input);
+}
+
+/** With no matches, say how to widen the search, so the model does not conclude the code is absent. */
+function withSearchHint(output: TextSearchOutput, input: TextSearchInput): TextSearchOutput {
+  if (output.matches.length > 0) return output;
+  const tips = [
+    ...(input.glob ? [`the glob "${input.glob}" may exclude the right files: retry without glob`] : []),
+    ...(input.ignore_case ? [] : ['retry with ignore_case: true']),
+    'search a shorter or simpler pattern (part of the name)',
+  ];
+  return { ...output, hint: `No matches in ${output.filesScanned} files. Before concluding it does not exist: ${tips.join('; ')}.` };
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1212,8 @@ function isTextSearchOutput(value: unknown): value is TextSearchOutput {
       exactKeys(match, ['path', 'line', 'text'])) &&
     Number.isSafeInteger(value.filesScanned) &&
     typeof value.truncated === 'boolean' &&
-    exactKeys(value, ['matches', 'filesScanned', 'truncated']);
+    (value.hint === undefined || typeof value.hint === 'string') &&
+    exactKeys(value, value.hint === undefined ? ['matches', 'filesScanned', 'truncated'] : ['matches', 'filesScanned', 'truncated', 'hint']);
 }
 
 function isOperationOutput(value: unknown): value is OperationOutput {

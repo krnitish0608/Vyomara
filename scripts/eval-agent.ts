@@ -23,7 +23,8 @@ interface Scenario {
   readonly id: string;
   readonly prompt: (root: string) => string;
   readonly files: Readonly<Record<string, string>>;
-  readonly check: (root: string, response: string) => string | undefined;
+  /** `commands` lists the shell commands the agent ran. */
+  readonly check: (root: string, response: string, commands: readonly string[]) => string | undefined;
 }
 
 const CART = `// Shopping cart helpers.
@@ -58,6 +59,17 @@ const SHOP: Readonly<Record<string, string>> = {
   'README.md': '# Shop\nTiny cart library.\n',
   'src/cart.js': CART,
   'test/cart.test.js': CART_TEST,
+};
+
+const FIXED_CART = CART.replace('sum + item.price,', 'sum + item.price * item.quantity,');
+
+const SHOP_FIXED: Readonly<Record<string, string>> = { ...SHOP, 'src/cart.js': FIXED_CART };
+
+/** A project whose instructions say how to run its checks. */
+const SHOP_WITH_INSTRUCTIONS: Readonly<Record<string, string>> = {
+  ...SHOP,
+  'package.json': '{\n  "name": "shop",\n  "type": "module",\n  "scripts": { "test": "echo use npm run check && exit 1", "check": "node --test" }\n}\n',
+  'AGENTS.md': '# Notes for agents\n\n- Run the checks with `npm run check` (not `npm test`).\n- Keep functions small and documented with a one-line comment.\n',
 };
 
 function testsPass(root: string): boolean {
@@ -106,6 +118,46 @@ const scenarios: readonly Scenario[] = [
       return /cart/iu.test(response) ? undefined : 'answer does not mention the cart code';
     },
   },
+  {
+    id: 'english-reply',
+    prompt: root => `What does the project at ${root} do? Two sentences.`,
+    files: SHOP,
+    check: (_root, response) => {
+      if (/[ऀ-ॿ]/u.test(response)) return 'replied in Devanagari to an English question';
+      return /cart/iu.test(response) ? undefined : 'answer does not mention the cart code';
+    },
+  },
+  {
+    id: 'project-instructions',
+    prompt: root => `There is a failing test in ${root}. Fix the bug and verify it.`,
+    files: SHOP_WITH_INSTRUCTIONS,
+    check: (root, _response, commands) => {
+      if (!testsPass(root)) return 'tests still fail';
+      if (!commands.some(command => /npm run check/u.test(command))) return `did not follow AGENTS.md (ran: ${commands.join(' | ') || 'nothing'})`;
+      return undefined;
+    },
+  },
+  {
+    id: 'rename-everywhere',
+    prompt: root => `Rename the function cartTotal to calculateTotal everywhere in ${root}, then run the tests.`,
+    files: SHOP_FIXED,
+    check: root => {
+      const cart = readFileSync(join(root, 'src/cart.js'), 'utf8');
+      const test = readFileSync(join(root, 'test/cart.test.js'), 'utf8');
+      if (/cartTotal/u.test(cart + test)) return 'cartTotal is still used';
+      if (!/export function calculateTotal/u.test(cart)) return 'calculateTotal is not exported';
+      return testsPass(root) ? undefined : 'tests fail';
+    },
+  },
+  {
+    id: 'question-only',
+    prompt: root => `Is there a bug in cartTotal in ${root}? Just tell me, don't change anything.`,
+    files: SHOP,
+    check: (root, response) => {
+      if (readFileSync(join(root, 'src/cart.js'), 'utf8') !== CART) return 'changed the code although asked not to';
+      return /quantity/iu.test(response) ? undefined : 'did not explain the quantity bug';
+    },
+  },
 ];
 
 function parseArgs(argv: readonly string[]): { runs: number; model?: string; only?: string } {
@@ -134,7 +186,11 @@ const config = {
 };
 mkdirSync(config.dataDirectory, { mode: 0o700 });
 
-const results: { scenario: string; run: number; pass: boolean; reason?: string; seconds: number; steps: number }[] = [];
+const results: {
+  scenario: string; run: number; pass: boolean; reason?: string; seconds: number; steps: number;
+  /** What the agent did and said, to see why a run failed. */
+  trace: string[]; response: string;
+}[] = [];
 console.log(`Evaluating ${config.ollamaModel} (${config.ollamaNumCtx} ctx, think=${config.ollamaThink}) in ${work}\n`);
 
 try {
@@ -154,28 +210,34 @@ try {
           else files.reject(proposal.id);
         }),
       });
+      const commands: string[] = [];
       const actions: ActionApprovalPort = {
         async request(action) {
+          if (action.kind === 'command') commands.push(action.command);
           return action.kind === 'command' && inside(action.cwd);
         },
       };
       let steps = 0;
+      const trace: string[] = [];
       const started = Date.now();
       let response = '';
       let reason: string | undefined;
       try {
         const result = await runRequest(scenario.prompt(root), AbortSignal.timeout(15 * 60_000), config, createLogger(() => {}), {
-          onToolActivity: activity => { if (activity.status === 'running') steps += 1; },
+          onToolActivity: activity => {
+            if (activity.status === 'running') steps += 1;
+            else trace.push(`${activity.status}: ${activity.label}${activity.detail ? ` — ${activity.detail.slice(0, 160)}` : ''}`);
+          },
           fileOperationApproval: files,
           actions: { approval: actions, commandRunner: new ShellCommandRunner() },
         });
         response = result.response;
-        reason = scenario.check(root, response);
+        reason = scenario.check(root, response, commands);
       } catch (error) {
         reason = `request failed: ${error instanceof Error ? error.message : String(error)}`;
       }
       const seconds = Math.round((Date.now() - started) / 1000);
-      results.push({ scenario: scenario.id, run, pass: reason === undefined, ...(reason ? { reason } : {}), seconds, steps });
+      results.push({ scenario: scenario.id, run, pass: reason === undefined, ...(reason ? { reason } : {}), seconds, steps, trace, response });
       console.log(`${reason === undefined ? 'PASS' : 'FAIL'}  ${scenario.id} #${run}  ${seconds}s  ${steps} steps${reason ? `  — ${reason}` : ''}`);
     }
   }

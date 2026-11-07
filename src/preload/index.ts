@@ -153,6 +153,9 @@ const api: VyomaraDesktopApi = {
   stopSpeaking() {
     return ipcRenderer.invoke('vyomara:speech-stop');
   },
+  approveAllFileOperations(id: string) {
+    return ipcRenderer.invoke('vyomara:file-operation-approve-all', id);
+  },
   openFileDiff(id: string) {
     return ipcRenderer.invoke('vyomara:file-diff-open', id);
   },
