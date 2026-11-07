@@ -240,7 +240,7 @@ export function announcesNextStep(text: string): boolean {
   const tail = text.trim().split(/\n+/u).slice(-2).join(' ');
   // Offers to the user ("Let me know if…", "if you want I can…") are genuine endings.
   if (/\blet me know\b|\bif you (?:want|like|need|'d like)\b|\bshould i\b|\?\s*$/iu.test(tail)) return false;
-  const intent = /\b(?:let me|let's|i'll|i will|i am going to|i'm going to|next,? i|now i(?:'ll| will)?)\b.{0,160}\b(?:search|check|look|read|open|run|try|find|inspect|examine|edit|fix|update|list|explore|verify|test)\b/iu;
+  const intent = /\b(?:let me|let's|i'll|i will|i am going to|i'm going to|next,? i|now i(?:'ll| will)?)\b.{0,160}\b(?:search|check|look|read|open|run|try|find|inspect|examine|edit|fix|update|list|explore|verify|test|add|create|write|implement|change|modify|rename|refactor|apply|make|remove|install|build)\b/iu;
   const hinglishIntent = /\b(?:main|mai|ab main|ab mai)\b.{0,80}\b(?:dekhta|check karta|search karta|dhundhta|dhoondhta|padhta|chalata|karta|fix karta) (?:hoon|hu|hun|hu)\b/iu;
   return intent.test(tail) || hinglishIntent.test(tail);
 }

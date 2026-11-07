@@ -921,3 +921,10 @@ test('requests that forbid changes are recognised in English and Hinglish', asyn
     assert.equal(forbidsChanges(prompt), false, prompt);
   }
 });
+
+test('announcing a change ("Now, I will add …") counts as stopping early', async () => {
+  const { announcesNextStep } = await import('../src/agent/agent.ts');
+  assert.equal(announcesNextStep('I have identified the relevant files. Now, I will add the `formatPrice(cents)` function to `src/cart.js` and export it.'), true);
+  assert.equal(announcesNextStep("Next, I'll create the test file."), true);
+  assert.equal(announcesNextStep('Added formatPrice and its test; all tests pass.'), false);
+});

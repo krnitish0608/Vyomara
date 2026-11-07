@@ -13,6 +13,7 @@ import type {
 } from './contracts.ts';
 import { resolveSafeFilesystemPath } from '../tools/filesystem-tools.ts';
 import { sha256, type JournalEntry } from './change-journal.ts';
+import { replaceText } from '../shared/text-replace.ts';
 
 interface FileSnapshot {
   readonly path: string;
@@ -186,22 +187,19 @@ export class FileOperationApprovalManager implements FileOperationApprovalPort {
         throw new FileOperationApprovalError('Text replacement requires an existing regular file.');
       }
       const { find, replace, all } = request.replacement;
-      const current = prepared.currentContent;
-      const firstIndex = find.length === 0 ? -1 : current.indexOf(find);
-      if (firstIndex === -1) {
+      const replaced = replaceText(prepared.currentContent, find, replace, all === true);
+      if (!replaced.ok && replaced.reason === 'ambiguous') {
         throw new FileOperationApprovalError(
-          'old_text was not found in the file. Read the file again and copy the exact text, including whitespace and indentation.',
+          `old_text matches ${replaced.count ?? 'several'} places in the file. Include more surrounding lines so it matches exactly once, or set replace_all to true.`,
         );
       }
-      const occurrences = current.split(find).length - 1;
-      if (occurrences > 1 && all !== true) {
+      if (!replaced.ok) {
         throw new FileOperationApprovalError(
-          `old_text matches ${occurrences} places in the file. Include more surrounding lines so it matches exactly once, or set replace_all to true.`,
+          'old_text was not found in the file. Copy it exactly from read_file output (without the line numbers).'
+            + (replaced.hint ? ` The closest lines in the file are:\n${replaced.hint}` : ' Read the file again first.'),
         );
       }
-      const content = all === true
-        ? current.split(find).join(replace)
-        : current.slice(0, firstIndex) + replace + current.slice(firstIndex + find.length);
+      const content = replaced.content;
       if (Buffer.byteLength(content, 'utf8') > this.#options.config.maxFileBytes) {
         throw new FileOperationApprovalError('The proposed file exceeds the configured maximum size.');
       }

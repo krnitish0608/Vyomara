@@ -148,3 +148,17 @@ test('approve all edits applies this and later edits, but deletions still ask', 
   assert.deepEqual(shown, ['edit-file', 'delete']);
   void deletion.catch(() => undefined);
 });
+
+test('an edit whose old_text differs only in whitespace is applied (and reviewed) instead of failing', async t => {
+  const { root, approvals, signal, startRequest } = await fixture(t);
+  const file = join(root, 'cart.js');
+  await writeFile(file, 'export function total(items) {\n  return items.length;\n}\n');
+  startRequest('fuzzy');
+  const result = await approvals.request({
+    operation: 'edit-file',
+    path: file,
+    replacement: { find: '\treturn items.length;   ', replace: '\treturn items.length * 2;' },
+  }, signal);
+  assert.deepEqual(result, { status: 'applied' });
+  assert.equal(await readFile(file, 'utf8'), 'export function total(items) {\n  return items.length * 2;\n}\n');
+});
