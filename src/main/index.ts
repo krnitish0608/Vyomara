@@ -407,7 +407,7 @@ async function createPipWindow(): Promise<BrowserWindow> {
 }
 
 /** The user's choice in the sidebar: show the mini window over other apps, or never. */
-let pipEnabled = true;
+let pipEnabled = false;
 
 function pipSettingsPath(): string {
   return join(app.getPath('userData'), 'pip-settings.json');
@@ -416,9 +416,9 @@ function pipSettingsPath(): string {
 async function readPipEnabled(): Promise<boolean> {
   try {
     const value: unknown = JSON.parse(await readFile(pipSettingsPath(), 'utf8'));
-    return !(typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === false);
+    return typeof value === 'object' && value !== null && (value as { enabled?: unknown }).enabled === true;
   } catch {
-    return true;
+    return false;
   }
 }
 
